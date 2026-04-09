@@ -35,7 +35,7 @@ async function ingestPosts(caches) {
   const embedTexts = posts.map((p) => {
     const cats = p.categories.join(', ');
     const tags = p.tags.join(', ');
-    return `${p.title}\n\n${cats}\n${tags}\n\n${p.raw_text}`.slice(0, 8000);
+    return `${p.title}\n\n${cats}\n${tags}\n\n${p.raw_text}`.slice(0, 3000);
   });
 
   const embeddings = await embedDocuments(embedTexts);
