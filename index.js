@@ -14,6 +14,7 @@ import { logger } from './logger.js';
 import { initSchema } from './lib/altus-db.js';
 import { safeToolHandler } from './lib/safe-tool-handler.js';
 import { searchAltwareArchive } from './handlers/altus-search.js';
+import { startIngestCron } from './lib/ingest-cron.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -24,8 +25,9 @@ if (process.env.DATABASE_URL) {
   initSchema().catch((err) => {
     logger.error('Schema init failed', { error: err.message });
   });
+  startIngestCron();
 } else {
-  logger.warn('DATABASE_URL not set — skipping schema init');
+  logger.warn('DATABASE_URL not set — skipping schema init and cron');
 }
 
 // ---------------------------------------------------------------------------
