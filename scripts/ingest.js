@@ -60,21 +60,34 @@ async function ingestPosts(caches) {
 async function ingestGalleries() {
   logger.info('Fetching galleries from WordPress...');
   const galleries = await fetchGalleries();
-  logger.info(`Fetched ${galleries.length} galleries — synthesizing and embedding...`);
+  logger.info(`Fetched ${galleries.length} galleries — synthesizing...`);
 
+  // Synthesize all galleries first (Claude calls), then batch-embed together
+  const synthesized = [];
   for (const gallery of galleries) {
     try {
       const synthesis = await synthesizeGallery(gallery);
       const tags = (gallery.tags ?? []).join(', ');
       const embedText = `${gallery.title}\n\nPhoto gallery\n${tags}\n\n${synthesis}`.slice(0, 8000);
+      synthesized.push({ gallery, synthesis, embedText });
+    } catch (err) {
+      logger.warn('Gallery synthesis failed', { id: gallery.id, error: err.message });
+      errors++;
+    }
+  }
 
-      const embeddings = await embedDocuments([embedText]);
-      if (embeddings?.error) {
-        logger.warn('Gallery embedding failed', { id: gallery.id, error: embeddings.error });
-        errors++;
-        continue;
-      }
+  logger.info(`Synthesized ${synthesized.length} galleries — embedding in batches...`);
+  const embedTexts = synthesized.map((s) => s.embedText);
+  const embeddings = await embedDocuments(embedTexts);
+  if (embeddings?.error) {
+    logger.error('Gallery embedding failed', { error: embeddings.error });
+    errors += synthesized.length;
+    return;
+  }
 
+  for (let i = 0; i < synthesized.length; i++) {
+    const { gallery, synthesis } = synthesized[i];
+    try {
       await upsertContent({
         wp_id: gallery.id,
         content_type: 'gallery',
@@ -86,11 +99,11 @@ async function ingestGalleries() {
         categories: [],
         tags: gallery.tags ?? [],
         raw_text: synthesis,
-        embedding: embeddings[0],
+        embedding: embeddings[i],
       });
       galleriesIngested++;
     } catch (err) {
-      logger.warn('Gallery ingest failed', { id: gallery.id, error: err.message });
+      logger.warn('Gallery upsert failed', { id: gallery.id, error: err.message });
       errors++;
     }
   }
