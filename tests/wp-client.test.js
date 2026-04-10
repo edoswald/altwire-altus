@@ -21,7 +21,8 @@ describe('wp-client.js', () => {
     const { stripHtml } = await import('../lib/wp-client.js');
     expect(stripHtml('<p>Hello <strong>world</strong></p>')).toBe('Hello world');
     expect(stripHtml('No tags here')).toBe('No tags here');
-    expect(stripHtml('&amp; &lt; &gt; &nbsp;')).toBe('& < >  ');
+    // stripHtml only strips tags — entity decoding is handled by decodeHtmlEntities
+    expect(stripHtml('&amp; &lt; &gt; &nbsp;')).toBe('&amp; &lt; &gt; &nbsp;');
   });
 
   it('fetchPosts paginates until response shorter than per_page', async () => {
