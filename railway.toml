@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
 startCommand = "node --no-deprecation index.js"
