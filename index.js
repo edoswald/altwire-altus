@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { logger } from './logger.js';
 import pool, { initSchema } from './lib/altus-db.js';
 import { safeToolHandler } from './lib/safe-tool-handler.js';
-import { searchAltwareArchive } from './handlers/altus-search.js';
+import { searchAltwireArchive } from './handlers/altus-search.js';
 import { reIngestHandler } from './handlers/altus-reingest.js';
 import { getArchiveStats } from './handlers/altus-stats.js';
 import { getContentByUrl } from './handlers/altus-fetch.js';
@@ -110,7 +110,7 @@ function createMcpServer() {
       },
     },
     safeToolHandler(async ({ query, limit, content_type }) => {
-      const result = await searchAltwareArchive({ query, limit, content_type });
+      const result = await searchAltwireArchive({ query, limit, content_type });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };

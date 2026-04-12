@@ -13,7 +13,7 @@ import { logger } from '../logger.js';
  * @param {{ query: string, limit: number, content_type: 'post'|'gallery'|'all' }} params
  * @returns {Promise<object>} results or { error: string }
  */
-export async function searchAltwareArchive({ query, limit, content_type }) {
+export async function searchAltwireArchive({ query, limit, content_type }) {
   if (!process.env.DATABASE_URL) {
     return { error: 'Database not configured' };
   }
