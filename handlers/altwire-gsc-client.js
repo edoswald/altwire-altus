@@ -12,6 +12,17 @@ import { google } from 'googleapis';
 import { logger } from '../logger.js';
 
 /**
+ * Strip trailing slashes from a URL string.
+ * Non-string inputs are returned as-is.
+ * @param {*} url
+ * @returns {*}
+ */
+export function normalizeUrl(url) {
+  if (typeof url !== 'string') return url;
+  return url.replace(/\/+$/, '');
+}
+
+/**
  * Check that all required GSC env vars are present and return a configured auth client.
  * @returns {{ configured: true, auth: object, siteUrl: string } | { configured: false, error: string }}
  */
@@ -245,6 +256,204 @@ export async function getSearchOpportunities(startDate, endDate) {
     };
   } catch (err) {
     logger.error('GSC search opportunities query failed', { error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}
+
+/**
+ * News search type performance: queries/pages appearing in Google News results.
+ *
+ * @param {string} startDate  ISO date string
+ * @param {string} endDate    ISO date string
+ * @param {object} [options]
+ * @param {number} [options.rowLimit=25]              Max rows to return
+ * @param {string[]} [options.dimensions=['query']]   Dimensions to group by
+ * @returns {Promise<object>}
+ */
+export async function getNewsSearchPerformance(startDate, endDate, options = {}) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+
+  const { rowLimit = 25, dimensions = ['query'] } = options;
+  const normalizedDimensions = normalizeDimensions(dimensions);
+
+  try {
+    const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+
+    logger.info('GSC News search performance request', { startDate, endDate, siteUrl: cfg.siteUrl });
+
+    const response = await searchconsole.searchanalytics.query({
+      siteUrl: cfg.siteUrl,
+      requestBody: {
+        startDate,
+        endDate,
+        searchType: 'news',
+        dimensions: normalizedDimensions,
+        rowLimit,
+        dataState: 'all',
+      },
+    });
+
+    const rows = response.data.rows ?? [];
+
+    if (rows.length === 0) {
+      return {
+        startDate,
+        endDate,
+        rows: [],
+        note: 'No Google News data for this period — News coverage may be sparse initially',
+      };
+    }
+
+    logger.info('GSC News search performance fetched', {
+      startDate,
+      endDate,
+      rowCount: rows.length,
+    });
+
+    return {
+      startDate,
+      endDate,
+      rows: rows.map((row) => ({
+        keys: row.keys,
+        clicks: row.clicks,
+        impressions: row.impressions,
+        ctr: row.ctr,
+        position: row.position,
+      })),
+    };
+  } catch (err) {
+    logger.error('GSC News search performance query failed', { error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}
+
+/**
+ * Opportunity zone queries: position 5–30 range, sorted by impressions.
+ *
+ * @param {string} startDate  ISO date string
+ * @param {string} endDate    ISO date string
+ * @returns {Promise<object>}
+ */
+export async function getOpportunityZoneQueries(startDate, endDate) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+
+  try {
+    const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+
+    logger.info('GSC opportunity zone queries request', { startDate, endDate, siteUrl: cfg.siteUrl });
+
+    const response = await searchconsole.searchanalytics.query({
+      siteUrl: cfg.siteUrl,
+      requestBody: {
+        startDate,
+        endDate,
+        dimensions: ['query', 'page'],
+        dimensionFilterGroups: [{
+          filters: [
+            { dimension: 'query', operator: 'notContains', expression: '' },
+          ],
+        }],
+        rowLimit: 100,
+        orderBy: [{ fieldName: 'impressions', sortOrder: 'DESCENDING' }],
+        dataState: 'all',
+      },
+    });
+
+    const rows = (response.data.rows ?? [])
+      .filter((row) => row.position >= 5 && row.position <= 30);
+
+    if (rows.length === 0) {
+      return {
+        startDate,
+        endDate,
+        rows: [],
+        note: 'No queries found in position 5-30 range',
+      };
+    }
+
+    logger.info('GSC opportunity zone queries fetched', {
+      startDate,
+      endDate,
+      rowCount: rows.length,
+    });
+
+    return {
+      startDate,
+      endDate,
+      rows: rows.map((row) => ({
+        keys: row.keys,
+        clicks: row.clicks,
+        impressions: row.impressions,
+        ctr: row.ctr,
+        position: row.position,
+      })),
+    };
+  } catch (err) {
+    logger.error('GSC opportunity zone queries failed', { error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}
+
+/**
+ * Aggregate performance for a specific page URL.
+ *
+ * @param {string} pageUrl   Full URL (trailing slash stripped internally)
+ * @param {string} startDate ISO date string
+ * @param {string} endDate   ISO date string
+ * @returns {Promise<object>}
+ */
+export async function getPagePerformance(pageUrl, startDate, endDate) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+
+  const normalized = normalizeUrl(pageUrl);
+
+  try {
+    const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+
+    logger.info('GSC page performance request', { pageUrl: normalized, startDate, endDate });
+
+    const response = await searchconsole.searchanalytics.query({
+      siteUrl: cfg.siteUrl,
+      requestBody: {
+        startDate,
+        endDate,
+        dimensionFilterGroups: [{
+          filters: [{
+            dimension: 'page',
+            operator: 'equals',
+            expression: normalized,
+          }],
+        }],
+        dataState: 'all',
+      },
+    });
+
+    const rows = response.data.rows ?? [];
+
+    if (rows.length === 0) {
+      return {
+        pageUrl: normalized,
+        clicks: 0,
+        impressions: 0,
+        ctr: 0,
+        position: null,
+        note: 'No GSC data for this URL in the specified period',
+      };
+    }
+
+    const row = rows[0];
+    return {
+      pageUrl: normalized,
+      clicks: row.clicks,
+      impressions: row.impressions,
+      ctr: row.ctr,
+      position: row.position,
+    };
+  } catch (err) {
+    logger.error('GSC page performance query failed', { error: err.message });
     return { error: 'gsc_api_error', message: err.message };
   }
 }

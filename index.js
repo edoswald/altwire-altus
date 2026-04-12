@@ -20,7 +20,12 @@ import { getContentByUrl } from './handlers/altus-fetch.js';
 import { analyzeCoverageGaps } from './handlers/altus-coverage.js';
 import { getTrafficSummary, getReferrerBreakdown, getTopPages, getSiteSearch } from './handlers/altwire-matomo-client.js';
 import { getSearchPerformance, getSearchOpportunities, getSitemapHealth } from './handlers/altwire-gsc-client.js';
+import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
+import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
+import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { startIngestCron } from './lib/ingest-cron.js';
+import cron from 'node-cron';
+import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -31,7 +36,16 @@ if (process.env.DATABASE_URL) {
   initSchema().catch((err) => {
     logger.error('Schema init failed', { error: err.message });
   });
+  initAiUsageSchema().catch((err) => {
+    logger.error('AI usage schema init failed', { error: err.message });
+  });
   startIngestCron();
+
+  // News Monitor — 9 AM ET daily
+  cron.schedule('0 9 * * *', () => runNewsMonitorCron(), { timezone: 'America/New_York' });
+
+  // Performance Snapshot — 6 AM ET daily
+  cron.schedule('0 6 * * *', () => runPerformanceSnapshotCron(), { timezone: 'America/New_York' });
 } else {
   logger.warn('DATABASE_URL not set — skipping schema init and cron');
 }
@@ -253,6 +267,72 @@ function createMcpServer() {
     },
     safeToolHandler(async () => {
       const result = await getSitemapHealth();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Editorial Intelligence — Topic Discovery & News Monitoring
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'get_story_opportunities',
+    {
+      description: 'Cross-references GSC opportunity-zone queries (position 5–30) against the AltWire archive to surface story opportunities where search demand exists but coverage is thin. Uses Haiku to synthesize editorial pitches.',
+      inputSchema: {
+        days: z.number().int().min(7).max(90).default(28)
+          .describe('Lookback window in days for GSC data (default 28)'),
+      },
+    },
+    safeToolHandler(async ({ days }) => {
+      const result = await getStoryOpportunities({ days });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_news_opportunities',
+    {
+      description: 'Tracks GSC News search type data and cross-references with the watch list to surface News coverage opportunities and alert on watch list activity.',
+      inputSchema: {
+        days: z.number().int().min(1).max(30).default(7)
+          .describe('Lookback window in days for News data (default 7)'),
+      },
+    },
+    safeToolHandler(async ({ days }) => {
+      const result = await getNewsOpportunities();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_article_performance',
+    {
+      description: 'Returns post-publish GSC performance snapshots (72h, 7d, 30d) for tracked articles. Use to check how published content is performing in Google Search.',
+      inputSchema: {
+        article_url: z.string().optional()
+          .describe('Full article URL — omit to get aggregate for most recent 20 articles'),
+        snapshot_type: z.enum(['72h', '7d', '30d']).optional()
+          .describe('Filter to a specific snapshot interval'),
+      },
+    },
+    safeToolHandler(async ({ article_url, snapshot_type }) => {
+      const result = await getArticlePerformance({ article_url, snapshot_type });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_news_performance_patterns',
+    {
+      description: 'Analyzes which content types get Google News pickup — groups News-appearing articles by category and tag to identify patterns for optimizing News visibility.',
+      inputSchema: {
+        days: z.number().int().min(7).max(90).default(30)
+          .describe('Lookback window in days for News performance data (default 30)'),
+      },
+    },
+    safeToolHandler(async ({ days }) => {
+      const result = await getNewsPerformancePatterns();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
