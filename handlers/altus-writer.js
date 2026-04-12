@@ -10,7 +10,7 @@
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { generate } from '../lib/writer-client.js';
-import { searchAltwireArchive } from './altus-search.js';
+import { searchAltwareArchive as searchAltwireArchive } from './altus-search.js';
 import { buildAuthHeader } from '../lib/wp-client.js';
 
 // ---------------------------------------------------------------------------
