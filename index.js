@@ -11,7 +11,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from 'http';
 import { z } from 'zod';
 import { logger } from './logger.js';
-import { initSchema } from './lib/altus-db.js';
+import pool, { initSchema } from './lib/altus-db.js';
 import { safeToolHandler } from './lib/safe-tool-handler.js';
 import { searchAltwareArchive } from './handlers/altus-search.js';
 import { reIngestHandler } from './handlers/altus-reingest.js';
@@ -351,6 +351,107 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'altus' }));
     return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writer REST endpoints — authenticated via ALTUS_ADMIN_TOKEN
+  // ---------------------------------------------------------------------------
+  if (url.pathname.startsWith('/hal/writer/')) {
+    // CORS headers for all writer routes
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+
+    // Handle OPTIONS preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Auth check
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.ALTUS_ADMIN_TOKEN) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+
+    // GET /hal/writer/assignments
+    if (url.pathname === '/hal/writer/assignments' && req.method === 'GET') {
+      try {
+        const { rows } = await pool.query(
+          'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
+          ['altus', 'altus:writer_assignments']
+        );
+        const data = rows[0]?.value ? JSON.parse(rows[0].value) : { assignments: [], count: 0 };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        logger.error('Writer assignments query failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+      }
+      return;
+    }
+
+    // GET /hal/writer/assignments/:id
+    const assignmentMatch = url.pathname.match(/^\/hal\/writer\/assignments\/(.+)$/);
+    if (assignmentMatch && req.method === 'GET') {
+      const id = decodeURIComponent(assignmentMatch[1]);
+      try {
+        const { rows } = await pool.query(
+          'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
+          ['altus', `altus:assignment:${id}`]
+        );
+        const data = rows[0]?.value ? JSON.parse(rows[0].value) : null;
+        if (!data) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ assignment: null }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        logger.error('Writer assignment detail query failed', { error: err.message, id });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+      }
+      return;
+    }
+
+    // GET /hal/writer/opportunities
+    if (url.pathname === '/hal/writer/opportunities' && req.method === 'GET') {
+      try {
+        const result = await getStoryOpportunities();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        logger.error('Writer opportunities query failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+      }
+      return;
+    }
+
+    // GET /hal/writer/news-alerts
+    if (url.pathname === '/hal/writer/news-alerts' && req.method === 'GET') {
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const { rows } = await pool.query(
+          'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
+          ['altus', `altus:news_alert:${today}`]
+        );
+        const data = rows[0]?.value ? JSON.parse(rows[0].value) : { news_queries: [], watch_list_matches: [] };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        logger.error('Writer news alerts query failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+      }
+      return;
+    }
   }
 
   // MCP endpoint — stateless POST
