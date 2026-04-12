@@ -39,6 +39,18 @@ import {
   removeWatchSubject,
   listWatchSubjects,
 } from './handlers/altus-watch-list.js';
+import {
+  initWriterSchema,
+  createAssignment,
+  generateOutline,
+  approveOutline,
+  generateDraft,
+  factCheckDraft,
+  postToWordPress,
+  logEditorialDecision,
+  getAssignment,
+  listAssignments,
+} from './handlers/altus-writer.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -57,6 +69,9 @@ if (process.env.DATABASE_URL) {
   });
   initWatchListSchema().catch((err) => {
     logger.error('Watch list schema init failed', { error: err.message });
+  });
+  initWriterSchema().catch((err) => {
+    logger.error('Writer schema init failed', { error: err.message });
   });
   startIngestCron();
 
@@ -699,6 +714,167 @@ function createMcpServer() {
     })
   );
 
+  // -------------------------------------------------------------------------
+  // AI Writer Pipeline
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'create_article_assignment',
+    {
+      description: 'Start a new AI Writer assignment. Runs archive and web research in parallel. Returns when research is complete and outline is ready to generate. For product reviews, pass review_notes_id to include Derek\'s pro/con notes.',
+      inputSchema: {
+        topic: z.string().min(1).describe('What to cover — as Derek described it'),
+        article_type: z.enum(['article', 'review', 'interview', 'feature']).default('article').optional().describe('Content type'),
+        review_notes_id: z.number().int().positive().optional().describe('ID of an altus_reviews entry to pull pro/con notes from'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment: { id: 1, topic: params.topic, article_type: params.article_type || 'article', status: 'outline_ready', archive_hits: 3, web_research_summary: 'Test research...', has_review_notes: !!params.review_notes_id } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await createAssignment(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'generate_article_outline',
+    {
+      description: 'Generate a structured outline from an assignment\'s research. Returns an editable outline for Derek to review before any writing begins.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, outline: { title_suggestion: 'Test Headline', sections: [{ title: 'Intro', points: ['Point 1'] }], angle: 'Test angle', estimated_words: 800 } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await generateOutline(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'approve_outline',
+    {
+      description: 'Record Derek\'s approval or rejection of an outline. Pass feedback for modifications. Nothing is written until this is called with decision=\'approved\'.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+        decision: z.enum(['approved', 'rejected', 'modified']).describe('Editorial decision'),
+        feedback: z.string().optional().describe('Derek\'s notes or modification instructions'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: params.decision === 'approved' ? 'outline_approved' : params.decision === 'rejected' ? 'cancelled' : 'outline_ready', decision_logged: true }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await approveOutline(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'generate_article_draft',
+    {
+      description: 'Generate the full article draft from an approved outline. Uses web research, archive voice reference, and review notes if present. Returns when draft is complete.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: 'draft_ready', word_count: 850, draft_preview: 'Test draft content...' }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await generateDraft(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'fact_check_draft',
+    {
+      description: 'Run a fact-checking pass on a completed draft. Verifies specific factual claims via web search. Only regenerates flagged sections — clean sections are preserved.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, passed: true, issues_found: 0, status: 'ready_to_post' }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await factCheckDraft(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'post_to_wordpress',
+    {
+      description: 'Post a clean draft to WordPress as a draft post. Never publishes directly. Only works when draft has passed fact check. Returns the WordPress draft URL for Derek to review.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+        title: z.string().optional().describe('Override the outline title suggestion'),
+        categories: z.array(z.string()).optional().describe('WordPress category names'),
+        tags: z.array(z.string()).optional().describe('WordPress tag names'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, wp_post_id: 12345, wp_post_url: 'https://altwire.net/?p=12345', status: 'posted' }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await postToWordPress(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'log_editorial_decision',
+    {
+      description: 'Record Derek\'s feedback or decision on any stage of the pipeline. Use for explicit feedback, cancellations, or supplemental decisions.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+        stage: z.enum(['outline', 'draft', 'post', 'feedback']).describe('Pipeline stage'),
+        decision: z.enum(['approved', 'rejected', 'modified', 'cancelled']).describe('Editorial decision'),
+        feedback: z.string().optional().describe('Derek\'s notes'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, decision_id: 1 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await logEditorialDecision(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_article_assignment',
+    {
+      description: 'Fetch full details of a specific assignment including research context, outline, draft status, and decision history.',
+      inputSchema: {
+        id: z.number().int().positive().describe('Assignment ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, id: params.id, topic: 'Test Topic', status: 'outline_ready', decisions: [] }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getAssignment(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'list_article_assignments',
+    {
+      description: 'List active assignments with optional filters by status or type. By default excludes posted and cancelled.',
+      inputSchema: {
+        status: z.string().optional().describe('Filter by pipeline status'),
+        article_type: z.enum(['article', 'review', 'interview', 'feature']).optional().describe('Filter by article type'),
+        limit: z.number().int().min(1).max(50).default(20).optional().describe('Results per page (default 20, max 50)'),
+        offset: z.number().int().min(0).default(0).optional().describe('Pagination offset'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignments: [], count: 0, total: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await listAssignments(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
   return server;
 }
 
@@ -742,13 +918,24 @@ const httpServer = createServer(async (req, res) => {
     // GET /hal/writer/assignments
     if (url.pathname === '/hal/writer/assignments' && req.method === 'GET') {
       try {
+        const statusFilter = url.searchParams.get('status');
+        const typeFilter = url.searchParams.get('article_type');
+        const conditions = [];
+        const values = [];
+        let idx = 1;
+        if (statusFilter) { conditions.push(`status = $${idx++}`); values.push(statusFilter); }
+        if (typeFilter) { conditions.push(`article_type = $${idx++}`); values.push(typeFilter); }
+        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         const { rows } = await pool.query(
-          'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
-          ['altus', 'altus:writer_assignments']
+          `SELECT id, topic, article_type, status, draft_word_count, wp_post_url, created_at, updated_at
+           FROM altus_assignments
+           ${where}
+           ORDER BY created_at DESC
+           LIMIT 50`,
+          values
         );
-        const data = rows[0]?.value ? JSON.parse(rows[0].value) : { assignments: [], count: 0 };
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
+        res.end(JSON.stringify({ assignments: rows, count: rows.length }));
       } catch (err) {
         logger.error('Writer assignments query failed', { error: err.message });
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -758,22 +945,26 @@ const httpServer = createServer(async (req, res) => {
     }
 
     // GET /hal/writer/assignments/:id
-    const assignmentMatch = url.pathname.match(/^\/hal\/writer\/assignments\/(.+)$/);
+    const assignmentMatch = url.pathname.match(/^\/hal\/writer\/assignments\/(\d+)$/);
     if (assignmentMatch && req.method === 'GET') {
-      const id = decodeURIComponent(assignmentMatch[1]);
+      const id = parseInt(assignmentMatch[1], 10);
       try {
-        const { rows } = await pool.query(
-          'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
-          ['altus', `altus:assignment:${id}`]
+        const { rows: assignmentRows } = await pool.query(
+          'SELECT * FROM altus_assignments WHERE id = $1',
+          [id]
         );
-        const data = rows[0]?.value ? JSON.parse(rows[0].value) : null;
-        if (!data) {
+        if (assignmentRows.length === 0) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ assignment: null }));
           return;
         }
+        const { rows: decisionRows } = await pool.query(
+          'SELECT * FROM altus_editorial_decisions WHERE assignment_id = $1 ORDER BY created_at ASC',
+          [id]
+        );
+        const result = { ...assignmentRows[0], decisions: decisionRows };
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
+        res.end(JSON.stringify(result));
       } catch (err) {
         logger.error('Writer assignment detail query failed', { error: err.message, id });
         res.writeHead(500, { 'Content-Type': 'application/json' });
