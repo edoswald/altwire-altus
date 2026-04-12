@@ -26,6 +26,19 @@ import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapsh
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
+import {
+  initReviewTrackerSchema,
+  createReview, updateReview, getReview, listReviews, getUpcomingReviewDeadlines,
+  logLoaner, updateLoaner, getLoaner, listLoaners, getOverdueLoaners, getUpcomingLoanerReturns,
+  addReviewNote, updateReviewNote, listReviewNotes, deleteReviewNote,
+  getEditorialDigest,
+} from './handlers/review-tracker-handler.js';
+import {
+  initWatchListSchema,
+  addWatchSubject,
+  removeWatchSubject,
+  listWatchSubjects,
+} from './handlers/altus-watch-list.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -38,6 +51,12 @@ if (process.env.DATABASE_URL) {
   });
   initAiUsageSchema().catch((err) => {
     logger.error('AI usage schema init failed', { error: err.message });
+  });
+  initReviewTrackerSchema().catch((err) => {
+    logger.error('Review tracker schema init failed', { error: err.message });
+  });
+  initWatchListSchema().catch((err) => {
+    logger.error('Watch list schema init failed', { error: err.message });
   });
   startIngestCron();
 
@@ -333,6 +352,349 @@ function createMcpServer() {
     },
     safeToolHandler(async ({ days }) => {
       const result = await getNewsPerformancePatterns();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Review & Loaner Tracker
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'altus_create_review',
+    {
+      description: 'Create a new review assignment. Reviewer defaults to Derek if not specified.',
+      inputSchema: {
+        title: z.string().describe('Review title — e.g. "Fender Telecaster Player II review"'),
+        product: z.string().optional().describe('Product or topic being reviewed'),
+        reviewer: z.string().default('Derek').optional().describe('Reviewer name — defaults to Derek'),
+        status: z.enum(['assigned', 'in_progress', 'submitted', 'editing', 'scheduled', 'published', 'cancelled']).optional().describe('Pipeline status — defaults to assigned'),
+        due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Due date — ISO YYYY-MM-DD'),
+        wp_post_id: z.number().int().optional().describe('WordPress post ID if published/scheduled'),
+        notes: z.string().optional().describe('Internal editorial notes'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: 1, title: params.title, reviewer: params.reviewer || 'Derek', status: 'assigned' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await createReview(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_update_review',
+    {
+      description: 'Update a review — change status, reassign, update due date, add editorial notes, record WordPress post ID.',
+      inputSchema: {
+        review_id: z.number().int().positive().describe('Review ID'),
+        title: z.string().optional().describe('Updated title'),
+        product: z.string().optional().describe('Updated product/topic'),
+        reviewer: z.string().optional().describe('Reassign to reviewer'),
+        status: z.enum(['assigned', 'in_progress', 'submitted', 'editing', 'scheduled', 'published', 'cancelled']).optional().describe('New pipeline status'),
+        due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Updated due date — ISO YYYY-MM-DD'),
+        wp_post_id: z.number().int().optional().describe('WordPress post ID'),
+        notes: z.string().optional().describe('Updated notes'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, status: params.status || 'assigned' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await updateReview(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_review',
+    {
+      description: 'Fetch full review details by ID.',
+      inputSchema: {
+        review_id: z.number().int().positive().describe('Review ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, title: 'Test Review', reviewer: 'Derek', status: 'assigned' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getReview(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_list_reviews',
+    {
+      description: 'List reviews with optional filters: status, reviewer.',
+      inputSchema: {
+        status: z.enum(['assigned', 'in_progress', 'submitted', 'editing', 'scheduled', 'published', 'cancelled']).optional().describe('Filter by pipeline status'),
+        reviewer: z.string().optional().describe('Filter by reviewer name'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await listReviews(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_upcoming_review_deadlines',
+    {
+      description: 'Reviews due within the next N days (default 7), excluding completed/cancelled.',
+      inputSchema: {
+        days: z.number().int().min(1).max(90).default(7).optional().describe('Lookahead window in days — default 7'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getUpcomingReviewDeadlines(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_log_loaner',
+    {
+      description: 'Log a review item received. Records whether it\'s a loaner (with optional return deadline) or a keeper. Defaults to Derek as recipient.',
+      inputSchema: {
+        item_name: z.string().describe('Item name — e.g. "Fender Telecaster Player II (Sonic Blue)"'),
+        brand: z.string().optional().describe('Brand name'),
+        borrower: z.string().default('Derek').optional().describe('Who has the item — defaults to Derek'),
+        is_loaner: z.boolean().default(true).optional().describe('true = loaner with return expected; false = keeper'),
+        expected_return_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Expected return date — ISO YYYY-MM-DD'),
+        review_id: z.number().int().positive().optional().describe('Link to a review by ID'),
+        notes: z.string().optional().describe('Notes — serial number, condition, etc.'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: 1, item_name: params.item_name, borrower: params.borrower || 'Derek', status: params.is_loaner === false ? 'kept' : 'out' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await logLoaner(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_update_loaner',
+    {
+      description: 'Update a loaner record — mark returned, convert to keeper, change return date, update status.',
+      inputSchema: {
+        loaner_id: z.number().int().positive().describe('Loaner ID'),
+        item_name: z.string().optional().describe('Updated item name'),
+        brand: z.string().optional().describe('Updated brand'),
+        borrower: z.string().optional().describe('Reassign to borrower'),
+        is_loaner: z.boolean().optional().describe('Set to false to convert to keeper'),
+        status: z.enum(['out', 'kept', 'returned', 'overdue', 'lost']).optional().describe('New status'),
+        expected_return_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Updated return date — ISO YYYY-MM-DD'),
+        actual_return_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Actual return date — auto-set when status=returned'),
+        review_id: z.number().int().positive().optional().describe('Link to a review by ID'),
+        notes: z.string().optional().describe('Updated notes'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, status: params.status || 'out' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await updateLoaner(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_loaner',
+    {
+      description: 'Fetch full details of a specific loaner item.',
+      inputSchema: {
+        loaner_id: z.number().int().positive().describe('Loaner ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, item_name: 'Test Item', borrower: 'Derek', status: 'out' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getLoaner(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_list_loaners',
+    {
+      description: 'List loaner items with optional filters: status, borrower.',
+      inputSchema: {
+        status: z.enum(['out', 'kept', 'returned', 'overdue', 'lost']).optional().describe('Filter by status'),
+        borrower: z.string().optional().describe('Filter by borrower name'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await listLoaners(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_overdue_loaners',
+    {
+      description: 'All loaner items past their expected return date not yet returned.',
+    },
+    safeToolHandler(async () => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getOverdueLoaners();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_upcoming_loaner_returns',
+    {
+      description: 'Loaner items expected back within the next N days (default 14).',
+      inputSchema: {
+        days: z.number().int().min(1).max(90).default(14).optional().describe('Lookahead window in days — default 14'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getUpcomingLoanerReturns(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_add_review_note',
+    {
+      description: 'Add a check-in note to a review. If category not specified, Hal auto-classifies it as pro/con/observation.',
+      inputSchema: {
+        review_id: z.number().int().positive().describe('Review ID to add note to'),
+        note_text: z.string().describe('The note text — e.g. "poor battery life"'),
+        category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Note category — auto-classified if omitted'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: 1, review_id: params.review_id, note_text: params.note_text, category: params.category || 'pro' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await addReviewNote(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_update_review_note',
+    {
+      description: 'Correct a note\'s text or category.',
+      inputSchema: {
+        note_id: z.number().int().positive().describe('Note ID'),
+        note_text: z.string().optional().describe('Updated note text'),
+        category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Corrected category'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: params.note_id, category: params.category || 'pro' } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await updateReviewNote(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_list_review_notes',
+    {
+      description: 'Fetch all notes for a review, optionally filtered by category. Returns counts by category.',
+      inputSchema: {
+        review_id: z.number().int().positive().describe('Review ID'),
+        category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Filter by category'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, notes: [], count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await listReviewNotes(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_delete_review_note',
+    {
+      description: 'Delete a note by ID.',
+      inputSchema: {
+        note_id: z.number().int().positive().describe('Note ID to delete'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deleted: true, note_id: params.note_id }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await deleteReviewNote(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_get_editorial_digest',
+    {
+      description: 'Full editorial status: active reviews by status, overdue items, upcoming deadlines, loaner status. Use for morning digest or on-demand check-ins.',
+    },
+    safeToolHandler(async () => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review_pipeline: {}, loaner_summary: {}, upcoming_deadlines: [], overdue_loaners: [], generated_at: new Date().toISOString() }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getEditorialDigest();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Watch List Management
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'altus_add_watch_subject',
+    {
+      description: 'Add an artist or topic to Derek\'s news monitor watch list. The news monitor cron will flag when these subjects appear in Google News search data.',
+      inputSchema: {
+        name: z.string().min(1).describe("Artist name or topic to monitor — e.g. 'Paramore', 'shoegaze'"),
+        notes: z.string().optional().describe("Optional context — e.g. 'touring in summer 2026'"),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subject: { id: 1, name: params.name, active: true, added_at: new Date().toISOString(), notes: params.notes || null } }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await addWatchSubject(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_remove_watch_subject',
+    {
+      description: 'Remove a subject from the watch list by name or ID. Subject is deactivated (not deleted) — it won\'t appear in future news monitor checks.',
+      inputSchema: {
+        id: z.number().int().positive().optional().describe('Watch list ID'),
+        name: z.string().optional().describe('Artist name or topic (case-insensitive match)'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deactivated_count: 1, subjects: [{ id: 1, name: params.name || 'Test Subject' }] }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await removeWatchSubject(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'altus_list_watch_subjects',
+    {
+      description: 'View Derek\'s current news monitor watch list. By default shows only active subjects. Pass include_inactive=true to see previously removed subjects.',
+      inputSchema: {
+        include_inactive: z.boolean().default(false).optional().describe('Include previously removed subjects. Default false.'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subjects: [], total: 0, active_count: 0 }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await listWatchSubjects(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
