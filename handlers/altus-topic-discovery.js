@@ -6,7 +6,7 @@
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
-import { searchAltwareArchive } from './altus-search.js';
+import { searchAltwireArchive } from './altus-search.js';
 import { synthesizePitches } from '../lib/synthesizer.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
 
@@ -93,7 +93,7 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
   const scored = [];
   for (const row of gscResult.rows) {
     const query = row.keys[0];
-    const archiveResult = await searchAltwareArchive({ query, limit: 3, content_type: 'all' });
+    const archiveResult = await searchAltwireArchive({ query, limit: 3, content_type: 'all' });
     const topScore = archiveResult?.results?.[0]?.weighted_score ?? 0;
     const gap = classifyCoverageGap(topScore);
 

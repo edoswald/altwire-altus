@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { logger } from './logger.js';
 import pool, { initSchema } from './lib/altus-db.js';
 import { safeToolHandler } from './lib/safe-tool-handler.js';
-import { searchAltwareArchive } from './handlers/altus-search.js';
+import { searchAltwireArchive } from './handlers/altus-search.js';
 import { reIngestHandler } from './handlers/altus-reingest.js';
 import { getArchiveStats } from './handlers/altus-stats.js';
 import { getContentByUrl } from './handlers/altus-fetch.js';
@@ -47,6 +47,7 @@ import {
   generateDraft,
   factCheckDraft,
   postToWordPress,
+  getDraftAsHtml,
   logEditorialDecision,
   getAssignment,
   listAssignments,
@@ -110,7 +111,7 @@ function createMcpServer() {
       },
     },
     safeToolHandler(async ({ query, limit, content_type }) => {
-      const result = await searchAltwareArchive({ query, limit, content_type });
+      const result = await searchAltwireArchive({ query, limit, content_type });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
@@ -817,6 +818,22 @@ function createMcpServer() {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, wp_post_id: 12345, wp_post_url: 'https://altwire.net/?p=12345', status: 'posted' }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await postToWordPress(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_draft_as_html',
+    {
+      description: 'Returns the article draft as clean HTML for copy-pasting into WordPress\'s Text/Code editor. Does not post to WordPress — just converts and returns the HTML. Available once a draft exists, regardless of pipeline status.',
+      inputSchema: {
+        assignment_id: z.number().int().positive().describe('Assignment ID'),
+      },
+    },
+    safeToolHandler(async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, topic: 'Test Topic', title_suggestion: 'Test Headline', html: '<h2>Test</h2><p>Draft content.</p>', word_count: 850, instructions: 'Copy the html field and paste into WordPress → Text/Code editor.' }) }] };
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getDraftAsHtml(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );

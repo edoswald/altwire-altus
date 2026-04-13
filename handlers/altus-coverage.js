@@ -3,7 +3,7 @@
  * Analyzes how thoroughly AltWire has covered a specific artist or topic.
  */
 
-import { searchAltwareArchive } from './altus-search.js';
+import { searchAltwireArchive } from './altus-search.js';
 import { synthesizeCoverageAssessment } from '../lib/synthesizer.js';
 import { logger } from '../logger.js';
 
@@ -41,7 +41,7 @@ export async function analyzeCoverageGaps({ subject, limit }) {
   // Use a fixed internal search depth so threshold analysis isn't starved by a small limit.
   // The user's limit controls output array sizes, not how many candidates are evaluated.
   const searchDepth = Math.max(limit, 20);
-  const searchResult = await searchAltwareArchive({ query: subject, limit: searchDepth, content_type: 'all' });
+  const searchResult = await searchAltwireArchive({ query: subject, limit: searchDepth, content_type: 'all' });
   if (searchResult.error) {
     return { error: searchResult.error };
   }

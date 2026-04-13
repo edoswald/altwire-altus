@@ -23,9 +23,9 @@ vi.mock('../handlers/altwire-gsc-client.js', () => ({
 }));
 
 // Mock archive search
-const mockSearchAltwareArchive = vi.fn();
+const mockSearchAltwireArchive = vi.fn();
 vi.mock('../handlers/altus-search.js', () => ({
-  searchAltwareArchive: mockSearchAltwareArchive,
+  searchAltwireArchive: mockSearchAltwireArchive,
 }));
 
 // Mock synthesizer
@@ -46,7 +46,7 @@ describe('altus-topic-discovery', () => {
     vi.unstubAllEnvs();
     mockQuery.mockReset();
     mockGetOpportunityZoneQueries.mockReset();
-    mockSearchAltwareArchive.mockReset();
+    mockSearchAltwireArchive.mockReset();
     mockSynthesizePitches.mockReset();
     mockLogAiUsage.mockReset();
   });
@@ -115,7 +115,7 @@ describe('altus-topic-discovery', () => {
       expect(result.opportunities).toEqual([]);
       expect(result.note).toContain('No queries found');
       expect(result.note).toContain('position 5-30');
-      expect(mockSearchAltwareArchive).not.toHaveBeenCalled();
+      expect(mockSearchAltwireArchive).not.toHaveBeenCalled();
       expect(mockSynthesizePitches).not.toHaveBeenCalled();
     });
 
@@ -131,7 +131,7 @@ describe('altus-topic-discovery', () => {
         ],
       });
       // Archive search returns low coverage
-      mockSearchAltwareArchive.mockResolvedValueOnce({
+      mockSearchAltwireArchive.mockResolvedValueOnce({
         results: [{ weighted_score: 0.1 }],
       });
       // Haiku fails
