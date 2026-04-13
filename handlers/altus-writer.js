@@ -12,6 +12,7 @@ import { logger } from '../logger.js';
 import { generate } from '../lib/writer-client.js';
 import { searchAltwireArchive } from './altus-search.js';
 import { buildAuthHeader } from '../lib/wp-client.js';
+import { markdownToHtml } from '../lib/markdown.js';
 
 // ---------------------------------------------------------------------------
 // Schema initialization
@@ -493,51 +494,30 @@ function spliceSection(markdown, heading, replacement) {
 
 
 // ---------------------------------------------------------------------------
-// markdownToHtml (non-exported helper)
+// getDraftAsHtml
 // ---------------------------------------------------------------------------
 
-function markdownToHtml(md) {
-  if (!md) return '';
-  let html = md;
+export async function getDraftAsHtml({ assignment_id }) {
+  const assignment = await fetchAssignment(assignment_id);
+  if (!assignment) return { error: 'assignment_not_found', assignment_id };
+  if (!assignment.draft_content) return {
+    error: 'no_draft_content',
+    assignment_id,
+    message: 'This assignment does not have a draft yet. Run generate_article_draft first.',
+  };
 
-  // Headings (must come before paragraph processing)
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  const outline = typeof assignment.outline === 'string'
+    ? JSON.parse(assignment.outline) : assignment.outline;
 
-  // Bold (before italic to avoid conflict)
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-  // Italic
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-
-  // Unordered lists
-  html = html.replace(/(?:^- .+$\n?)+/gm, (block) => {
-    const items = block.trim().split('\n').map((line) => `<li>${line.replace(/^- /, '')}</li>`).join('');
-    return `<ul>${items}</ul>`;
-  });
-
-  // Ordered lists
-  html = html.replace(/(?:^\d+\. .+$\n?)+/gm, (block) => {
-    const items = block.trim().split('\n').map((line) => `<li>${line.replace(/^\d+\. /, '')}</li>`).join('');
-    return `<ol>${items}</ol>`;
-  });
-
-  // Paragraphs — split on double newlines, wrap non-tag lines in <p>
-  html = html
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => {
-      if (/^<(h[1-3]|ul|ol|p)/.test(block)) return block;
-      return `<p>${block.replace(/\n/g, ' ')}</p>`;
-    })
-    .join('\n');
-
-  return html;
+  return {
+    success: true,
+    assignment_id: assignment.id,
+    topic: assignment.topic,
+    title_suggestion: outline?.title_suggestion || assignment.topic,
+    html: markdownToHtml(assignment.draft_content),
+    word_count: assignment.draft_word_count,
+    instructions: 'Copy the html field and paste into WordPress → Text/Code editor. The title_suggestion is not included in the HTML — set it as the post title in WordPress.',
+  };
 }
 
 // ---------------------------------------------------------------------------
