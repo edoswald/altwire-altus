@@ -1,7 +1,8 @@
 /**
- * Altus MCP Server — AltWire RAG Foundation
+ * Altus MCP Server — AltWire AI Operations
  *
- * Exposes one tool: search_altwire_archive
+ * 45 tools: RAG archive, analytics, editorial intelligence, review tracker,
+ * watch list, and AI Writer pipeline.
  * Transport: StreamableHTTP (stateless — sessionIdGenerator: undefined)
  * Health: GET /health
  */
@@ -335,7 +336,7 @@ function createMcpServer() {
       },
     },
     safeToolHandler(async ({ days }) => {
-      const result = await getNewsOpportunities();
+      const result = await getNewsOpportunities({ days });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
@@ -367,7 +368,7 @@ function createMcpServer() {
       },
     },
     safeToolHandler(async ({ days }) => {
-      const result = await getNewsPerformancePatterns();
+      const result = await getNewsPerformancePatterns({ days });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
@@ -944,7 +945,8 @@ const httpServer = createServer(async (req, res) => {
         if (typeFilter) { conditions.push(`article_type = $${idx++}`); values.push(typeFilter); }
         const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         const { rows } = await pool.query(
-          `SELECT id, topic, article_type, status, draft_word_count, wp_post_url, created_at, updated_at
+          `SELECT id, topic, article_type, status, draft_word_count, wp_post_url, created_at, updated_at,
+                  outline->>'title_suggestion' AS title_suggestion
            FROM altus_assignments
            ${where}
            ORDER BY created_at DESC
