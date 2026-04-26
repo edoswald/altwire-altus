@@ -89,7 +89,7 @@ if (process.env.DATABASE_URL) {
 // ---------------------------------------------------------------------------
 // MCP Server factory — new instance per stateless request
 // ---------------------------------------------------------------------------
-function createMcpServer() {
+async function createMcpServer() {
   const server = new McpServer({
     name: 'altwire-altus',
     version: '1.0.0',
@@ -893,6 +893,46 @@ function createMcpServer() {
     })
   );
 
+  // -------------------------------------------------------------------------
+  // Monitoring & Morning Digest
+  // -------------------------------------------------------------------------
+
+  const { getAltwireUptime, getAltwireIncidents } = await import('./handlers/altus-monitoring.js');
+  const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+
+  server.registerTool(
+    'get_altwire_uptime',
+    {
+      description: 'Live status of AltWire\'s uptime monitors — altwire.net and WP Cron. Returns overall health and per-monitor status.',
+    },
+    safeToolHandler(async () => {
+      const result = await getAltwireUptime();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_altwire_incidents',
+    {
+      description: 'Open (unresolved) incidents on AltWire\'s Better Stack monitors. Returns empty list when all is well.',
+    },
+    safeToolHandler(async () => {
+      const result = await getAltwireIncidents();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_altwire_morning_digest',
+    {
+      description: 'Full AltWire morning briefing — site uptime, open incidents, today\'s news alerts, story opportunities, upcoming review deadlines, overdue loaners, and yesterday\'s traffic. Use at the start of a session or when Derek asks for a status overview.',
+    },
+    safeToolHandler(async () => {
+      const result = await getAltwireMorningDigest();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
   return server;
 }
 
@@ -1028,7 +1068,7 @@ const httpServer = createServer(async (req, res) => {
 
   // MCP endpoint — stateless POST
   if (url.pathname === '/' || url.pathname === '/mcp') {
-    const server = createMcpServer();
+    const server = await createMcpServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless — prevents Claude.ai session caching issues
     });
