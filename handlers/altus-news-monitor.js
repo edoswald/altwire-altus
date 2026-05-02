@@ -22,9 +22,11 @@ export function matchesWatchList(query, watchItems) {
 
 /**
  * Fetch News opportunities — GSC News data cross-referenced with watch list.
+ * @param {object} [params]
+ * @param {number} [params.days=7] — Lookback window in days (1–30)
  * @returns {Promise<object>}
  */
-export async function getNewsOpportunities() {
+export async function getNewsOpportunities({ days = 7 } = {}) {
   if (process.env.TEST_MODE === 'true') {
     return {
       success: true,
@@ -39,10 +41,11 @@ export async function getNewsOpportunities() {
     return { error: 'Database not configured' };
   }
 
-  // Compute date range — last 7 days
+  // Compute date range — last N days
+  const safeDays = Math.max(1, Math.min(30, days));
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setDate(endDate.getDate() - 7);
+  startDate.setDate(endDate.getDate() - safeDays);
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 

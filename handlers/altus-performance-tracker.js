@@ -104,9 +104,11 @@ export async function getArticlePerformance({ article_url, snapshot_type } = {})
 
 /**
  * Get News performance patterns — which content types get News pickup.
+ * @param {object} [params]
+ * @param {number} [params.days=30] — Lookback window in days (7–90)
  * @returns {Promise<object>}
  */
-export async function getNewsPerformancePatterns() {
+export async function getNewsPerformancePatterns({ days = 30 } = {}) {
   if (process.env.TEST_MODE === 'true') {
     return {
       success: true,
@@ -121,10 +123,11 @@ export async function getNewsPerformancePatterns() {
     return { error: 'Database not configured' };
   }
 
-  // Compute date range — last 30 days
+  // Compute date range — last N days
+  const safeDays = Math.max(7, Math.min(90, days));
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setDate(endDate.getDate() - 30);
+  startDate.setDate(endDate.getDate() - safeDays);
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 
