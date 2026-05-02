@@ -1066,6 +1066,29 @@ const httpServer = createServer(async (req, res) => {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // AltWire REST endpoints — authenticated via HAL_KEY
+  // ---------------------------------------------------------------------------
+  // GET /altwire/digest — full morning digest (auth via Authorization header)
+  if (url.pathname === '/altwire/digest' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const digest = await getAltwireMorningDigest();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(digest));
+    } catch (err) {
+      logger.error('AltWire digest endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'digest_failed', message: 'Digest temporarily unavailable' }));
+    }
+    return;
+  }
+
   // MCP endpoint — stateless POST
   if (url.pathname === '/' || url.pathname === '/mcp') {
     const server = await createMcpServer();
