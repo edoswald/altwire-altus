@@ -23,4 +23,16 @@ export const LABEL_MAP = {
   get_altwire_uptime: 'Checking site uptime',
   get_altwire_incidents: 'Checking open incidents',
   get_altwire_morning_digest: 'Generating morning digest',
+
+  // Chart generation
+  generate_chart: 'Rendering chart',
+
+  // Slack status
+  post_slack_status: 'Posting to Slack',
+  get_slack_post_history: 'Fetching Slack history',
+
+  // Agent memory
+  hal_read_memory: 'Reading memory',
+  hal_write_memory: 'Writing memory',
+  hal_list_memory: 'Listing memory',
 };
