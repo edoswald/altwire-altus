@@ -13,6 +13,7 @@ import { generate } from '../lib/writer-client.js';
 import { searchAltwireArchive } from './altus-search.js';
 import { buildAuthHeader } from '../lib/wp-client.js';
 import { markdownToHtml } from '../lib/markdown.js';
+import { getDerekAuthorProfile } from '../hal-harness.js';
 
 // ---------------------------------------------------------------------------
 // Schema initialization
@@ -317,13 +318,19 @@ export async function generateDraft({ assignment_id }) {
   const reviewNotesPrompt = reviewNotes ? formatReviewNotes(reviewNotes) : '';
   const archiveContext = formatArchiveForPrompt(assignment.archive_research, 2);
 
+  // Load Derek's author profile for voice injection
+  const authorProfile = await getDerekAuthorProfile();
+  const voiceDirective = authorProfile?.what_to_preserve_in_ai_drafts
+    ? `\n\nVoice directive from Derek: ${authorProfile.what_to_preserve_in_ai_drafts}`
+    : '';
+
   const outlineFormatted = (outline.sections || [])
     .map((s) => `## ${s.title}\n${(s.points || []).map((p) => `- ${p}`).join('\n')}`)
     .join('\n\n');
 
   const system = `You are a staff writer for AltWire, an independent music news publication.
 Write in AltWire's voice: direct, knowledgeable, conversational. Music-literate readers who follow indie and alternative scenes. No filler. No hollow superlatives. Lead with the most interesting thing. Active voice. Concrete details over vague praise.
-Target length: ${outline.estimated_words || 800} words.`;
+Target length: ${outline.estimated_words || 800} words.${voiceDirective}`;
 
   const prompt = `Write a ${assignment.article_type} about: ${assignment.topic}
 

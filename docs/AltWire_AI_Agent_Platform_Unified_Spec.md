@@ -1,6 +1,6 @@
 # AltWire AI Agent Platform
 ## Unified Specification — Altus MCP Server
-## April 13, 2026 — v0.4
+## May 3, 2026 — v0.5
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Component | Description | Status |
 |---|---|---|
-| Altus MCP Server | AltWire-dedicated MCP server on Railway — 45 tools | LIVE at altwire-altus-production.up.railway.app |
+| Altus MCP Server | AltWire-dedicated MCP server on Railway — 57 tools | LIVE at altwire-altus-production.up.railway.app |
 | PostgreSQL | Shared Railway instance — `altus_` table prefix | LIVE |
 | RAG Archive | Semantic search over AltWire's ~1,566 post archive | LIVE |
 | Analytics Layer | Matomo + GSC tools for editorial performance | LIVE |
@@ -18,6 +18,11 @@
 | AI Writer | Topic → outline → draft → fact-check → WordPress pipeline — 10 tools | LIVE |
 | WordPress Plugin | Altus RAG Gallery Endpoint — NextGEN metadata REST API | LIVE |
 | Editorial Decisions Log | Tracks Derek's accept/reject decisions across the AI Writer pipeline | LIVE — part of AI Writer |
+| Morning Digest | Aggregated daily briefing from 7 data sources | LIVE |
+| Better Stack Monitoring | Uptime and incident monitoring for altwire.net and WP Cron | LIVE |
+| Slack Integration | Hal-initiated Slack status posts with channel routing | LIVE |
+| Hal Agent Memory | Read/write/list/delete for Hal soul and editorial context | LIVE |
+| Chart Generation | Inline chart spec generator for Hal Chat UI | LIVE |
 
 ---
 
@@ -27,7 +32,7 @@ Altus is AltWire's dedicated AI operations server. It runs independently from Ci
 
 A Latin adjective meaning "high," "tall," "lofty,", "deep," or "profound," the selection of Altus is also a nod to the potentially business-changing nature of this project for AltWire's future and competitiveness in an saturated vertical.
 
-Multiple news organizations have tried over the years with AI-assisted newswriting, most of them  failing. The issue was context: those LLMs knew only of the task at hand, but little about the topic, the site it was writing for, or the style expected. Hal and Altus are a different concept.
+Multiple news organizations have tried over the years with AI-assisted newswriting, most of them failing. The issue was context: those LLMs knew only of the task at hand, but little about the topic, the site it was writing for, or the style expected. Hal and Altus are a different concept.
 
 Hal is the orchestrator: Altus is the ground truth that provides context to the AI at the right time. It is a set of specialized tools for a variety of common editorial functions. The LLM no longer has to guess what AltWire writers and admins want.
 
@@ -45,7 +50,7 @@ Hal connects to Altus the same way it connects to other services. From Derek's p
 
 | Repo | URL | Notes |
 |---|---|---|
-| altwire-altus | github.com/edoswald/altwire-altus | Altus MCP server — index.js, 45 tools |
+| altwire-altus | github.com/edoswald/altwire-altus | Altus MCP server — index.js, 57 tools |
 
 ---
 
@@ -57,6 +62,7 @@ Hal connects to Altus the same way it connects to other services. From Derek's p
 | MCP endpoint | `https://altwire-altus-production.up.railway.app` |
 | Health endpoint | `GET /health` — returns `{ status: 'ok', service: 'altus' }` |
 | Database | Shared Railway PostgreSQL — `altus_` table prefix |
+| Database URL env | `ALTWIRE_DATABASE_URL` (preferred) or `DATABASE_URL` (fallback) |
 | Embeddings | Voyage AI `voyage-3-lite` (512 dimensions) |
 | AI model (lightweight) | `claude-haiku-4-5-20251001` |
 | AI model (writer) | Configurable via `ALTUS_WRITER_MODEL` — default `claude-sonnet-4-5` |
@@ -80,22 +86,24 @@ await server.connect(transport);
 await transport.handleRequest(req, res);
 ```
 
-## 2.2 Writer REST Endpoints
+## 2.2 REST Endpoints
 
-Altus exposes authenticated REST endpoints for the AI Writer UI under `/hal/writer/*`. All require `Authorization: Bearer <ALTUS_ADMIN_TOKEN>`. CORS enabled.
+Altus exposes authenticated REST endpoints for the AI Writer UI under `/hal/writer/*` and a morning digest endpoint under `/altwire/digest`. Writer endpoints require `Authorization: Bearer <ALTUS_ADMIN_TOKEN>`. CORS enabled on writer routes.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/hal/writer/assignments` | GET | List all article assignments from `altus_assignments` — supports `?status=` and `?article_type=` filters |
-| `/hal/writer/assignments/:id` | GET | Single assignment detail with joined `altus_editorial_decisions` |
-| `/hal/writer/opportunities` | GET | Story opportunities (delegates to `getStoryOpportunities`) |
-| `/hal/writer/news-alerts` | GET | Today's news monitor alerts from `agent_memory` |
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/hal/writer/assignments` | GET | Bearer ALTUS_ADMIN_TOKEN | List all article assignments from `altus_assignments` — supports `?status=` and `?article_type=` filters |
+| `/hal/writer/assignments/:id` | GET | Bearer ALTUS_ADMIN_TOKEN | Single assignment detail with joined `altus_editorial_decisions` |
+| `/hal/writer/opportunities` | GET | Bearer ALTUS_ADMIN_TOKEN | Story opportunities (delegates to `getStoryOpportunities`) |
+| `/hal/writer/news-alerts` | GET | Bearer ALTUS_ADMIN_TOKEN | Today's news monitor alerts from `agent_memory` |
+| `/altwire/digest` | GET | Bearer any HAL_KEY | Full morning digest — site uptime, incidents, news alerts, story opportunities, review deadlines, overdue loaners, yesterday's traffic |
+| `/slack/events` | POST | Slack signature | Slack event callback endpoint — handles url_verification and event_callback payloads |
 
 ---
 
 # 3. Database Schema
 
-All tables use `altus_` prefix. Auto-created at server startup via `initSchema()`, `initAiUsageSchema()`, `initReviewTrackerSchema()`, `initWatchListSchema()`, and `initWriterSchema()` — no manual migration needed. All DDL uses `IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS`.
+All tables use `altus_` prefix unless noted otherwise. Auto-created at server startup via `initSchema()`, `initAiUsageSchema()`, `initReviewTrackerSchema()`, `initWatchListSchema()`, `initWriterSchema()`, and `initSlackAltusSchema()` — no manual migration needed. All DDL uses `IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS`.
 
 ## 3.1 `altus_content`
 
@@ -192,10 +200,13 @@ AI API cost tracking — shared table (no `altus_` prefix). Wired into all Anthr
 
 ## 3.6 `agent_memory` *(shared table)*
 
-Used for caching story opportunities, news alerts, and writer assignments. Keyed by `agent='altus'`.
+Key/value store for Hal agent identity, soul blocks, onboarding state, editorial context, story opportunity cache, and news alert cache. Keyed by `agent='hal'` or `agent='altus'`.
 
 | Key Pattern | Description |
 |---|---|
+| `hal:soul:altwire` | Initial Hal soul for AltWire editorial context (access_count=999 sentinel) |
+| `hal:altwire:editorial_context` | Corpus analysis output — editorial identity, tone, article types, subjects, headline patterns |
+| `hal:altwire:derek_author_profile` | Derek's author profile from corpus analysis |
 | `altus:story_opportunities:{date}` | Cached daily story opportunity results |
 | `altus:news_alert:{date}` | Daily news monitor cron output |
 
@@ -323,11 +334,30 @@ Derek's accept/reject/modify decisions across the AI Writer pipeline. Accumulate
 
 **Indexes:** `altus_editorial_decisions_assignment_idx`
 
+## 3.13 `hal_slack_posts`
+
+Record of Hal-initiated Slack status posts. Created by `initSlackAltusSchema()` at startup. Used by `getSlackPostHistory` to query recent posts.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| channel_id | VARCHAR(255) NOT NULL | Slack channel ID |
+| message_ts | VARCHAR(255) NOT NULL | Slack message timestamp |
+| severity | VARCHAR(20) NOT NULL | `normal` or `urgent` |
+| message_text | TEXT | Plain text of the posted message |
+| processed_reply_ts | TEXT[] NOT NULL | Timestamps of threaded replies (for future use) |
+| metadata | JSONB | Optional structured metadata |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+
+**Constraints:** `UNIQUE(channel_id, message_ts)`
+
+**Indexes:** `idx_hal_slack_posts_channel_ts` on `(channel_id, message_ts)`
+
 ---
 
 # 4. Tool Catalog
 
-All tools live in `index.js` on altwire-altus. All use `safeToolHandler` wrapper. All `DATABASE_URL` guarded where they require PostgreSQL. Tool registration uses `server.registerTool()` with Zod input schemas.
+All tools live in `index.js` on altwire-altus. All use `safeToolHandler` wrapper. All database-guarded tools check `DATABASE_URL` before executing. Tool registration uses `server.registerTool()` with Zod input schemas.
 
 ## 4.1 RAG Archive Tools
 
@@ -783,6 +813,156 @@ Returns: `{ assignments[], count, total }`.
 
 ---
 
+## 4.8 Chart Generation Tool
+
+Handler: `hal-chart.js`
+
+Pure function — no database, no async. Validates and structures chart data for rendering by the ChartArtifact component in hal-chat-ui.
+
+### generate_chart
+
+Render a chart inline in the Chat UI using data already in context. Use ONLY after fetching the underlying data — do not call this tool without data to chart. Supported types: `line` (trends over time), `bar` (category comparisons), `pie` (proportions, max 6 segments).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| chart_type | enum `line\|bar\|pie` | required | Chart type |
+| title | string | required | Chart title (max 120 chars) |
+| description | string | optional | Subtitle or context note (max 240 chars) |
+| x_label | string | optional | X-axis label (line and bar only, max 60 chars) |
+| y_label | string | optional | Y-axis label (line and bar only, max 60 chars) |
+| series | string[] | optional | Series names for multi-series charts (max 4) |
+| data | array | required | Data array. Single-series: `[{x, value}]`. Multi-series: `[{x, seriesName1, seriesName2}]`. Pie: `[{name, value}]`. Max 200 points. |
+
+Returns: `{ success, chart_spec: true, chart_type, title, description, x_label, y_label, series, data }` or `{ success: false, exit_reason: 'validation_error', message }`.
+
+---
+
+## 4.9 Better Stack Monitoring Tools
+
+Handler: `handlers/altus-monitoring.js`
+
+Uses Better Stack API (read-only token). Fetches live uptime and incident data for AltWire's monitors.
+
+| Monitor ID | What it watches |
+|---|---|
+| `1881007` | altwire.net uptime |
+| `2836297` | AltWire WP Cron |
+
+### get_altwire_uptime
+
+Live status of AltWire's uptime monitors — altwire.net and WP Cron. Returns overall health and per-monitor status.
+
+Returns: `{ site: { status, last_checked_at, url }, wp_cron: { status, last_checked_at, url } }`.
+
+### get_altwire_incidents
+
+Open (unresolved) incidents on AltWire's Better Stack monitors. Returns empty list when all is well.
+
+Returns: `{ site: [{ name, started_at, cause }], wp_cron: [{ name, started_at, cause }] }`.
+
+---
+
+## 4.10 Morning Digest Tool
+
+Handler: `handlers/altus-digest.js`
+
+Aggregates 7 data sources into a single daily briefing. Uses `Promise.allSettled` so individual source failures never block the digest.
+
+### get_altwire_morning_digest
+
+Full AltWire morning briefing — site uptime, open incidents, today's news alerts, story opportunities, upcoming review deadlines, overdue loaners, and yesterday's traffic. Use at the start of a session or when Derek asks for a status overview. Results are not cached — always fetches fresh data.
+
+Returns: `{ date, generated_at, uptime: { site, wp_cron }, incidents: { site, wp_cron }, news_alerts, story_opportunities: { count, top[] }, review_deadlines: { reviews[], count }, overdue_loaners: { loaners[], count }, traffic, warnings[] }`.
+
+---
+
+## 4.11 Slack Integration Tools
+
+Handler: `handlers/slack-altus.js`
+
+Provides outbound status posting from Hal to Slack. Uses `@slack/bolt` with a no-op receiver and manual HTTP request processing via `handleSlackRequest`. Does NOT bridge incoming Slack events into the agent — that requires hal-harness.js which is nimbus-specific.
+
+Channel routing is automatic by `post_type`:
+- `status_update`, `alert`, `incident_resolved`, `task_complete`, `observation` → `#admin-announcements`
+- `dave_digest` → `#bug-reports`
+- `channel_override` bypasses routing
+
+### post_slack_status
+
+Post a status update to Slack. Channel routing is automatic by post_type. Posts are recorded in `hal_slack_posts` for audit.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| text | string | required | Status update text to post |
+| post_type | enum `status_update\|alert\|incident_resolved\|task_complete\|observation\|dave_digest` | `status_update` | Determines routing |
+| emoji | string | `:information_source:` | Lead emoji. `:white_check_mark:` resolved, `:warning:` alert, `:hammer_and_wrench:` task, `:bar_chart:` digest |
+| severity | enum `normal\|urgent` | `normal` | Urgent posts bypass quiet hours |
+| channel_override | string | optional | Post directly to a channel ID |
+
+Returns: `{ posted, ts, channel }` or `{ posted: false, reason }`.
+
+### get_slack_post_history
+
+Query recent Hal-initiated Slack status posts from the `hal_slack_posts` table.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| limit | integer | 10 | Number of posts to return (max 50) |
+| severity_filter | enum `normal\|urgent` | optional | Filter by severity |
+
+Returns: Array of post records ordered by `created_at` DESC.
+
+---
+
+## 4.12 Hal Agent Memory Tools
+
+Handler: `handlers/hal-memory.js`
+
+Memory read/write/list/delete tools scoped to the Hal agent. Used to access `hal:soul:altwire`, `hal:altwire:editorial_context`, and other Hal memory keys. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be deleted or overwritten via `hal_write_memory`.
+
+### hal_read_memory
+
+Read a single Hal agent memory entry by key. Use to retrieve `hal:soul:altwire`, `hal:altwire:editorial_context`, or any other Hal memory key.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| key | string | required | Memory key — e.g. `hal:soul:altwire`, `hal:altwire:editorial_context` |
+
+Returns: `{ success: true, agent, key, value, updated_at }` or `{ success: false, exit_reason: 'not_found', message }`.
+
+### hal_write_memory
+
+Write a Hal agent memory entry. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be overwritten — use the seed script to update soul values.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| key | string | required | Memory key |
+| value | string | required | Value to store |
+
+Returns: `{ success: true, agent, key }` or `{ success: false, exit_reason: 'protected_key', message }`.
+
+### hal_list_memory
+
+List all Hal agent memory keys and values, newest first.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| limit | integer | 50 | Max entries to return (max 100) |
+
+Returns: `{ success: true, entries: [{ key, value, updated_at }], total }`.
+
+### hal_delete_memory
+
+Delete a memory entry by key. Protected keys cannot be deleted.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| key | string | required | Memory key to delete |
+
+Returns: `{ success: true, deleted: boolean, reason? }`.
+
+---
+
 # 5. Tool Count Summary
 
 | Section | Status | Count |
@@ -794,7 +974,12 @@ Returns: `{ assignments[], count, total }`.
 | Review & Loaner Tracker | LIVE | 16 |
 | Watch List | LIVE | 3 |
 | AI Writer | LIVE | 10 |
-| **Total live** | | **45** |
+| Chart Generation | LIVE | 1 |
+| Better Stack Monitoring | LIVE | 2 |
+| Morning Digest | LIVE | 1 |
+| Slack Integration | LIVE | 2 |
+| Hal Agent Memory | LIVE | 4 |
+| **Total live** | | **57** |
 
 ---
 
@@ -812,7 +997,7 @@ All cron jobs are registered at startup in `index.js`, gated by `DATABASE_URL` p
 
 Spawns `scripts/ingest.js` as a child process. Pulls all published posts via WordPress REST API and all galleries via the custom `altus/v1/galleries` endpoint. Generates Voyage AI embeddings and upserts to `altus_content`. Gallery descriptions are synthesized via Claude Haiku when metadata is sparse. Logs results to `altus_ingest_log`.
 
-Required env vars: `DATABASE_URL`, `ALTWIRE_WP_URL`, `ALTWIRE_WP_USER`, `ALTWIRE_WP_APP_PASSWORD`, `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`.
+Required env vars: `DATABASE_URL` (or `ALTWIRE_DATABASE_URL`), `ALTWIRE_WP_URL`, `ALTWIRE_WP_USER`, `ALTWIRE_WP_APP_PASSWORD`, `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`.
 
 ## 6.2 Performance Snapshot Collection (06:00 ET)
 
@@ -873,6 +1058,7 @@ Derek connects to Hal with `HAL_KEY_DEREK_WEB` (operational scope) or `HAL_KEY_D
 - Editorial focus: indie rock, alternative, emerging artists
 - Analytics preference: article-level breakdown, not site-wide averages
 - Avoid long preambles
+- Slack-first workflow
 
 ## 8.2 Domain Context (for future prompt assembly)
 
@@ -882,12 +1068,9 @@ When the four-layer Hal framework prompt assembly is implemented (see `hal_frame
 - Metric interpretation rules (bounce rate, Discover, social traffic — see §4.2)
 - Reflection analyst context: interpret data through editorial/audience lens, not e-commerce lens
 
-## 8.3 Better Stack Monitors
+## 8.3 Soul Seeding and Editorial Context
 
-| Monitor ID | What it watches |
-|---|---|
-| `1881007` | altwire.net uptime |
-| `2836297` | AltWire WP Cron |
+The Hal soul for AltWire (`hal:soul:altwire`) is seeded at first deployment via `scripts/seed-hal-soul-altwire.js`. The editorial context object (`hal:altwire:editorial_context`) is generated by `scripts/analyze-rag-corpus.js` using a two-model approach (MiniMax for iterative drafts, Opus 4 for production output). The seed script is idempotent — it skips if the soul already exists.
 
 ---
 
@@ -895,9 +1078,10 @@ When the four-layer Hal framework prompt assembly is implemented (see `hal_frame
 
 ```
 altwire-altus/
-├── index.js                           # Tool registry — 45 tools, HTTP server, cron registration
+├── index.js                           # Tool registry — 57 tools, HTTP server, cron registration
 ├── logger.js                          # Structured JSON logger (stderr only)
 ├── hal-labels.js                      # AI Writer tool display labels for UI
+├── hal-chart.js                       # Chart spec generator for Hal Chat UI
 │
 ├── handlers/
 │   ├── altus-search.js                # search_altwire_archive — semantic search with recency weighting
@@ -908,14 +1092,18 @@ altwire-altus/
 │   ├── altus-topic-discovery.js       # get_story_opportunities — GSC × archive cross-reference
 │   ├── altus-news-monitor.js          # get_news_opportunities — GSC News × watch list
 │   ├── altus-performance-tracker.js   # get_article_performance, get_news_performance_patterns, cron
+│   ├── altus-monitoring.js            # Better Stack uptime and incident fetchers
+│   ├── altus-digest.js                # Morning digest aggregator — 7 data sources
 │   ├── altwire-matomo-client.js       # Matomo Reporting API — 4 analytics tools
-│   ├── altwire-gsc-client.js         # Google Search Console API — search, opportunities, sitemap, news
+│   ├── altwire-gsc-client.js         # Google Search Console API — search, opportunities, sitemap
 │   ├── review-tracker-handler.js      # Review, loaner, note CRUD + editorial digest — 16 tools
 │   ├── altus-watch-list.js            # Watch list CRUD — 3 tools
-│   └── altus-writer.js               # AI Writer pipeline — 10 tools (assignment → outline → draft → post)
+│   ├── altus-writer.js               # AI Writer pipeline — 10 tools (assignment → outline → draft → post)
+│   ├── slack-altus.js                 # Slack integration — outbound status posting, hal_slack_posts
+│   └── hal-memory.js                  # Hal agent memory read/write/list/delete — 4 tools
 │
 ├── lib/
-│   ├── altus-db.js                    # PostgreSQL pool (singleton), schema init, upsertContent
+│   ├── altus-db.js                    # PostgreSQL pool (named + default export), schema init, upsertContent
 │   ├── ai-cost-tracker.js             # AI usage cost tracking (ai_usage table)
 │   ├── safe-tool-handler.js           # safeToolHandler wrapper — try/catch with structured error
 │   ├── synthesizer.js                 # Claude Haiku synthesis — galleries, coverage, pitches
@@ -927,7 +1115,10 @@ altwire-altus/
 │   └── markdown.js                    # Shared markdown-to-HTML converter (regex-based, no deps)
 │
 ├── scripts/
-│   └── ingest.js                      # Standalone ingest script (spawned by cron)
+│   ├── ingest.js                      # Standalone ingest script (spawned by cron)
+│   ├── analyze-rag-corpus.js         # Two-model corpus analysis → hal:altwire:editorial_context
+│   ├── seed-hal-soul-altwire.js      # Initial Hal soul seeding for AltWire
+│   └── test-seed-prereqs.js          # Prerequisite validation before seeding
 │
 ├── tests/
 │   ├── *.unit.test.js                 # Vitest unit tests
@@ -944,7 +1135,7 @@ altwire-altus/
 │   └── superpowers/plans/                          # Historical planning documents
 │
 ├── .env.example                       # Reference for all required env vars
-├── package.json                       # ESM, Node ≥ 20, vitest + fast-check
+├── package.json                       # ESM, Node ≥ 20, vitest + fast-check + @slack/bolt
 ├── railway.toml                       # Railway deployment config
 └── nixpacks.toml                      # Build config — nodejs_22, npm-10_x
 ```
@@ -957,16 +1148,18 @@ altwire-altus/
 |---|---|
 | Runtime | Node.js ≥ 20 (ESM — all files use `import`/`export`) |
 | MCP SDK | `@modelcontextprotocol/sdk` — McpServer, StreamableHTTPServerTransport |
-| Database | PostgreSQL via `pg` pool — `DATABASE_URL` env var |
+| Database | PostgreSQL via `pg` pool — `ALTWIRE_DATABASE_URL` (preferred) or `DATABASE_URL` (fallback) |
 | Vector search | pgvector extension — `vector(512)`, IVFFlat cosine index |
 | Validation | Zod for all tool input schemas |
-| HTTP | Native `node:http` createServer for both MCP transport and writer REST endpoints |
+| HTTP | Native `node:http` createServer for both MCP transport and REST endpoints |
 | Scheduling | `node-cron` for all timed jobs |
 | AI calls (lightweight) | Anthropic SDK — `claude-haiku-4-5-20251001` for synthesis and classification |
-| AI calls (writer) | `lib/writer-client.js` — routes to Anthropic or OpenAI based on `ALTUS_WRITER_MODEL` (default: `claude-sonnet-4-5`) |
+| AI calls (writer) | `lib/writer-client.js` — routes to Anthropic or OpenAI based on `ALTUS_WRITER_MODEL` |
 | AI cost tracking | All AI calls logged to `ai_usage` table via `lib/ai-cost-tracker.js` |
 | Embeddings | Voyage AI `voyage-3-lite` via REST API |
 | Analytics | Google Search Console via `googleapis`, Matomo via Reporting API |
+| Monitoring | Better Stack API (uptime, incidents) |
+| Slack | `@slack/bolt` — outbound status posting, no event bridging |
 | Testing | Vitest + `fast-check` for property-based testing |
 | Deployment | Railway (Nixpacks builder, auto-deploy on main branch push) |
 
@@ -990,7 +1183,7 @@ altwire-altus/
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Shared Railway PostgreSQL connection string |
+| `DATABASE_URL` or `ALTWIRE_DATABASE_URL` | Shared Railway PostgreSQL connection string (ALTWIRE_DATABASE_URL preferred) |
 | `ALTWIRE_WP_URL` | WordPress base URL (`https://altwire.net`) |
 | `ALTWIRE_WP_USER` | WordPress admin username |
 | `ALTWIRE_WP_APP_PASSWORD` | WordPress Application Password (spaces kept intact) |
@@ -1012,7 +1205,24 @@ altwire-altus/
 | `ALTWIRE_GSC_SERVICE_ACCOUNT_JSON` | Full JSON service account key (single line) |
 | `ALTWIRE_GSC_SITE_URL` | GSC site URL (e.g. `https://altwire.net` or `sc-domain:altwire.net`) |
 
-## 11.4 Optional
+## 11.4 Better Stack Monitoring
+
+| Variable | Purpose |
+|---|---|
+| `BETTER_STACK_TOKEN` | Read-only Better Stack API token for uptime and incident monitoring |
+
+## 11.5 Slack Integration
+
+| Variable | Purpose |
+|---|---|
+| `SLACK_BOT_TOKEN_ALTWUS` | Slack bot token for posting as the Altus app |
+| `SLACK_SIGNING_SECRET_ALTWUS` | Slack signing secret for `/slack/events` request verification |
+| `SLACK_CHANNEL_ALTWUS` | Default Slack channel for AltWire updates |
+| `SLACK_CHANNEL_ADMIN_ANNOUNCEMENTS` | Channel for status updates, alerts, incidents |
+| `SLACK_CHANNEL_BUG_REPORTS` | Channel for dave digest posts |
+| `SLACK_CHANNEL_WATERCOOLER` | Watercooler channel (reserved for future use) |
+
+## 11.6 Optional
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -1066,8 +1276,16 @@ altwire-altus/
 | `.kiro/specs/altus-topic-discovery-news-intelligence/` | Editorial intelligence spec — topic discovery, news monitor, performance tracker |
 | `.kiro/specs/altus-review-loaner-tracker/` | Review & loaner tracker spec — 16 tools, 3 tables |
 | `.kiro/specs/altus-watch-list/` | Watch list spec — 3 tools, 1 table |
-| `.kiro/specs/altus-ai-writer/` | AI Writer spec — 9 pipeline tools, 2 tables, writer-client abstraction |
+| `.kiro/specs/altus-ai-writer/` | AI Writer spec — 10 pipeline tools, 2 tables, writer-client abstraction |
 | `.kiro/specs/altus-html-export/` | HTML export spec — `get_draft_as_html` tool, shared markdown converter |
+
+### Changelog Summary (v0.4 → v0.5)
+
+- **PR #6–#13 (Morning Digest & Monitoring):** Added Better Stack uptime/incident monitoring, morning digest aggregating 7 data sources, GET `/altwire/digest` REST endpoint, Slack integration with outbound status posting and `hal_slack_posts` table, Hal agent memory tools (read/write/list/delete) for soul and editorial context seeding, chart generation tool for Hal Chat UI.
+- **PR #7 (Soul Seeding):** Added `scripts/seed-hal-soul-altwire.js` and `scripts/analyze-rag-corpus.js` for corpus-based editorial context analysis.
+- **DB fix:** Pool now prefers `ALTWIRE_DATABASE_URL` over `DATABASE_URL` for connection.
+- **Export fix:** Pool exported as both named and default export for ESM compatibility.
+- **Tool count:** 45 → 57 tools.
 
 ---
 
@@ -1075,20 +1293,23 @@ altwire-altus/
 
 - **`reingest_altwire_archive` full mode** causes MCP timeout in Claude.ai (takes 3–5 min). Always verify completion via `get_archive_stats` checking `last_ingest_run` timestamp rather than waiting for tool response.
 - **`ngg_shortcode_placeholder`** appearing in `raw_text` fields is a NextGEN Gallery embed artifact — not a data error.
-- **Table prefix is mandatory** — all new tables must use `altus_` prefix (shared Railway PostgreSQL namespace). Exception: `ai_usage` and `agent_memory` are shared tables.
+- **Table prefix is mandatory** — all new tables must use `altus_` prefix (shared Railway PostgreSQL namespace). Exception: `ai_usage` and `agent_memory` are shared tables; `hal_slack_posts` uses `hal_` prefix.
 - **Stateless transport** — `sessionIdGenerator: undefined` in `StreamableHTTPServerTransport`. Do not revert to stateful mode.
-- **Haiku model string** — `claude-haiku-4-5-20251001` (correct as of April 2026). Hardcoded in `lib/synthesizer.js`.
+- **Haiku model string** — `claude-haiku-4-5-20251001` (correct as of May 2026). Hardcoded in `lib/synthesizer.js`.
 - **Writer model string** — `claude-sonnet-4-5` default in `lib/writer-client.js`. Configurable via `ALTUS_WRITER_MODEL`.
 - **`ANTHROPIC_API_KEY` is already present** — do not add as a new env var in specs.
 - **Embedding dimension is 512** — the `altus_content.embedding` column is `vector(512)`, not 1024 as in the original draft. This matches the `voyage-3-lite` model output.
 - **GSC freshness lag** — GSC data has a ~2 day processing delay. The performance snapshot cron accounts for this by using `effectiveDate = today - 2 days`.
 - **Story opportunity caching** — `get_story_opportunities` caches results daily in `agent_memory`. Subsequent calls on the same day return cached data with `cached: true`.
-- **Watch list table** — `altus_watch_list` is now live and auto-created at startup. The news monitor cross-references it automatically. Soft-delete via `active=false` preserves historical data.
+- **Watch list table** — `altus_watch_list` is auto-created at startup. The news monitor cross-references it automatically. Soft-delete via `active=false` preserves historical data.
 - **URL normalization** — all article URLs are normalized by stripping trailing slashes via `normalizeUrl()` before storage and comparison.
 - **AI Writer pipeline is human-in-the-loop** — `approve_outline` must be called with `decision='approved'` before any draft is generated. `post_to_wordpress` creates WordPress drafts only, never published posts.
 - **Writer fact-check loop** — maximum one regeneration cycle. Initial check → regenerate flagged sections → re-check → stop. Status set to `ready_to_post` regardless of second pass result.
 - **`openai` package** — listed as a dependency in `package.json` for OpenAI provider support. Only loaded when `ALTUS_WRITER_MODEL` is set to an OpenAI model (lazy import).
-- **Writer REST endpoints** — `/hal/writer/assignments` and `/hal/writer/assignments/:id` now read from `altus_assignments` table (not `agent_memory`). Require `ALTUS_ADMIN_TOKEN` bearer auth.
+- **Writer REST endpoints** — `/hal/writer/assignments` and `/hal/writer/assignments/:id` read from `altus_assignments` table. Require `ALTUS_ADMIN_TOKEN` bearer auth.
+- **Database URL priority** — `ALTWIRE_DATABASE_URL` takes precedence over `DATABASE_URL` when both are set. Use `ALTWIRE_DATABASE_URL` for AltWire-specific connections.
+- **Slack event handling** — `slack-altus.js` handles outbound posts only. Incoming Slack events (mentions, DMs, thread replies) require hal-harness.js which is nimbus-specific and not present in altwire-altus.
+- **Protected memory keys** — `hal:soul*` and `hal:onboarding_state:*` keys cannot be deleted via `hal_delete_memory` or overwritten via `hal_write_memory`. Use `scripts/seed-hal-soul-altwire.js` for soul updates.
 
 ---
 
