@@ -57,10 +57,10 @@ import {
 
 const PORT = process.env.PORT || 3000;
 
-// ---------------------------------------------------------------------------
 // Schema init — runs once at startup
-// ---------------------------------------------------------------------------
-if (process.env.DATABASE_URL) {
+  // ---------------------------------------------------------------------------
+  const altusDbUrl = process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL;
+  if (altusDbUrl) {
   initSchema().catch((err) => {
     logger.error('Schema init failed', { error: err.message });
   });
@@ -102,7 +102,7 @@ if (process.env.DATABASE_URL) {
     }
   }, { timezone: 'America/New_York' });
 } else {
-  logger.warn('DATABASE_URL not set — skipping schema init and cron');
+  logger.warn('No database URL set — ALTWIRE_DATABASE_URL and DATABASE_URL are both empty — skipping schema init and cron');
 }
 
 // ---------------------------------------------------------------------------

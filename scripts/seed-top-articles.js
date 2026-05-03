@@ -57,8 +57,9 @@ async function writeTopArticlesKey(key, articles) {
 async function main() {
   console.log('seed-top-articles: Starting...\n');
 
-  if (!process.env.DATABASE_URL) {
-    console.error('seed-top-articles: DATABASE_URL not set — cannot seed.');
+  const dbUrl = process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL;
+  if (!dbUrl) {
+    console.error('seed-top-articles: Neither ALTWIRE_DATABASE_URL nor DATABASE_URL is set — cannot seed.');
     process.exit(1);
   }
 
