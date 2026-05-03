@@ -139,32 +139,33 @@ const TOOL_CONTEXTS = {
 const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
 
-// Schema init — runs once at startup
+// Schema init — runs once at startup (all are fire-and-forget, non-blocking)
+  // Each logs errors rather than crashing so the MCP server can start regardless.
   // ---------------------------------------------------------------------------
   const altusDbUrl = process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL;
   if (altusDbUrl) {
-  initSchema().catch((err) => {
-    logger.error('Schema init failed', { error: err.message });
-  });
-  initAiUsageSchema().catch((err) => {
-    logger.error('AI usage schema init failed', { error: err.message });
-  });
-  initReviewTrackerSchema().catch((err) => {
-    logger.error('Review tracker schema init failed', { error: err.message });
-  });
-  initWatchListSchema().catch((err) => {
-    logger.error('Watch list schema init failed', { error: err.message });
-  });
-  initWriterSchema().catch((err) => {
-    logger.error('Writer schema init failed', { error: err.message });
-  });
+    initSchema().catch((err) => {
+      logger.error('Schema init failed', { error: err.message, code: err.code });
+    });
+    initAiUsageSchema().catch((err) => {
+      logger.error('AI usage schema init failed', { error: err.message, code: err.code });
+    });
+    initReviewTrackerSchema().catch((err) => {
+      logger.error('Review tracker schema init failed', { error: err.message, code: err.code });
+    });
+    initWatchListSchema().catch((err) => {
+      logger.error('Watch list schema init failed', { error: err.message, code: err.code });
+    });
+    initWriterSchema().catch((err) => {
+      logger.error('Writer schema init failed', { error: err.message, code: err.code });
+    });
 
-  // Slack schema init (non-blocking)
-  import('./handlers/slack-altus.js')
-    .then(({ initSlackAltusSchema, initSlackAltus }) => {
-      return initSlackAltusSchema().then(() => initSlackAltus());
-    })
-    .catch(err => logger.error('slack-altus: init import failed', { error: err.message }));
+    // Slack schema init (non-blocking)
+    import('./handlers/slack-altus.js')
+      .then(({ initSlackAltusSchema, initSlackAltus }) => {
+        return initSlackAltusSchema().then(() => initSlackAltus());
+      })
+      .catch(err => logger.error('slack-altus: init import failed', { error: err.message, code: err.code, stack: err.stack }));
 
   startIngestCron();
 
@@ -1527,6 +1528,13 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'digest_failed', message: 'Digest temporarily unavailable' }));
     }
+    return;
+  }
+
+  // Health check — Railway liveness/readiness probe
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
     return;
   }
 
