@@ -91,6 +91,16 @@ if (process.env.DATABASE_URL) {
 
   // Performance Snapshot — 6 AM ET daily
   cron.schedule('0 6 * * *', () => runPerformanceSnapshotCron(), { timezone: 'America/New_York' });
+
+  // AltWire Nightly Reflection — 5 AM ET daily
+  cron.schedule('0 5 * * *', async () => {
+    try {
+      const { runAltwireReflection } = await import('./handlers/altus-reflection.js');
+      await runAltwireReflection();
+    } catch (err) {
+      logger.error('AltWire reflection cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
 } else {
   logger.warn('DATABASE_URL not set — skipping schema init and cron');
 }
@@ -1019,6 +1029,7 @@ async function createMcpServer() {
   // -------------------------------------------------------------------------
 
   const { readMemory, writeMemory, listMemory, deleteMemory } = await import('./handlers/hal-memory.js');
+  const { trackArticle, listTrackedArticles, addContentIdea, getContentIdeas } = await import('./handlers/altus-editorial-tools.js');
 
   server.registerTool(
     'hal_read_memory',
@@ -1063,6 +1074,73 @@ async function createMcpServer() {
     safeToolHandler(async ({ limit }) => {
       const rows = await listMemory();
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, entries: rows.slice(0, limit), total: rows.length }) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // ALTUS EDITORIAL TOOLS
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'track_article',
+    {
+      description: 'Track an article for performance monitoring. Stores the URL, title, category, and optional notes in agent memory.',
+      inputSchema: {
+        url: z.string().describe('Article URL — slug is derived from the URL path'),
+        title: z.string().describe('Article title'),
+        category: z.string().describe('Content category — e.g. review, interview, feature, news'),
+        notes: z.string().optional().describe('Optional editorial notes'),
+      },
+    },
+    safeToolHandler(async ({ url, title, category, notes }) => {
+      const result = await trackArticle({ url, title, category, notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'list_tracked_articles',
+    {
+      description: 'List all tracked articles, newest first. Returns URL, title, category, tracked_at, and notes.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).default(50).optional().describe('Max articles to return (default 50)'),
+      },
+    },
+    safeToolHandler(async ({ limit }) => {
+      const result = await listTrackedArticles({ limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'add_content_idea',
+    {
+      description: 'Add a new editorial content idea. Returns a UUID-keyed idea entry.',
+      inputSchema: {
+        topic: z.string().describe('The content topic or angle'),
+        angle: z.string().optional().describe('Specific angle or take'),
+        status: z.enum(['idea', 'writing', 'published']).default('idea').optional().describe('Pipeline status'),
+        notes: z.string().optional().describe('Optional notes'),
+      },
+    },
+    safeToolHandler(async ({ topic, angle, status, notes }) => {
+      const result = await addContentIdea({ topic, angle, status, notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_content_ideas',
+    {
+      description: 'Retrieve content ideas, optionally filtered by pipeline status.',
+      inputSchema: {
+        status: z.enum(['idea', 'writing', 'published']).optional().describe('Filter by status'),
+        limit: z.number().int().min(1).max(100).default(50).optional().describe('Max ideas to return (default 50)'),
+      },
+    },
+    safeToolHandler(async ({ status, limit }) => {
+      const result = await getContentIdeas({ status, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
 
