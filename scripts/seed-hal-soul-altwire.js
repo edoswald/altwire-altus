@@ -7,7 +7,8 @@
  * Usage: node scripts/seed-hal-soul-altwire.js
  */
 
-import { readAgentMemory, writeAgentMemory, pool } from '../lib/altus-db.js';
+import altusDb from '../lib/altus-db.js';
+const { pool, readAgentMemory, writeAgentMemory } = altusDb;
 
 const SOUL_KEY = 'hal:soul:altwire';
 
