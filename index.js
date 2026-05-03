@@ -21,6 +21,7 @@ import { getContentByUrl } from './handlers/altus-fetch.js';
 import { analyzeCoverageGaps } from './handlers/altus-coverage.js';
 import { getTrafficSummary, getReferrerBreakdown, getTopPages, getSiteSearch } from './handlers/altwire-matomo-client.js';
 import { getSearchPerformance, getSearchOpportunities, getSitemapHealth } from './handlers/altwire-gsc-client.js';
+import { generateChart } from './hal-chart.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
@@ -75,6 +76,14 @@ if (process.env.DATABASE_URL) {
   initWriterSchema().catch((err) => {
     logger.error('Writer schema init failed', { error: err.message });
   });
+
+  // Slack schema init (non-blocking)
+  import('./handlers/slack-altus.js')
+    .then(({ initSlackAltusSchema, initSlackAltus }) => {
+      return initSlackAltusSchema().then(() => initSlackAltus());
+    })
+    .catch(err => logger.error('slack-altus: init import failed', { error: err.message }));
+
   startIngestCron();
 
   // News Monitor — 9 AM ET daily
@@ -897,6 +906,39 @@ async function createMcpServer() {
   // Monitoring & Morning Digest
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // HAL — CHART GENERATION
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'generate_chart',
+    {
+      description: 'Render a chart inline in the Chat UI using data already in context. ' +
+      'Use ONLY after fetching the underlying data — do not call this tool without data to chart. ' +
+      'Supported types: line (trends over time), bar (category comparisons), pie (proportions, max 6 segments). ' +
+      'For line and bar charts with time-series x-axis, use ISO date strings (YYYY-MM-DD) as x values. ' +
+      'For multi-series charts, include a series array and use series names as data keys.',
+      inputSchema: {
+        chart_type: z.enum(['line', 'bar', 'pie']).describe("Chart type: 'line', 'bar', or 'pie'"),
+        title: z.string().max(120).describe('Chart title shown above the chart'),
+        description: z.string().max(240).optional().describe('Optional subtitle or context note shown below the title'),
+        x_label: z.string().max(60).optional().describe('X-axis label (line and bar only)'),
+        y_label: z.string().max(60).optional().describe('Y-axis label (line and bar only)'),
+        series: z.array(z.string()).max(4).optional().describe(
+          'Series names for multi-series charts. If provided, each data point must include a key matching each series name.'
+        ),
+        data: z.array(z.record(z.unknown())).min(1).max(200).describe(
+          'Data array. For single-series: [{x, value}, ...]. For multi-series: [{x, seriesName1, seriesName2, ...}, ...]. ' +
+          'For pie charts: [{name, value}, ...].'
+        ),
+      },
+    },
+    safeToolHandler(async (params) => {
+      const result = generateChart(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
   const { getAltwireUptime, getAltwireIncidents } = await import('./handlers/altus-monitoring.js');
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
 
@@ -933,6 +975,97 @@ async function createMcpServer() {
     })
   );
 
+  // -------------------------------------------------------------------------
+  // HAL — SLACK STATUS POSTING (Altus outbound)
+  // -------------------------------------------------------------------------
+
+  const { postStatusUpdate, getSlackPostHistory } = await import('./handlers/slack-altus.js');
+
+  server.registerTool(
+    'post_slack_status',
+    {
+      description: 'Post a status update to Slack. Channel routing is automatic by post_type: status_update/alert/incident_resolved/task_complete/observation → #admin-announcements; dave_digest → #bug-reports. Use channel_override to post directly to a specific channel.',
+      inputSchema: {
+        text: z.string().describe('Status update text to post'),
+        post_type: z.enum(['status_update', 'alert', 'incident_resolved', 'task_complete', 'observation', 'dave_digest']).optional().default('status_update').describe('Determines routing — default: status_update'),
+        emoji: z.string().optional().default(':information_source:').describe('Lead emoji. :white_check_mark: resolved, :warning: alert, :hammer_and_wrench: task, :bar_chart: digest.'),
+        severity: z.enum(['normal', 'urgent']).optional().default('normal').describe('Severity — urgent posts bypass quiet hours'),
+        channel_override: z.string().optional().describe('Post directly to a channel ID, bypassing post_type routing'),
+      },
+    },
+    safeToolHandler(async ({ text, post_type, emoji, severity, channel_override }) => {
+      const result = await postStatusUpdate({ text, post_type, emoji, severity, channel_override });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_slack_post_history',
+    {
+      description: 'Query recent Hal-initiated Slack status posts from the hal_slack_posts table. Returns posts ordered by created_at descending.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).default(10).optional().describe('Number of posts to return (default 10, max 50)'),
+        severity_filter: z.enum(['normal', 'urgent']).optional().describe('Filter by severity'),
+      },
+    },
+    safeToolHandler(async ({ limit, severity_filter }) => {
+      const posts = await getSlackPostHistory({ limit, severity_filter });
+      return { content: [{ type: 'text', text: JSON.stringify(posts) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // HAL — AGENT MEMORY (read/write for hal: soul, editorial context, etc.)
+  // -------------------------------------------------------------------------
+
+  const { readMemory, writeMemory, listMemory, deleteMemory } = await import('./handlers/hal-memory.js');
+
+  server.registerTool(
+    'hal_read_memory',
+    {
+      description: 'Read a single Hal agent memory entry by key. Use to retrieve hal:soul:altwire, hal:altwire:editorial_context, or any other Hal memory key.',
+      inputSchema: {
+        key: z.string().describe('Memory key — e.g. hal:soul:altwire, hal:altwire:editorial_context'),
+      },
+    },
+    safeToolHandler(async ({ key }) => {
+      const result = await readMemory(key);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'hal_write_memory',
+    {
+      description: 'Write a Hal agent memory entry. Use to seed or update hal:soul:altwire, hal:altwire:editorial_context, or other Hal memory keys. Protected keys (hal:soul*, hal:onboarding_state:*) cannot be overwritten via this tool.',
+      inputSchema: {
+        key: z.string().describe('Memory key — e.g. hal:soul:altwire, hal:altwire:editorial_context'),
+        value: z.string().describe('Value to store'),
+      },
+    },
+    safeToolHandler(async ({ key, value }) => {
+      if (key.startsWith('hal:soul') || key.startsWith('hal:onboarding_state:')) {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: false, exit_reason: 'protected_key', message: 'Protected key — use the seed script to update hal:soul values.' }) }] };
+      }
+      const result = await writeMemory(key, value);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  server.registerTool(
+    'hal_list_memory',
+    {
+      description: 'List all Hal agent memory keys and values, newest first. Useful for discovering what memory keys exist and their last-updated timestamps.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).default(50).optional().describe('Max entries to return (default 50)'),
+      },
+    },
+    safeToolHandler(async ({ limit }) => {
+      const rows = await listMemory();
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, entries: rows.slice(0, limit), total: rows.length }) }] };
+    })
+  );
+
   return server;
 }
 
@@ -946,6 +1079,13 @@ const httpServer = createServer(async (req, res) => {
   if (url.pathname === '/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'altus' }));
+    return;
+  }
+
+  // Slack events — signature verification handled by slack-altus.js
+  if (url.pathname === '/slack/events' && req.method === 'POST') {
+    const { handleSlackRequest } = await import('./handlers/slack-altus.js');
+    handleSlackRequest(req, res);
     return;
   }
 
