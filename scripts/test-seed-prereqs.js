@@ -10,7 +10,8 @@
  * Exits 0 if all checks pass, non-zero otherwise.
  */
 
-import { pool, readAgentMemory } from '../lib/altus-db.js';
+import altusDb from '../lib/altus-db.js';
+const { pool, readAgentMemory } = altusDb;
 
 const CHECKS = [];
 
