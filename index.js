@@ -25,6 +25,7 @@ import { generateChart } from './hal-chart.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
+import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
@@ -235,6 +236,49 @@ async function createMcpServer({ agentContext = null } = {}) {
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Tool: search_altwire (public-facing AI search)
+  // -------------------------------------------------------------------------
+  scopedRegister(
+    'search_altwire',
+    {
+      description: 'Public AI-powered search for AltWire. Embeds the query via Voyage AI, searches altus_content for relevant articles using cosine similarity, and synthesizes an answer with MiniMax-2.7. Returns an AI-generated answer with cited sources and ranked results.',
+      inputSchema: {
+        query: z.string().describe('The search query — artist name, topic, concept, or question'),
+        limit: z.number().int().min(1).max(20).default(10).optional()
+          .describe('Maximum number of results to retrieve (default 10)'),
+      },
+    },
+    safeToolHandler(async ({ query, limit }) => {
+      const result = await searchAltwirePublic({ query, limit });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Tool: get_search_feedback (for Hal to review beta feedback)
+  // -------------------------------------------------------------------------
+  scopedRegister(
+    'get_search_feedback',
+    {
+      description: 'Retrieves search feedback submitted by readers during the AI search beta. Use this to review what users are saying about search quality, accuracy, and relevance. Filter by rating (1=thumbs down, 2=thumbs up) or date.',
+      inputSchema: {
+        rating: z.number().int().optional()
+          .describe('Filter by rating — 1 = thumbs down, 2 = thumbs up'),
+        since: z.string().optional()
+          .describe('Return feedback created after this ISO date'),
+        limit: z.number().int().min(1).max(200).default(50).optional()
+          .describe('Maximum number of feedback entries to return (default 50)'),
+      },
+    },
+    safeToolHandler(async ({ rating, since, limit }) => {
+      const result = await getSearchFeedback({ rating, since, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
 
@@ -1382,6 +1426,85 @@ const httpServer = createServer(async (req, res) => {
       }
       return;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Search Feedback REST endpoint — for WordPress plugin
+  // POST /hal/feedback — log feedback from search results
+  // GET /hal/search-feedback — retrieve feedback entries (for wp plugin polling)
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/feedback' && req.method === 'POST') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+
+      const { query, rating, comment, answer_excerpt, results_shown, ip_address, user_agent } = data;
+
+      if (!query || !rating) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'query and rating are required' }));
+        return;
+      }
+
+      try {
+        await pool.query(
+          `INSERT INTO altus_search_feedback
+             (query, rating, comment, answer_excerpt, results_shown, ip_address, user_agent)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            query,
+            rating,
+            comment || null,
+            answer_excerpt || null,
+            results_shown || [],
+            ip_address || null,
+            user_agent || null,
+          ]
+        );
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        logger.error('Feedback insert failed', { error: err.message });
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: 'insert failed' }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/hal/search-feedback' && req.method === 'GET') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+
+    const ratingParam = url.searchParams.get('rating');
+    const sinceParam = url.searchParams.get('since');
+    const limitParam = url.searchParams.get('limit');
+
+    try {
+      const result = await getSearchFeedback({
+        rating: ratingParam !== null ? parseInt(ratingParam, 10) : undefined,
+        since: sinceParam || undefined,
+        limit: limitParam ? parseInt(limitParam, 10) : 50,
+      });
+      res.writeHead(200);
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      logger.error('search-feedback GET failed', { error: err.message });
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: 'query failed' }));
+    }
+    return;
   }
 
   // ---------------------------------------------------------------------------
