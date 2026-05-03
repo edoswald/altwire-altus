@@ -145,7 +145,7 @@ async function main() {
     failed.forEach((f) => console.log(`  - ${f.name}`));
   }
 
-  await pool.end();
+  if (pool) await pool.end().catch(() => {});
   process.exit(failed.length > 0 ? 1 : 0);
 }
 

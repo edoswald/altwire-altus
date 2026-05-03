@@ -13,7 +13,8 @@
  *   node scripts/analyze-rag-corpus.js --opus    # Opus review only (needs MINIMAX_DRAFT env var)
  */
 
-import { pool, readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+import altusDb from '../lib/altus-db.js';
+const { pool, readAgentMemory, writeAgentMemory } = altusDb;
 
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
 const DEREK_AUTHOR_KEY = 'hal:altwire:derek_author_profile';
