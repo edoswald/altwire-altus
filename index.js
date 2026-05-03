@@ -56,6 +56,87 @@ import {
 } from './handlers/altus-writer.js';
 
 const PORT = process.env.PORT || 3000;
+// ---------------------------------------------------------------------------
+// Tool scoping — maps tool names to allowed agent contexts.
+// Tool is registered only if its contexts array is empty (no restriction)
+// or contains the current agentContext.
+// ---------------------------------------------------------------------------
+const TOOL_CONTEXTS = {
+  // AltWire content intelligence — always available
+  search_altwire_archive:      [],
+  reingest_altwire_archive:    [],
+  get_archive_stats:           [],
+  get_content_by_url:          [],
+  analyze_coverage_gaps:       [],
+  // AltWire analytics — always available
+  get_altwire_site_analytics:  [],
+  get_altwire_traffic_sources: [],
+  get_altwire_top_pages:       [],
+  get_altwire_site_search:     [],
+  get_altwire_search_performance:   [],
+  get_altwire_search_opportunities: [],
+  get_altwire_sitemap_health:  [],
+  // Editorial intelligence
+  get_story_opportunities:      [],
+  get_news_opportunities:       [],
+  get_article_performance:      [],
+  get_news_performance_patterns: [],
+  // Chart (shared)
+  generate_chart:              [],
+  // Monitoring
+  get_altwire_uptime:          [],
+  get_altwire_incidents:       [],
+  get_altwire_morning_digest:  [],
+  // Review tracker
+  altus_create_review:          [],
+  altus_update_review:          [],
+  altus_get_review:             [],
+  altus_list_reviews:           [],
+  altus_get_upcoming_review_deadlines: [],
+  altus_log_loaner:             [],
+  altus_update_loaner:          [],
+  altus_get_loaner:             [],
+  altus_list_loaners:           [],
+  altus_get_overdue_loaners:   [],
+  altus_get_upcoming_loaner_returns: [],
+  altus_add_review_note:       [],
+  altus_update_review_note:    [],
+  altus_list_review_notes:     [],
+  altus_delete_review_note:    [],
+  altus_get_editorial_digest:   [],
+  // Watch list
+  altus_add_watch_subject:     [],
+  altus_remove_watch_subject:  [],
+  altus_list_watch_subjects:   [],
+  // AI Writer pipeline
+  create_article_assignment:   [],
+  generate_article_outline:    [],
+  approve_outline:             [],
+  generate_article_draft:      [],
+  fact_check_draft:            [],
+  post_to_wordpress:           [],
+  get_draft_as_html:           [],
+  log_editorial_decision:      [],
+  get_article_assignment:     [],
+  list_article_assignments:   [],
+  // Slack status (Altus outbound)
+  post_slack_status:           [],
+  get_slack_post_history:     [],
+  // Hal memory — nimbus-only tools (scoped to 'nimbus' agentContext)
+  hal_read_memory:             ['nimbus'],
+  hal_write_memory:            ['nimbus'],
+  hal_list_memory:             ['nimbus'],
+  // Altus editorial tools
+  track_article:              [],
+  list_tracked_articles:      [],
+  add_content_idea:            [],
+  get_content_ideas:           [],
+};
+
+// Canonical context names for the X-Agent-Context header values.
+// Add new contexts here as they are introduced.
+const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
+
 
 // Schema init — runs once at startup
   // ---------------------------------------------------------------------------
@@ -108,16 +189,35 @@ const PORT = process.env.PORT || 3000;
 // ---------------------------------------------------------------------------
 // MCP Server factory — new instance per stateless request
 // ---------------------------------------------------------------------------
-async function createMcpServer() {
+async function createMcpServer({ agentContext = null } = {}) {
   const server = new McpServer({
     name: 'altwire-altus',
     version: '1.0.0',
   });
 
+
+  /**
+   * Scoped tool registration — only registers the tool if:
+   *   - TOOL_CONTEXTS[toolName] is empty/undefined (no restriction), OR
+   *   - the current agentContext is in TOOL_CONTEXTS[toolName]
+   * This allows a single server instance to serve multiple agents (AltWire, CW, nimbus)
+   * while restricting nimbus-only tools to the nimbus agentContext.
+   *
+   * @param {string} toolName
+   * @param {object} inputSchema
+   * @param {function} handler
+   */
+  function scopedRegister(toolName, inputSchema, handler) {
+    const allowed = TOOL_CONTEXTS[toolName];
+    if (!allowed || allowed.length === 0 || (agentContext && allowed.includes(agentContext))) {
+      server.registerTool(toolName, inputSchema, handler);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Tool: search_altwire_archive
   // -------------------------------------------------------------------------
-  server.registerTool(
+  scopedRegister(
     'search_altwire_archive',
     {
       description: 'Searches the AltWire content archive using semantic similarity. Returns relevant articles, reviews, and galleries based on the query. Use this to understand how AltWire has previously covered an artist or topic.',
@@ -141,7 +241,7 @@ async function createMcpServer() {
   // -------------------------------------------------------------------------
   // Tool: reingest_altwire_archive
   // -------------------------------------------------------------------------
-  server.registerTool(
+  scopedRegister(
     'reingest_altwire_archive',
     {
       description: 'Re-runs the AltWire content ingestion pipeline. Pulls all published posts and galleries from WordPress, regenerates embeddings, and upserts to the archive. Use this after publishing new content or to refresh the index. Takes 3-5 minutes to complete.',
@@ -161,7 +261,7 @@ async function createMcpServer() {
   // -------------------------------------------------------------------------
   // Tool: get_archive_stats
   // -------------------------------------------------------------------------
-  server.registerTool(
+  scopedRegister(
     'get_archive_stats',
     {
       description: 'Returns health and coverage statistics for the AltWire content archive — total documents indexed, breakdown by type, last ingest run, and any errors.',
@@ -175,7 +275,7 @@ async function createMcpServer() {
   // -------------------------------------------------------------------------
   // Tool: get_content_by_url
   // -------------------------------------------------------------------------
-  server.registerTool(
+  scopedRegister(
     'get_content_by_url',
     {
       description: 'Retrieves a specific piece of content from the AltWire archive by its URL or slug. Use when a specific article or gallery is referenced by name or link rather than by topic.',
@@ -198,7 +298,7 @@ async function createMcpServer() {
   // -------------------------------------------------------------------------
   // Tool: analyze_coverage_gaps
   // -------------------------------------------------------------------------
-  server.registerTool(
+  scopedRegister(
     'analyze_coverage_gaps',
     {
       description: 'Analyzes how thoroughly AltWire has covered a specific artist or topic. Returns a plain-English assessment of what exists, what\'s missing, and editorial opportunities.',
@@ -219,7 +319,7 @@ async function createMcpServer() {
   // AltWire Analytics — Matomo
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_site_analytics',
     {
       description: 'AltWire traffic summary for a period — visits, unique visitors, pageviews, bounce rate. Use to assess overall site health and content performance trends.',
@@ -234,7 +334,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_traffic_sources',
     {
       description: 'AltWire referrer breakdown — where readers are coming from. Includes social media, organic search, direct, and campaign referrers. Use to understand content distribution channel performance.',
@@ -249,7 +349,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_top_pages',
     {
       description: 'AltWire most-viewed articles, entry pages, and exit pages for a period. Use to identify best-performing content and high-exit pages that may need improvement.',
@@ -264,7 +364,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_site_search',
     {
       description: 'AltWire internal search terms — what readers are searching for on the site. Useful for identifying content gaps and topics with reader demand.',
@@ -283,7 +383,7 @@ async function createMcpServer() {
   // AltWire Analytics — Google Search Console
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_search_performance',
     {
       description: 'AltWire Google Search Console data — queries driving organic traffic, impressions, clicks, CTR, and average position. Use to identify which content is ranking and where there\'s room to improve.',
@@ -300,7 +400,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_search_opportunities',
     {
       description: 'AltWire high-impression, low-CTR search queries — topics where AltWire appears in results but readers aren\'t clicking. These are candidates for title tag or meta description improvements, or stronger content on those topics.',
@@ -315,7 +415,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_sitemap_health',
     {
       description: 'Check GSC sitemap fetch status for altwire.net. Returns fetch status, last crawl date, and coverage counts. Alerts if sitemap is stale or unfetchable.',
@@ -330,7 +430,7 @@ async function createMcpServer() {
   // Editorial Intelligence — Topic Discovery & News Monitoring
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'get_story_opportunities',
     {
       description: 'Cross-references GSC opportunity-zone queries (position 5–30) against the AltWire archive to surface story opportunities where search demand exists but coverage is thin. Uses Haiku to synthesize editorial pitches.',
@@ -345,7 +445,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_news_opportunities',
     {
       description: 'Tracks GSC News search type data and cross-references with the watch list to surface News coverage opportunities and alert on watch list activity.',
@@ -360,7 +460,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_article_performance',
     {
       description: 'Returns post-publish GSC performance snapshots (72h, 7d, 30d) for tracked articles. Use to check how published content is performing in Google Search.',
@@ -377,7 +477,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_news_performance_patterns',
     {
       description: 'Analyzes which content types get Google News pickup — groups News-appearing articles by category and tag to identify patterns for optimizing News visibility.',
@@ -396,7 +496,7 @@ async function createMcpServer() {
   // Review & Loaner Tracker
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'altus_create_review',
     {
       description: 'Create a new review assignment. Reviewer defaults to Derek if not specified.',
@@ -418,7 +518,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_update_review',
     {
       description: 'Update a review — change status, reassign, update due date, add editorial notes, record WordPress post ID.',
@@ -441,7 +541,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_review',
     {
       description: 'Fetch full review details by ID.',
@@ -457,7 +557,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_list_reviews',
     {
       description: 'List reviews with optional filters: status, reviewer.',
@@ -474,7 +574,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_upcoming_review_deadlines',
     {
       description: 'Reviews due within the next N days (default 7), excluding completed/cancelled.',
@@ -490,7 +590,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_log_loaner',
     {
       description: 'Log a review item received. Records whether it\'s a loaner (with optional return deadline) or a keeper. Defaults to Derek as recipient.',
@@ -512,7 +612,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_update_loaner',
     {
       description: 'Update a loaner record — mark returned, convert to keeper, change return date, update status.',
@@ -537,7 +637,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_loaner',
     {
       description: 'Fetch full details of a specific loaner item.',
@@ -553,7 +653,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_list_loaners',
     {
       description: 'List loaner items with optional filters: status, borrower.',
@@ -570,7 +670,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_overdue_loaners',
     {
       description: 'All loaner items past their expected return date not yet returned.',
@@ -583,7 +683,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_upcoming_loaner_returns',
     {
       description: 'Loaner items expected back within the next N days (default 14).',
@@ -599,7 +699,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_add_review_note',
     {
       description: 'Add a check-in note to a review. If category not specified, Hal auto-classifies it as pro/con/observation.',
@@ -617,7 +717,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_update_review_note',
     {
       description: 'Correct a note\'s text or category.',
@@ -635,7 +735,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_list_review_notes',
     {
       description: 'Fetch all notes for a review, optionally filtered by category. Returns counts by category.',
@@ -652,7 +752,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_delete_review_note',
     {
       description: 'Delete a note by ID.',
@@ -668,7 +768,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_get_editorial_digest',
     {
       description: 'Full editorial status: active reviews by status, overdue items, upcoming deadlines, loaner status. Use for morning digest or on-demand check-ins.',
@@ -685,7 +785,7 @@ async function createMcpServer() {
   // Watch List Management
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'altus_add_watch_subject',
     {
       description: 'Add an artist or topic to Derek\'s news monitor watch list. The news monitor cron will flag when these subjects appear in Google News search data.',
@@ -702,7 +802,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_remove_watch_subject',
     {
       description: 'Remove a subject from the watch list by name or ID. Subject is deactivated (not deleted) — it won\'t appear in future news monitor checks.',
@@ -719,7 +819,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'altus_list_watch_subjects',
     {
       description: 'View Derek\'s current news monitor watch list. By default shows only active subjects. Pass include_inactive=true to see previously removed subjects.',
@@ -739,7 +839,7 @@ async function createMcpServer() {
   // AI Writer Pipeline
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'create_article_assignment',
     {
       description: 'Start a new AI Writer assignment. Runs archive and web research in parallel. Returns when research is complete and outline is ready to generate. For product reviews, pass review_notes_id to include Derek\'s pro/con notes.',
@@ -757,7 +857,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'generate_article_outline',
     {
       description: 'Generate a structured outline from an assignment\'s research. Returns an editable outline for Derek to review before any writing begins.',
@@ -773,7 +873,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'approve_outline',
     {
       description: 'Record Derek\'s approval or rejection of an outline. Pass feedback for modifications. Nothing is written until this is called with decision=\'approved\'.',
@@ -791,7 +891,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'generate_article_draft',
     {
       description: 'Generate the full article draft from an approved outline. Uses web research, archive voice reference, and review notes if present. Returns when draft is complete.',
@@ -807,7 +907,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'fact_check_draft',
     {
       description: 'Run a fact-checking pass on a completed draft. Verifies specific factual claims via web search. Only regenerates flagged sections — clean sections are preserved.',
@@ -823,7 +923,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'post_to_wordpress',
     {
       description: 'Post a clean draft to WordPress as a draft post. Never publishes directly. Only works when draft has passed fact check. Returns the WordPress draft URL for Derek to review.',
@@ -842,7 +942,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_draft_as_html',
     {
       description: 'Returns the article draft as clean HTML for copy-pasting into WordPress\'s Text/Code editor. Does not post to WordPress — just converts and returns the HTML. Available once a draft exists, regardless of pipeline status.',
@@ -858,7 +958,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'log_editorial_decision',
     {
       description: 'Record Derek\'s feedback or decision on any stage of the pipeline. Use for explicit feedback, cancellations, or supplemental decisions.',
@@ -877,7 +977,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_article_assignment',
     {
       description: 'Fetch full details of a specific assignment including research context, outline, draft status, and decision history.',
@@ -893,7 +993,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'list_article_assignments',
     {
       description: 'List active assignments with optional filters by status or type. By default excludes posted and cancelled.',
@@ -920,7 +1020,7 @@ async function createMcpServer() {
   // HAL — CHART GENERATION
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'generate_chart',
     {
       description: 'Render a chart inline in the Chat UI using data already in context. ' +
@@ -952,7 +1052,7 @@ async function createMcpServer() {
   const { getAltwireUptime, getAltwireIncidents } = await import('./handlers/altus-monitoring.js');
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_uptime',
     {
       description: 'Live status of AltWire\'s uptime monitors — altwire.net and WP Cron. Returns overall health and per-monitor status.',
@@ -963,7 +1063,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_incidents',
     {
       description: 'Open (unresolved) incidents on AltWire\'s Better Stack monitors. Returns empty list when all is well.',
@@ -974,7 +1074,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_altwire_morning_digest',
     {
       description: 'Full AltWire morning briefing — site uptime, open incidents, today\'s news alerts, story opportunities, upcoming review deadlines, overdue loaners, and yesterday\'s traffic. Use at the start of a session or when Derek asks for a status overview.',
@@ -991,7 +1091,7 @@ async function createMcpServer() {
 
   const { postStatusUpdate, getSlackPostHistory } = await import('./handlers/slack-altus.js');
 
-  server.registerTool(
+  scopedRegister(
     'post_slack_status',
     {
       description: 'Post a status update to Slack. Channel routing is automatic by post_type: status_update/alert/incident_resolved/task_complete/observation → #admin-announcements; dave_digest → #bug-reports. Use channel_override to post directly to a specific channel.',
@@ -1009,7 +1109,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_slack_post_history',
     {
       description: 'Query recent Hal-initiated Slack status posts from the hal_slack_posts table. Returns posts ordered by created_at descending.',
@@ -1031,7 +1131,7 @@ async function createMcpServer() {
   const { readMemory, writeMemory, listMemory, deleteMemory } = await import('./handlers/hal-memory.js');
   const { trackArticle, listTrackedArticles, addContentIdea, getContentIdeas } = await import('./handlers/altus-editorial-tools.js');
 
-  server.registerTool(
+  scopedRegister(
     'hal_read_memory',
     {
       description: 'Read a single Hal agent memory entry by key. Use to retrieve hal:soul:altwire, hal:altwire:editorial_context, or any other Hal memory key.',
@@ -1045,7 +1145,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'hal_write_memory',
     {
       description: 'Write a Hal agent memory entry. Use to seed or update hal:soul:altwire, hal:altwire:editorial_context, or other Hal memory keys. Protected keys (hal:soul*, hal:onboarding_state:*) cannot be overwritten via this tool.',
@@ -1063,7 +1163,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'hal_list_memory',
     {
       description: 'List all Hal agent memory keys and values, newest first. Useful for discovering what memory keys exist and their last-updated timestamps.',
@@ -1081,7 +1181,7 @@ async function createMcpServer() {
   // ALTUS EDITORIAL TOOLS
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  scopedRegister(
     'track_article',
     {
       description: 'Track an article for performance monitoring. Stores the URL, title, category, and optional notes in agent memory.',
@@ -1098,7 +1198,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'list_tracked_articles',
     {
       description: 'List all tracked articles, newest first. Returns URL, title, category, tracked_at, and notes.',
@@ -1112,7 +1212,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'add_content_idea',
     {
       description: 'Add a new editorial content idea. Returns a UUID-keyed idea entry.',
@@ -1129,7 +1229,7 @@ async function createMcpServer() {
     })
   );
 
-  server.registerTool(
+  scopedRegister(
     'get_content_ideas',
     {
       description: 'Retrieve content ideas, optionally filtered by pipeline status.',
@@ -1309,7 +1409,8 @@ const httpServer = createServer(async (req, res) => {
 
   // MCP endpoint — stateless POST
   if (url.pathname === '/' || url.pathname === '/mcp') {
-    const server = await createMcpServer();
+    const agentContext = req.headers['x-agent-context'] || null;
+    const server = await createMcpServer({ agentContext });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless — prevents Claude.ai session caching issues
     });
