@@ -43,7 +43,7 @@ async function main() {
   } else if (!pool || typeof pool.query !== 'function') {
     console.log('\n-- Database --');
     console.log('  pool exists:', !!pool);
-    console.log('  pool.query:', typeof pool.query);
+    console.log('  pool.query:', pool && typeof pool.query);
     console.log('  ALTWIRE_DATABASE_URL:', process.env.ALTWIRE_DATABASE_URL ? '(set, ' + process.env.ALTWIRE_DATABASE_URL.length + ' chars)' : 'UNSET');
     console.log('  DATABASE_URL:', process.env.DATABASE_URL ? '(set, ' + process.env.DATABASE_URL.length + ' chars)' : 'UNSET');
     check('PostgreSQL connection', false, 'pool not usable');
