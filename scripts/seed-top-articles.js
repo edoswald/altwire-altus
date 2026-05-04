@@ -11,8 +11,9 @@
  */
 
 import altusDb from '../lib/altus-db.js';
-const { pool, writeAgentMemory } = altusDb;
-import { getTopPages } from '../handlers/altwire-matomo-client.js';
+const pool = altusDb; // default export is the pool
+const { writeAgentMemory } = altusDb;
+import { getTopArticles } from '../handlers/altwire-matomo-client.js';
 
 const KEY_7D = 'hal:altwire:top_articles_7d';
 const KEY_30D = 'hal:altwire:top_articles_30d';
@@ -33,7 +34,7 @@ function computeTopArticles(pageData, posts, limit = 10) {
   const urlToTitle = new Map(posts.map((p) => [p.url, p.title]));
   const results = [];
 
-  const pageUrls = pageData.pageUrls ?? [];
+  const pageUrls = Array.isArray(pageData) ? pageData : [];
   for (const row of pageUrls) {
     const label = row.label ?? row.url ?? '';
     const url = label.startsWith('http') ? label : `https://altwire.net${label}`;
@@ -68,7 +69,7 @@ async function main() {
 
   // 7-day window
   console.log('seed-top-articles: fetching 7d Matomo data...');
-  const data7d = await getTopPages('week', 'yesterday');
+  const data7d = await getTopArticles('week', 'yesterday', 20);
   if (data7d.error) {
     console.error(`seed-top-articles: Matomo 7d error: ${data7d.error} — proceeding without pageview data`);
   } else {
@@ -79,7 +80,7 @@ async function main() {
 
   // 30-day window
   console.log('seed-top-articles: fetching 30d Matomo data...');
-  const data30d = await getTopPages('month', 'yesterday');
+  const data30d = await getTopArticles('month', 'yesterday', 20);
   if (data30d.error) {
     console.error(`seed-top-articles: Matomo 30d error: ${data30d.error} — proceeding without pageview data`);
   } else {

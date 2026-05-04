@@ -3,18 +3,19 @@
  *
  * Nightly reflection cron for AltWire editorial context.
  * Runs at 5 AM ET daily. Enriches reflection memory keys with:
- *   - hal:altwire:top_articles_7d / _30d (pre-seeded, also refreshed here)
  *   - hal:altwire:traffic_summary
- *   - hal:altwire:search_opportunities
+ *   - hal:altwire:top_articles
+ *   - hal:altwire:site_search_keywords
  *   - hal:altwire:editorial_signals
  *
  * This is a lightweight editorial reflection — not the full nimbus reflection.
+ * GSC-based keys (search_opportunities, content_gaps) are separate and
+ * require altwire-gsc-client.js which is not yet implemented.
  */
 
 import { logger } from '../logger.js';
 import { writeAgentMemory } from '../lib/altus-db.js';
-import { getTrafficSummary } from './altwire-matomo-client.js';
-import { getSearchOpportunities } from './altwire-gsc-client.js';
+import { getTrafficSummary, getTopArticles, getSiteSearchKeywords } from './altwire-matomo-client.js';
 
 /**
  * Run the nightly AltWire reflection.
@@ -34,17 +35,19 @@ export async function runAltwireReflection() {
       generated_at: new Date().toISOString(),
     }));
 
-    // Search opportunities — high-impression, low-CTR
-    const today = new Date();
-    const thirtyDaysAgo = new Date(today);
-    thirtyDaysAgo.setDate(today.getDate() - 30);
-    const start = thirtyDaysAgo.toISOString().slice(0, 10);
-    const end = today.toISOString().slice(0, 10);
+    // Top articles — 7d (most viewed)
+    const topArticles7d = await getTopArticles('week', 'yesterday', 20);
+    await writeAgentMemory('hal', 'hal:altwire:top_articles', JSON.stringify({
+      period: '7d',
+      articles: topArticles7d,
+      generated_at: new Date().toISOString(),
+    }));
 
-    const opps = await getSearchOpportunities(start, end);
-    await writeAgentMemory('hal', 'hal:altwire:search_opportunities', JSON.stringify({
-      opportunities: opps,
-      date_range: { start, end },
+    // Site search keywords — what readers are searching for on AltWire
+    const searchKeywords = await getSiteSearchKeywords('week', 'yesterday');
+    await writeAgentMemory('hal', 'hal:altwire:site_search_keywords', JSON.stringify({
+      keywords: searchKeywords,
+      period: '7d',
       generated_at: new Date().toISOString(),
     }));
 

@@ -1,12 +1,12 @@
 /**
- * Matomo Reporting API client.
+ * Matomo Reporting API client for AltWire.
  *
  * Reads ALTWIRE_MATOMO_URL, ALTWIRE_MATOMO_TOKEN_AUTH, ALTWIRE_MATOMO_SITE_ID from environment.
  * Returns structured error when env vars are missing.
  * All functions use async fetch() exclusively.
  */
 
-import { logger } from '../logger.js';
+import { logger } from './logger.js';
 
 /**
  * Check that all required Matomo env vars are present.
@@ -34,9 +34,6 @@ async function callApi(method, period, date) {
   const cfg = getConfig();
   if (!cfg.configured) return cfg;
 
-  // POST the token in the request body instead of the query string.
-  // Matomo rejects GET-based token_auth when the token has
-  // "Only allow secure requests" enabled (returns 401).
   const body = new URLSearchParams({
     module: 'API',
     method,
@@ -55,19 +52,19 @@ async function callApi(method, period, date) {
       body: body.toString(),
     });
   } catch (err) {
-    logger.error(`Matomo API request failed for ${method}`, { error: err.message });
+    logger.error(`AltWire Matomo API request failed for ${method}`, { error: err.message });
     return { error: 'matomo_request_failed', message: err.message };
   }
 
   if (!response.ok) {
-    logger.error(`Matomo API error for ${method}`, { status: response.status });
+    logger.error(`AltWire Matomo API error for ${method}`, { status: response.status });
     return { error: 'matomo_api_error', status: response.status };
   }
 
   try {
     return await response.json();
   } catch {
-    logger.error(`Matomo returned non-JSON response for ${method}`);
+    logger.error(`AltWire Matomo returned non-JSON response for ${method}`);
     return { error: 'matomo_invalid_response', message: 'Non-JSON response' };
   }
 }
@@ -87,94 +84,46 @@ export async function getTrafficSummary(period, date) {
   const result = await callApi('VisitsSummary.get', period, date);
   if (result.error) return result;
 
-  logger.info('Matomo traffic summary fetched', { period, date });
+  logger.info('AltWire Matomo traffic summary fetched', { period, date });
   return result;
 }
 
 /**
- * Referrer breakdown: type, websites, campaigns.
- * Calls Referrers.getReferrerType, Referrers.getWebsites, Referrers.getCampaigns.
+ * Top pages: most viewed articles.
+ * Uses Actions.getPageUrls.
  *
  * @param {string} period
  * @param {string} date
+ * @param {number} [limit=20]
  * @returns {Promise<object>}
  */
-export async function getReferrerBreakdown(period, date) {
+export async function getTopArticles(period, date, limit = 20) {
   const cfg = getConfig();
   if (!cfg.configured) return { error: cfg.error };
 
-  const [types, websites, campaigns] = await Promise.all([
-    callApi('Referrers.getReferrerType', period, date),
-    callApi('Referrers.getWebsites', period, date),
-    callApi('Referrers.getCampaigns', period, date),
-  ]);
+  const result = await callApi('Actions.getPageUrls', period, date);
+  if (result.error) return result;
 
-  if (types.error || websites.error || campaigns.error) {
-    logger.warn('Matomo referrer breakdown partial failure', {
-      typesError: types.error ?? null,
-      websitesError: websites.error ?? null,
-      campaignsError: campaigns.error ?? null,
-    });
-  }
-
-  logger.info('Matomo referrer breakdown fetched', { period, date });
-  return { types, websites, campaigns };
+  const pages = Array.isArray(result) ? result.slice(0, limit) : [];
+  logger.info('AltWire Matomo top articles fetched', { period, date, count: pages.length });
+  return pages;
 }
 
 /**
- * Top pages: most viewed, entry pages, exit pages.
- * Calls Actions.getPageUrls, Actions.getEntryPageUrls, Actions.getExitPageUrls.
+ * Site search: keywords used on the internal search.
+ * Uses Actions.getSiteSearchKeywords.
  *
  * @param {string} period
  * @param {string} date
  * @returns {Promise<object>}
  */
-export async function getTopPages(period, date) {
+export async function getSiteSearchKeywords(period, date) {
   const cfg = getConfig();
   if (!cfg.configured) return { error: cfg.error };
 
-  const [pageUrls, entryPages, exitPages] = await Promise.all([
-    callApi('Actions.getPageUrls', period, date),
-    callApi('Actions.getEntryPageUrls', period, date),
-    callApi('Actions.getExitPageUrls', period, date),
-  ]);
+  const result = await callApi('Actions.getSiteSearchKeywords', period, date);
+  if (result.error) return result;
 
-  if (pageUrls.error || entryPages.error || exitPages.error) {
-    logger.warn('Matomo top pages partial failure', {
-      pageUrlsError: pageUrls.error ?? null,
-      entryPagesError: entryPages.error ?? null,
-      exitPagesError: exitPages.error ?? null,
-    });
-  }
-
-  logger.info('Matomo top pages fetched', { period, date });
-  return { pageUrls, entryPages, exitPages };
-}
-
-/**
- * Site search: keywords and no-result keywords.
- * Calls Actions.getSiteSearchKeywords, Actions.getSiteSearchNoResultKeywords.
- *
- * @param {string} period
- * @param {string} date
- * @returns {Promise<object>}
- */
-export async function getSiteSearch(period, date) {
-  const cfg = getConfig();
-  if (!cfg.configured) return { error: cfg.error };
-
-  const [keywords, noResultKeywords] = await Promise.all([
-    callApi('Actions.getSiteSearchKeywords', period, date),
-    callApi('Actions.getSiteSearchNoResultKeywords', period, date),
-  ]);
-
-  if (keywords.error || noResultKeywords.error) {
-    logger.warn('Matomo site search partial failure', {
-      keywordsError: keywords.error ?? null,
-      noResultError: noResultKeywords.error ?? null,
-    });
-  }
-
-  logger.info('Matomo site search fetched', { period, date });
-  return { keywords, noResultKeywords };
+  logger.info('AltWire Matomo site search keywords fetched', { period, date });
+  return result;
 }
