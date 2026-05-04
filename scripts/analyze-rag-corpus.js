@@ -267,7 +267,7 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
         model,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
-        temperature: 0.3,
+        ...(isMinimax ? { temperature: 0.3 } : {}),
         max_tokens: 4000,
       }),
     });
