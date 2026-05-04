@@ -13,8 +13,8 @@
  *   node scripts/analyze-rag-corpus.js --opus    # Opus review only (needs MINIMAX_DRAFT env var)
  */
 
-import altusDb from '../lib/altus-db.js';
-const { pool, readAgentMemory, writeAgentMemory } = altusDb;
+import altusDb, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+const pool = altusDb; // default export is the pool
 
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
 const DEREK_AUTHOR_KEY = 'hal:altwire:derek_author_profile';
@@ -300,8 +300,8 @@ async function main() {
 
   console.log('analyze-rag-corpus: Starting...\n');
 
-  if (!process.env.DATABASE_URL) {
-    console.error('analyze-rag-corpus: DATABASE_URL not set — cannot analyze corpus.');
+  if (!process.env.ALTWIRE_DATABASE_URL) {
+    console.error('analyze-rag-corpus: ALTWIRE_DATABASE_URL not set — cannot analyze corpus.');
     process.exit(1);
   }
 

@@ -7,8 +7,8 @@
  * Usage: node scripts/seed-hal-soul-altwire.js
  */
 
-import altusDb from '../lib/altus-db.js';
-const { pool, readAgentMemory, writeAgentMemory } = altusDb;
+import altusDb, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+const pool = altusDb; // default export is the pool
 
 const SOUL_KEY = 'hal:soul:altwire';
 
@@ -38,8 +38,8 @@ Context switching: When working on AltWire/Altus tasks, apply this soul. When th
 async function seedSoul() {
   console.log('seed-hal-soul-altwire: Starting...\n');
 
-  if (!process.env.DATABASE_URL) {
-    console.error('seed-hal-soul-altwire: DATABASE_URL not set — cannot seed soul.');
+  if (!process.env.ALTWIRE_DATABASE_URL) {
+    console.error('seed-hal-soul-altwire: ALTWIRE_DATABASE_URL not set — cannot seed soul.');
     process.exit(1);
   }
 
