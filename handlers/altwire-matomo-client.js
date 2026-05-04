@@ -6,7 +6,7 @@
  * All functions use async fetch() exclusively.
  */
 
-import { logger } from './logger.js';
+import { logger } from '../logger.js';
 
 /**
  * Check that all required Matomo env vars are present.
