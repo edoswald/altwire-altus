@@ -37,7 +37,19 @@ async function main() {
   check('ANTHROPIC_API_KEY set', anthropicKey);
 
   // 2. Database connectivity
-  if (dbUrl) {
+  if (!dbUrl) {
+    console.log('\n-- Database --');
+    console.log('  Will skip DB checks — ALTWIRE_DATABASE_URL not set');
+  } else if (!pool || typeof pool.query !== 'function') {
+    console.log('\n-- Database --');
+    console.log('  pool exists:', !!pool);
+    console.log('  pool.query:', typeof pool.query);
+    console.log('  ALTWIRE_DATABASE_URL:', process.env.ALTWIRE_DATABASE_URL ? '(set, ' + process.env.ALTWIRE_DATABASE_URL.length + ' chars)' : 'UNSET');
+    console.log('  DATABASE_URL:', process.env.DATABASE_URL ? '(set, ' + process.env.DATABASE_URL.length + ' chars)' : 'UNSET');
+    check('PostgreSQL connection', false, 'pool not usable');
+    check('altus_content.author column', false, 'pool not usable');
+    check('agent_memory table', false, 'pool not usable');
+  } else {
     console.log('\n-- Database --');
     try {
       const result = await pool.query('SELECT 1');
