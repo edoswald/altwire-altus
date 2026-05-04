@@ -229,6 +229,7 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
 
   if (isMinimax) {
     // Minimax API call — OpenAI-compatible endpoint per MiniMax docs
+    // Use response_format to request structured JSON, avoiding parse issues
     const response = await fetch('https://api.minimax.io/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -242,6 +243,60 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
           { role: 'user', content: userPrompt },
         ],
         temperature: 0.3,
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'editorial_analysis',
+            schema: {
+              type: 'object',
+              properties: {
+                tone: {
+                  type: 'object',
+                  properties: {
+                    overall: { type: 'string' },
+                    formality: { type: 'string' },
+                    audience_assumed_knowledge: { type: 'string' },
+                    emotional_range: { type: 'string' },
+                  },
+                  required: ['overall', 'formality', 'audience_assumed_knowledge', 'emotional_range'],
+                },
+                article_types: {
+                  type: 'object',
+                  properties: {
+                    reviews: { type: 'string' },
+                    interviews: { type: 'string' },
+                    features: { type: 'string' },
+                    listicles: { type: 'string' },
+                    news: { type: 'string' },
+                    galleries: { type: 'string' },
+                  },
+                },
+                subjects: {
+                  type: 'object',
+                  properties: {
+                    top_genres: { type: 'array', items: { type: 'string' } },
+                    common_angles: { type: 'array', items: { type: 'string' } },
+                    coverage_depth: { type: 'string' },
+                    recurring_themes: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+                headline_patterns: {
+                  type: 'object',
+                  properties: {
+                    typical_length: { type: 'string' },
+                    common_formulas: { type: 'array', items: { type: 'string' } },
+                    questions_used: { type: 'boolean' },
+                    numbers_used: { type: 'boolean' },
+                    all_caps_rare: { type: 'boolean' },
+                  },
+                },
+                voice_markers: { type: 'array', items: { type: 'string' } },
+                what_makes_good_altwire_article: { type: 'string' },
+              },
+              required: ['tone', 'article_types', 'subjects', 'headline_patterns', 'voice_markers', 'what_makes_good_altwire_article'],
+            },
+          },
+        },
       }),
     });
 
@@ -251,7 +306,18 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
+    // With response_format: json_schema, content may still come back as a JSON string
+    // in choices[0].message.content, OR the structured output may be elsewhere in the response.
+    // Log the raw data shape so we can diagnose:
+    const choice = data.choices?.[0];
+    let content;
+    if (choice?.message?.content) {
+      content = choice.message.content;
+    } else {
+      // Structured JSON mode may put the result elsewhere — dump for diagnostics
+      console.error('[callLLM] Minimax response structure:', JSON.stringify(data).slice(0, 500));
+      throw new Error('Minimax returned no content in expected field');
+    }
     if (!content) throw new Error('Minimax returned empty content');
     return content.trim();
   } else {
