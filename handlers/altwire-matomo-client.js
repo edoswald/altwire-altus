@@ -127,3 +127,51 @@ export async function getSiteSearchKeywords(period, date) {
   logger.info('AltWire Matomo site search keywords fetched', { period, date });
   return result;
 }
+
+/**
+ * Referrer breakdown: type, websites, campaigns.
+ * Alias for compatibility with index.js expectations.
+ *
+ * @param {string} period
+ * @param {string} date
+ * @returns {Promise<object>}
+ */
+export async function getReferrerBreakdown(period, date) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+
+  const [types, websites, campaigns] = await Promise.all([
+    callApi('Referrers.getReferrerType', period, date),
+    callApi('Referrers.getWebsites', period, date),
+    callApi('Referrers.getCampaigns', period, date),
+  ]);
+
+  logger.info('AltWire Matomo referrer breakdown fetched', { period, date });
+  return { types, websites, campaigns };
+}
+
+/**
+ * Top pages: most viewed, entry pages, exit pages.
+ * Returns object with pageUrls array for compatibility.
+ *
+ * @param {string} period
+ * @param {string} date
+ * @param {number} [limit=20]
+ * @returns {Promise<object>}
+ */
+export async function getTopPages(period, date, limit = 20) {
+  const pages = await getTopArticles(period, date, limit);
+  if (pages.error) return pages;
+  return { pageUrls: pages };
+}
+
+/**
+ * Site search — alias for getSiteSearchKeywords.
+ *
+ * @param {string} period
+ * @param {string} date
+ * @returns {Promise<object>}
+ */
+export async function getSiteSearch(period, date) {
+  return getSiteSearchKeywords(period, date);
+}
