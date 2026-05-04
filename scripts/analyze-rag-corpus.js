@@ -228,8 +228,8 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
   }
 
   if (isMinimax) {
-    // Minimax API call
-    const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
+    // Minimax API call — OpenAI-compatible endpoint per MiniMax docs
+    const response = await fetch('https://api.minimax.io/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
