@@ -25,7 +25,7 @@ async function main() {
 
   // 1. Environment variables
   console.log('-- Environment --');
-  const dbUrl = !!process.env.DATABASE_URL;
+  const dbUrl = !!process.env.ALTWIRE_DATABASE_URL || !!process.env.DATABASE_URL;
   check('DATABASE_URL set', dbUrl);
   if (!dbUrl) console.log('  Will skip DB checks');
 
