@@ -19,6 +19,17 @@ const SOUL_KEYS = {
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
 const DEREK_AUTHOR_KEY = 'hal:altwire:derek_author_profile';
 
+const ANALYTICS_KEYS = {
+  traffic_summary:      'hal:altwire:analytics:traffic_summary',
+  top_articles_18m:    'hal:altwire:analytics:top_articles_18m',
+  article_type_perf:   'hal:altwire:analytics:article_type_performance',
+  topic_trends:        'hal:altwire:analytics:topic_trends',
+  referrer_summary:    'hal:altwire:analytics:referrer_summary',
+  search_keywords:      'hal:altwire:analytics:search_keywords_18m',
+  seasonality:         'hal:altwire:analytics:seasonality',
+  last_refreshed:      'hal:altwire:analytics:last_refreshed',
+};
+
 /**
  * Load the appropriate soul block for the given agent context.
  * @param {string|null} agentContext
@@ -96,6 +107,32 @@ async function loadOnboardingState(adminId) {
 }
 
 /**
+ * Load historical analytics keys for AltWire sessions.
+ * Returns null if no analytics data has been seeded yet.
+ * @returns {Promise<object|null>}
+ */
+async function loadHistoricalAnalytics() {
+  try {
+    const result = await pool.query(
+      `SELECT key, value FROM agent_memory
+       WHERE agent = 'hal' AND key LIKE 'hal:altwire:analytics:%' AND deleted_at IS NULL`
+    );
+    if (result.rows.length === 0) return null;
+    const parsed = {};
+    for (const row of result.rows) {
+      try {
+        parsed[row.key] = JSON.parse(row.value);
+      } catch {
+        parsed[row.key] = row.value;
+      }
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build Slack system context block for altwire channel.
  * @returns {string}
  */
@@ -165,6 +202,37 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
     const authorProfile = await loadDerekAuthorProfile();
     if (authorProfile?.what_to_preserve_in_ai_drafts) {
       parts.push(`## Derek's Voice\n${authorProfile.what_to_preserve_in_ai_drafts}`);
+    }
+
+    // Historical analytics context
+    const analytics = await loadHistoricalAnalytics();
+    if (analytics) {
+      const ts = analytics[ANALYTICS_KEYS.traffic_summary];
+      const ta = analytics[ANALYTICS_KEYS.top_articles_18m];
+      const tt = analytics[ANALYTICS_KEYS.topic_trends];
+      const ss = analytics[ANALYTICS_KEYS.seasonality];
+
+      const trafficLines = [];
+      if (ts) {
+        trafficLines.push(`18-month total: ${ts.total_pageviews?.toLocaleString() ?? 'N/A'} pageviews`);
+        if (ts.peak_month) trafficLines.push(`Peak month: ${ts.peak_month} (${ts.peak_month_pageviews?.toLocaleString() ?? 'N/A'} pageviews)`);
+        if (ts.trend_direction) trafficLines.push(`Traffic trend: ${ts.trend_direction}`);
+      }
+      if (ta?.all_time_top_10?.length) {
+        const top5 = ta.all_time_top_10.slice(0, 5);
+        const topList = top5.map((a, i) => `${i + 1}. ${a.title} (${a.total_pageviews?.toLocaleString() ?? 'N/A'} pv)`).join('\n');
+        trafficLines.push(`All-time top 5 articles:\n${topList}`);
+      }
+      if (tt?.rising_topics?.length) {
+        const rising = tt.rising_topics.slice(0, 3).map((t) => t.topic).join(', ');
+        trafficLines.push(`Rising topics: ${rising}`);
+      }
+      if (ss?.peak_season) {
+        trafficLines.push(`Peak season: ${ss.peak_season}`);
+      }
+      if (trafficLines.length > 0) {
+        parts.push(`## AltWire Historical Analytics\n${trafficLines.join('\n')}`);
+      }
     }
   }
 

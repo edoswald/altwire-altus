@@ -5,12 +5,37 @@
  *   review deadlines, overdue loaners, and yesterday's traffic.
  *
  * Uses Promise.allSettled so individual source failures never block the digest.
+ *
+ * Historical analytics context (18-month memory keys) is loaded to surface
+ * traffic comparisons and top-performing articles alongside fresh data.
  */
 
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getAltwireUptime, getAltwireIncidents } from './altus-monitoring.js';
 import { getTrafficSummary } from './altwire-matomo-client.js';
+
+const ANALYTICS_KEYS = {
+  traffic_summary:    'hal:altwire:analytics:traffic_summary',
+  top_articles_18m:  'hal:altwire:analytics:top_articles_18m',
+  seasonality:       'hal:altwire:analytics:seasonality',
+  topic_trends:      'hal:altwire:analytics:topic_trends',
+};
+
+async function loadAnalyticsContext() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT key, value FROM agent_memory
+       WHERE agent = 'hal' AND key LIKE 'hal:altwire:analytics:%' AND deleted_at IS NULL`
+    );
+    if (!rows.length) return null;
+    const ctx = {};
+    for (const row of rows) {
+      try { ctx[row.key] = JSON.parse(row.value); } catch { ctx[row.key] = row.value; }
+    }
+    return ctx;
+  } catch { return null; }
+}
 
 /**
  * Build the daily morning digest from all available data sources.
@@ -71,6 +96,9 @@ export async function getAltwireMorningDigest() {
     ),
     getTrafficSummary('day', 'yesterday'),
   ]);
+
+  // Load historical analytics context alongside fresh fetches
+  const analyticsCtx = await loadAnalyticsContext();
 
   const warnings = [];
 
@@ -192,6 +220,48 @@ export async function getAltwireMorningDigest() {
     warnings.push({ section: 'traffic', message: traffic_warning });
   }
 
+  // --- Build historical analytics context ---
+  let historical = null;
+  if (analyticsCtx) {
+    const ts = analyticsCtx[ANALYTICS_KEYS.traffic_summary];
+    const ta = analyticsCtx[ANALYTICS_KEYS.top_articles_18m];
+    const ss = analyticsCtx[ANALYTICS_KEYS.seasonality];
+    const tt = analyticsCtx[ANALYTICS_KEYS.topic_trends];
+
+    historical = {};
+    if (ts) {
+      const avgMonthly = ts.avg_monthly_pageviews ?? 0;
+      const yesterdayPv = traffic?.nb_pageviews ?? 0;
+      const vsAvg = avgMonthly > 0 ? Math.round(((yesterdayPv * 30) - avgMonthly) / avgMonthly * 100) : 0;
+      historical.traffic_summary = {
+        total_pageviews_18m: ts.total_pageviews ?? 0,
+        avg_monthly_pageviews: avgMonthly,
+        peak_month: ts.peak_month ?? null,
+        peak_month_pageviews: ts.peak_month_pageviews ?? 0,
+        trend_direction: ts.trend_direction ?? null,
+        yesterday_pageviews: yesterdayPv,
+        vs_monthly_avg_pct: vsAvg,
+      };
+    }
+    if (ta?.all_time_top_10?.length) {
+      historical.top_articles_18m = ta.all_time_top_10.slice(0, 5).map((a, i) => ({
+        rank: i + 1,
+        title: a.title ?? 'Unknown',
+        total_pageviews: a.total_pageviews ?? 0,
+        first_month: a.first_month_seen ?? null,
+      }));
+    }
+    if (ss) {
+      historical.seasonality = {
+        peak_season: ss.peak_season ?? null,
+        low_season: ss.low_season ?? null,
+      };
+    }
+    if (tt?.rising_topics?.length) {
+      historical.rising_topics = tt.rising_topics.slice(0, 5).map((t) => t.topic);
+    }
+  }
+
   // --- Build response ---
   const digest = {
     date: today,
@@ -203,6 +273,7 @@ export async function getAltwireMorningDigest() {
     review_deadlines,
     overdue_loaners,
     traffic,
+    historical,
   };
 
   // Include per-section warning fields for failed sections
