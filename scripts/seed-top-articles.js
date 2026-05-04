@@ -11,8 +11,8 @@
  */
 
 import altusDb from '../lib/altus-db.js';
+import { writeAgentMemory } from '../lib/altus-db.js';
 const pool = altusDb; // default export is the pool
-const { writeAgentMemory } = altusDb;
 import { getTopArticles } from '../handlers/altwire-matomo-client.js';
 
 const KEY_7D = 'hal:altwire:top_articles_7d';
