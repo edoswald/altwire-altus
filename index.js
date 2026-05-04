@@ -7,6 +7,7 @@
  * Health: GET /health
  */
 
+import { sessionIdStorage } from './lib/safe-tool-handler.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from 'http';
@@ -26,6 +27,7 @@ import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
+import { emitEvent, getEvents, clearBus, hasEvents } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
@@ -132,6 +134,8 @@ const TOOL_CONTEXTS = {
   list_tracked_articles:      [],
   add_content_idea:            [],
   get_content_ideas:           [],
+  // Link evaluation
+  evaluate_link_fitness:       [],
 };
 
 // Canonical context names for the X-Agent-Context header values.
@@ -1283,9 +1287,144 @@ async function createMcpServer({ agentContext = null } = {}) {
         limit: z.number().int().min(1).max(100).default(50).optional().describe('Max ideas to return (default 50)'),
       },
     },
-    safeToolHandler(async ({ status, limit }) => {
+safeToolHandler(async ({ status, limit }) => {
       const result = await getContentIdeas({ status, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Link Evaluator — pre-publication content fitness
+  // -------------------------------------------------------------------------
+
+  const { evaluateLinkFitness } = await import('./handlers/altus-link-evaluator.js');
+
+  scopedRegister(
+    'evaluate_link_fitness',
+    {
+      description: 'Evaluate a URL for AltWire editorial fitness. Fetches the page, cross-references it with AltWire\'s 18-month analytics, editorial context, and archive coverage, then returns a plain-language fit assessment (excellent/decent/okay/questionable/poor) with reasoning and a suggested angle if it\'s a good fit. Use when Derek or an admin asks "is this link a good fit for AltWire?" or "should we cover this?".',
+      inputSchema: {
+        url: z.string().url().describe('The URL to evaluate'),
+        description: z.string().optional().describe('Optional admin context — any additional description or angle hint from the person asking'),
+      },
+    },
+    safeToolHandler(async ({ url, description }) => {
+      const result = await evaluateLinkFitness({ url, description });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // AI Writer — Phase 3: Author Profile Editing
+  // -------------------------------------------------------------------------
+
+  const { getDerekAuthorProfile } = await import('./hal-harness.js');
+
+  scopedRegister(
+    'get_author_profile',
+    {
+      description: 'Returns Derek\'s full author profile JSON — writing voice, tone preferences, topics to avoid, and what to preserve in AI drafts.',
+    },
+    safeToolHandler(async () => {
+      const profile = await getDerekAuthorProfile();
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, profile: profile || null }) }] };
+    })
+  );
+
+  scopedRegister(
+    'update_author_profile',
+    {
+      description: 'Update a single field of Derek\'s author profile. Valid field paths: writing_voice.tone, writing_voice.formality, what_to_preserve_in_ai_drafts, topics_to_explore, topics_to_avoid.',
+      inputSchema: {
+        field_path: z.string().describe('Dot-notation path to the field — e.g. "writing_voice.tone" or "what_to_preserve_in_ai_drafts"'),
+        value: z.string().describe('New value for the field'),
+      },
+    },
+    safeToolHandler(async ({ field_path, value }) => {
+      const ALLOWED_PATHS = [
+        'writing_voice.tone', 'writing_voice.formality',
+        'what_to_preserve_in_ai_drafts', 'topics_to_explore', 'topics_to_avoid',
+      ];
+      if (!ALLOWED_PATHS.includes(field_path)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_field_path', allowed: ALLOWED_PATHS }) }] };
+      }
+      const current = await getDerekAuthorProfile() || {};
+      const parts = field_path.split('.');
+      let obj = current;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!obj[parts[i]]) obj[parts[i]] = {};
+        obj = obj[parts[i]];
+      }
+      obj[parts[parts.length - 1]] = value;
+      const key = 'hal:altwire:derek_author_profile';
+      await pool.query(
+        `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
+         ON CONFLICT (agent, key) DO UPDATE SET value = $3`,
+        ['hal', key, JSON.stringify(current)]
+      );
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, profile: current }) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // AI Writer — Phase 4: Writer Summary
+  // -------------------------------------------------------------------------
+
+  scopedRegister(
+    'get_writer_summary',
+    {
+      description: 'Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, search opportunities, and today\'s Matomo pageviews.',
+    },
+    safeToolHandler(async () => {
+      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const { rows: activeRows } = await pool.query(
+        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
+      );
+      const { rows: actionRows } = await pool.query(
+        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status IN ('outline_ready', 'draft_ready')`
+      );
+      const { rows: readyRows } = await pool.query(
+        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status = 'ready_to_post'`
+      );
+      const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
+      const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
+      const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+      let digest = null;
+      try { digest = await getAltwireMorningDigest(); } catch { /* non-blocking */ }
+      let analytics = { pageviews_today: 0, top_article: null };
+      try {
+        const matomoData = await getTrafficSummary('day', 'today');
+        analytics = {
+          pageviews_today: matomoData?.pageviews ?? 0,
+          top_article: matomoData?.top_article_title ?? null,
+        };
+      } catch { /* non-blocking */ }
+      let opportunities = { high: 0, medium: 0, low: 0 };
+      try {
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const oppData = await getSearchOpportunities(thirtyDaysAgo, new Date().toISOString().slice(0, 10));
+        if (oppData?.opportunities) {
+          for (const o of oppData.opportunities) {
+            if (o.position >= 5 && o.position <= 10) opportunities.high++;
+            else if (o.position >= 11 && o.position <= 20) opportunities.medium++;
+            else opportunities.low++;
+          }
+        }
+      } catch { /* non-blocking */ }
+      return { content: [{ type: 'text', text: JSON.stringify({
+        success: true,
+        writer: {
+          active: parseInt(activeRows[0]?.count || 0),
+          action_needed: parseInt(actionRows[0]?.count || 0),
+          ready_to_post: parseInt(readyRows[0]?.count || 0),
+        },
+        digest: {
+          last_updated: digest?.generated_at || null,
+          warning_count: digest?.warnings?.length || 0,
+        },
+        opportunities,
+        analytics,
+      }) }] };
     })
   );
 
@@ -1538,15 +1677,81 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // ---------------------------------------------------------------------------
+  // SSE Event Stream — GET /events/:sessionId
+  // Streams tool_start/tool_done/thinking_done events to the Chat UI.
+  // Client subscribes via EventSource, receives events from the in-memory bus.
+  // ---------------------------------------------------------------------------
+  const eventsMatch = url.pathname.match(/^\/events\/(.+)$/);
+  if (eventsMatch && req.method === 'GET') {
+    const sessionId = eventsMatch[1];
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const heartbeat = setInterval(() => {
+      res.write(': ping\n\n');
+    }, 15000);
+
+    const flush = () => {
+      const events = getEvents(sessionId);
+      if (events) {
+        res.write(events);
+      }
+    };
+
+    const poll = setInterval(flush, 100);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      clearInterval(poll);
+      clearBus(sessionId);
+    });
+
+    res.write(': connected\n\n');
+    flush();
+    return;
+  }
+
   // MCP endpoint — stateless POST
   if (url.pathname === '/' || url.pathname === '/mcp') {
     const agentContext = req.headers['x-agent-context'] || null;
+
+    // Extract session_id from request body for SSE event bus correlation
+    const sessionId = await new Promise((resolve) => {
+      if (req.body && typeof req.body === 'object' && req.body.session_id) {
+        resolve(req.body.session_id);
+        return;
+      }
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          resolve(data?.session_id || null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+
     const server = await createMcpServer({ agentContext });
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless — prevents Claude.ai session caching issues
+      sessionIdGenerator: undefined,
     });
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+
+    if (sessionId) {
+      await sessionIdStorage.run(sessionId, async () => {
+        await transport.handleRequest(req, res);
+      });
+    } else {
+      await transport.handleRequest(req, res);
+    }
     return;
   }
 
