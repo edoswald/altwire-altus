@@ -131,6 +131,39 @@ async function main() {
     }
   }
 
+  // 4. Matomo connectivity
+  const matomoUrl = !!process.env.ALTWIRE_MATOMO_URL;
+  const matomoToken = !!process.env.ALTWIRE_MATOMO_TOKEN_AUTH;
+  const matomoSiteId = !!process.env.ALTWIRE_MATOMO_SITE_ID;
+  check('ALTWIRE_MATOMO_URL set', matomoUrl);
+  check('ALTWIRE_MATOMO_TOKEN_AUTH set', matomoToken);
+  check('ALTWIRE_MATOMO_SITE_ID set', matomoSiteId);
+
+  if (matomoUrl && matomoToken && matomoSiteId) {
+    console.log('\n-- Matomo API --');
+    try {
+      const body = new URLSearchParams({
+        module: 'API',
+        method: 'VisitsSummary.get',
+        idSite: process.env.ALTWIRE_MATOMO_SITE_ID,
+        period: 'day',
+        date: 'yesterday',
+        format: 'JSON',
+        token_auth: process.env.ALTWIRE_MATOMO_TOKEN_AUTH,
+      });
+      const res = await fetch(`${process.env.ALTWIRE_MATOMO_URL}/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      check('Matomo API reachable', res.ok, `HTTP ${res.status}`);
+    } catch (err) {
+      check('Matomo API reachable', false, err.message);
+    }
+  } else {
+    console.log('  Will skip Matomo API check — ALTWIRE_MATOMO_* vars not all set');
+  }
+
   // 5. Script syntax check
   console.log('\n-- Script Syntax --');
   try {
