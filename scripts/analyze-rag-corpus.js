@@ -284,7 +284,7 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
   }
 }
 
-function parseJsonOrThrow(text) {
+function parseJsonOrThrow(text, context = '') {
   // Try to extract JSON object — find the first { and matching } using a stack approach
   // to avoid greedy capture of trailing text that might corrupt the JSON
   let depth = 0;
@@ -305,15 +305,21 @@ function parseJsonOrThrow(text) {
       }
     }
   }
-  if (start === -1 || end === -1) throw new Error('No JSON object found in response');
+  if (start === -1 || end === -1) throw new Error('No JSON object found in response' + (context ? ` (${context})` : ''));
   const jsonStr = text.slice(start, end);
   try {
     return JSON.parse(jsonStr);
   } catch (parseErr) {
-    // Fallback: try the old greedy approach for backward compatibility
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON found in response');
-    return JSON.parse(jsonMatch[0]);
+    // Show the problematic area
+    const errPos = parseErr.message.match(/position (\d+)/)?.[1];
+    const pos = errPos ? parseInt(errPos) : null;
+    let excerpt = jsonStr;
+    if (pos !== null) {
+      const startEx = Math.max(0, pos - 50);
+      const endEx = Math.min(jsonStr.length, pos + 50);
+      excerpt = jsonStr.slice(startEx, endEx);
+    }
+    throw new Error(`${parseErr.message} — excerpt: "${excerpt}"${context ? ` (${context})` : ''}`);
   }
 }
 
@@ -361,11 +367,12 @@ async function main() {
         systemPrompt: SYSTEM_PROMPT,
         userPrompt: MINIMAX_ANALYSIS_PROMPT(formattedChunks),
       });
-      minimaxDraft = parseJsonOrThrow(raw);
+      minimaxDraft = parseJsonOrThrow(raw, 'Step 1a editorial');
       console.log('[Step 1a] Minimax editorial draft complete.');
       console.log(JSON.stringify(minimaxDraft, null, 2));
     } catch (err) {
       console.error('[Step 1a] Minimax editorial failed:', err.message);
+      console.error('[Step 1a] Raw response (first 500 chars):', raw.slice(0, 500));
       if (mode === 'minimax-only') process.exit(1);
       console.warn('[Step 1a] Proceeding without editorial draft...');
     }
@@ -393,11 +400,12 @@ async function main() {
         systemPrompt: SYSTEM_PROMPT,
         userPrompt: DEREK_ANALYSIS_PROMPT(formattedDerekChunks),
       });
-      derekMinimaxDraft = parseJsonOrThrow(raw);
+      derekMinimaxDraft = parseJsonOrThrow(raw, 'Step 1b Derek author');
       console.log('[Step 1b] Minimax Derek author draft complete.');
       console.log(JSON.stringify(derekMinimaxDraft, null, 2));
     } catch (err) {
       console.error('[Step 1b] Minimax Derek author failed:', err.message);
+      console.error('[Step 1b] Raw response (first 500 chars):', raw.slice(0, 500));
       console.warn('[Step 1b] Proceeding without Derek author draft...');
     }
   } else if (mode === 'opus-only' && process.env.DEREK_MINIMAX_DRAFT) {
