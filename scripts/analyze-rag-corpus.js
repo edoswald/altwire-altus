@@ -285,10 +285,36 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
 }
 
 function parseJsonOrThrow(text) {
-  // Try to extract JSON from response (may have backticks or preamble)
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('No JSON found in response');
-  return JSON.parse(jsonMatch[0]);
+  // Try to extract JSON object — find the first { and matching } using a stack approach
+  // to avoid greedy capture of trailing text that might corrupt the JSON
+  let depth = 0;
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{' && start === -1) {
+      start = i;
+      depth = 1;
+    } else if (ch === '{' && start !== -1) {
+      depth++;
+    } else if (ch === '}' && start !== -1) {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  if (start === -1 || end === -1) throw new Error('No JSON object found in response');
+  const jsonStr = text.slice(start, end);
+  try {
+    return JSON.parse(jsonStr);
+  } catch (parseErr) {
+    // Fallback: try the old greedy approach for backward compatibility
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON found in response');
+    return JSON.parse(jsonMatch[0]);
+  }
 }
 
 async function main() {
