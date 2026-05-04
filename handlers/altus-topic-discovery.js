@@ -9,6 +9,18 @@ import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
 import { searchAltwireArchive } from './altus-search.js';
 import { synthesizePitches } from '../lib/synthesizer.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
+import { loadEditorialContext, loadTopicTrends, scoreEditorialAffinity } from '../lib/editorial-helpers.js';
+
+const TOPIC_TRENDS_KEY = 'hal:altwire:analytics:topic_trends';
+const SEASONALITY_KEY = 'hal:altwire:analytics:seasonality';
+
+async function readAgentMemoryDirect(agent, key) {
+  const { rows } = await pool.query(
+    'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
+    [agent, key]
+  );
+  return rows[0]?.value ?? null;
+}
 
 /**
  * Classify coverage gap based on archive weighted_score.
@@ -44,7 +56,7 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
       success: true,
       test_mode: true,
       opportunities: [
-        { query: 'test query', impressions: 500, position: 12.3, score: 450, coverageStatus: 'no_coverage', pitches: 'Test pitch' },
+        { query: 'test query', impressions: 500, position: 12.3, score: 450, coverageStatus: 'no_coverage', editorialMultiplier: 1.0, pitches: 'Test pitch' },
       ],
       pitches: 'Test editorial pitches',
       cached: false,
@@ -55,7 +67,15 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
     return { error: 'Database not configured' };
   }
 
-  // Check cache
+  const editorialContext = await loadEditorialContext(readAgentMemoryDirect);
+  const topicTrends = await loadTopicTrends(readAgentMemoryDirect);
+
+  let seasonalityCtx = null;
+  try {
+    const ssRaw = await readAgentMemoryDirect('hal', SEASONALITY_KEY);
+    if (ssRaw) seasonalityCtx = JSON.parse(ssRaw);
+  } catch { /* ignore */ }
+
   const today = new Date().toISOString().slice(0, 10);
   const cacheKey = `altus:story_opportunities:${today}`;
 
@@ -72,14 +92,12 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
     logger.warn('Topic discovery: cache read failed, continuing', { error: err.message });
   }
 
-  // Compute date range
   const endDate = new Date();
   const startDate = new Date();
   startDate.setDate(endDate.getDate() - days);
   const startStr = startDate.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 
-  // Fetch opportunity zone queries
   const gscResult = await getOpportunityZoneQueries(startStr, endStr);
   if (gscResult.error) return gscResult;
   if (gscResult.rows.length === 0) {
@@ -89,13 +107,32 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
     };
   }
 
-  // Check archive coverage for each query
   const scored = [];
   for (const row of gscResult.rows) {
     const query = row.keys[0];
     const archiveResult = await searchAltwireArchive({ query, limit: 3, content_type: 'all' });
     const topScore = archiveResult?.results?.[0]?.weighted_score ?? 0;
     const gap = classifyCoverageGap(topScore);
+
+    const { affinity } = scoreEditorialAffinity(query, editorialContext, topicTrends);
+    const baseScore = scoreOpportunity(row.impressions, row.position, gap.multiplier);
+    const editorialMultiplier = affinity > 0 ? affinity : 0;
+
+    // Seasonality bonus: boost topics that peak in the current month
+    let seasonalityBonus = 1.0;
+    if (seasonalityCtx?.monthly_pattern?.avg_pageviews_by_month) {
+      const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+      const monthAvg = seasonalityCtx.monthly_pattern.avg_pageviews_by_month[currentMonth] ?? 0;
+      const overallAvg = Object.values(seasonalityCtx.monthly_pattern.avg_pageviews_by_month)
+        .reduce((s, v) => s + v, 0) / 12;
+      if (monthAvg > overallAvg * 1.2) {
+        seasonalityBonus = 1.15; // currently in peak season
+      } else if (monthAvg < overallAvg * 0.8) {
+        seasonalityBonus = 0.85; // currently in low season
+      }
+    }
+
+    const finalScore = baseScore * editorialMultiplier * seasonalityBonus;
 
     scored.push({
       query,
@@ -105,15 +142,15 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
       position: row.position,
       coverageStatus: gap.status,
       gapMultiplier: gap.multiplier,
-      score: scoreOpportunity(row.impressions, row.position, gap.multiplier),
+      score: finalScore,
+      editorialMultiplier,
+      seasonalityBonus,
     });
   }
 
-  // Sort by score descending, take top 10
   scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, 10);
+  const top = scored.filter(o => o.score > 0).slice(0, 10);
 
-  // Synthesize pitches
   let pitches = '';
   try {
     const synthesis = await synthesizePitches(top);
@@ -131,7 +168,6 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
     cached: false,
   };
 
-  // Cache result
   try {
     await pool.query(
       `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
