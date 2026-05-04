@@ -217,7 +217,99 @@ function formatChunk(row) {
   return `[${type}] ${title}\n\n${truncated}`;
 }
 
-async function callLLM({ model, systemPrompt, userPrompt }) {
+// Schema names for Minimax response_format
+const EDITORIAL_SCHEMA = 'editorial_analysis';
+const DEREK_SCHEMA = 'derek_author_profile';
+
+const MINIMAX_SCHEMAS = {
+  [EDITORIAL_SCHEMA]: {
+    name: EDITORIAL_SCHEMA,
+    schema: {
+      type: 'object',
+      properties: {
+        tone: {
+          type: 'object',
+          properties: {
+            overall: { type: 'string' },
+            formality: { type: 'string' },
+            audience_assumed_knowledge: { type: 'string' },
+            emotional_range: { type: 'string' },
+          },
+          required: ['overall', 'formality', 'audience_assumed_knowledge', 'emotional_range'],
+        },
+        article_types: {
+          type: 'object',
+          properties: {
+            reviews: { type: 'string' },
+            interviews: { type: 'string' },
+            features: { type: 'string' },
+            listicles: { type: 'string' },
+            news: { type: 'string' },
+            galleries: { type: 'string' },
+          },
+        },
+        subjects: {
+          type: 'object',
+          properties: {
+            top_genres: { type: 'array', items: { type: 'string' } },
+            common_angles: { type: 'array', items: { type: 'string' } },
+            coverage_depth: { type: 'string' },
+            recurring_themes: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        headline_patterns: {
+          type: 'object',
+          properties: {
+            typical_length: { type: 'string' },
+            common_formulas: { type: 'array', items: { type: 'string' } },
+            questions_used: { type: 'boolean' },
+            numbers_used: { type: 'boolean' },
+            all_caps_rare: { type: 'boolean' },
+          },
+        },
+        voice_markers: { type: 'array', items: { type: 'string' } },
+        what_makes_good_altwire_article: { type: 'string' },
+      },
+      required: ['tone', 'article_types', 'subjects', 'headline_patterns', 'voice_markers', 'what_makes_good_altwire_article'],
+    },
+  },
+  [DEREK_SCHEMA]: {
+    name: DEREK_SCHEMA,
+    schema: {
+      type: 'object',
+      properties: {
+        writing_voice: {
+          type: 'object',
+          properties: {
+            tone: { type: 'string' },
+            sentence_patterns: { type: 'string' },
+            first_person_usage: { type: 'string' },
+            emotional_candor: { type: 'string' },
+            humor_style: { type: 'string' },
+          },
+          required: ['tone', 'sentence_patterns', 'first_person_usage', 'emotional_candor', 'humor_style'],
+        },
+        strengths: { type: 'array', items: { type: 'string' } },
+        signature_habits: { type: 'array', items: { type: 'string' } },
+        editorial_voice_markers: { type: 'array', items: { type: 'string' } },
+        topics_specialties: { type: 'array', items: { type: 'string' } },
+        prose_tendencies: {
+          type: 'object',
+          properties: {
+            paragraph_style: { type: 'string' },
+            transition_style: { type: 'string' },
+            detail_level: { type: 'string' },
+            quote_integration: { type: 'string' },
+          },
+        },
+        what_to_preserve_in_ai_drafts: { type: 'string' },
+      },
+      required: ['writing_voice', 'strengths', 'signature_habits', 'editorial_voice_markers', 'topics_specialties', 'prose_tendencies', 'what_to_preserve_in_ai_drafts'],
+    },
+  },
+};
+
+async function callLLM({ model, systemPrompt, userPrompt, minimaxSchema }) {
   const isMinimax = model === MINIMAX_MODEL;
   const apiKey = isMinimax
     ? process.env.MINIMAX_API_KEY
@@ -243,60 +335,7 @@ async function callLLM({ model, systemPrompt, userPrompt }) {
           { role: 'user', content: userPrompt },
         ],
         temperature: 0.3,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'editorial_analysis',
-            schema: {
-              type: 'object',
-              properties: {
-                tone: {
-                  type: 'object',
-                  properties: {
-                    overall: { type: 'string' },
-                    formality: { type: 'string' },
-                    audience_assumed_knowledge: { type: 'string' },
-                    emotional_range: { type: 'string' },
-                  },
-                  required: ['overall', 'formality', 'audience_assumed_knowledge', 'emotional_range'],
-                },
-                article_types: {
-                  type: 'object',
-                  properties: {
-                    reviews: { type: 'string' },
-                    interviews: { type: 'string' },
-                    features: { type: 'string' },
-                    listicles: { type: 'string' },
-                    news: { type: 'string' },
-                    galleries: { type: 'string' },
-                  },
-                },
-                subjects: {
-                  type: 'object',
-                  properties: {
-                    top_genres: { type: 'array', items: { type: 'string' } },
-                    common_angles: { type: 'array', items: { type: 'string' } },
-                    coverage_depth: { type: 'string' },
-                    recurring_themes: { type: 'array', items: { type: 'string' } },
-                  },
-                },
-                headline_patterns: {
-                  type: 'object',
-                  properties: {
-                    typical_length: { type: 'string' },
-                    common_formulas: { type: 'array', items: { type: 'string' } },
-                    questions_used: { type: 'boolean' },
-                    numbers_used: { type: 'boolean' },
-                    all_caps_rare: { type: 'boolean' },
-                  },
-                },
-                voice_markers: { type: 'array', items: { type: 'string' } },
-                what_makes_good_altwire_article: { type: 'string' },
-              },
-              required: ['tone', 'article_types', 'subjects', 'headline_patterns', 'voice_markers', 'what_makes_good_altwire_article'],
-            },
-          },
-        },
+        ...(minimaxSchema ? { response_format: { type: 'json_schema', json_schema: minimaxSchema } } : {}),
       }),
     });
 
@@ -427,18 +466,20 @@ async function main() {
   // Step 1a: Minimax editorial context
   if (mode === 'minimax-only' || mode === 'full') {
     console.log('\n[Step 1a] Running Minimax editorial analysis...');
+    let raw = null;
     try {
-      const raw = await callLLM({
+      raw = await callLLM({
         model: MINIMAX_MODEL,
         systemPrompt: SYSTEM_PROMPT,
         userPrompt: MINIMAX_ANALYSIS_PROMPT(formattedChunks),
+        minimaxSchema: MINIMAX_SCHEMAS[EDITORIAL_SCHEMA],
       });
       minimaxDraft = parseJsonOrThrow(raw, 'Step 1a editorial');
       console.log('[Step 1a] Minimax editorial draft complete.');
       console.log(JSON.stringify(minimaxDraft, null, 2));
     } catch (err) {
       console.error('[Step 1a] Minimax editorial failed:', err.message);
-      console.error('[Step 1a] Raw response (first 500 chars):', raw.slice(0, 500));
+      if (raw) console.error('[Step 1a] Raw response (first 500 chars):', raw.slice(0, 500));
       if (mode === 'minimax-only') process.exit(1);
       console.warn('[Step 1a] Proceeding without editorial draft...');
     }
@@ -460,18 +501,20 @@ async function main() {
   // Step 1b: Minimax Derek author profile
   if (derekChunks.length > 0 && (mode === 'minimax-only' || mode === 'full')) {
     console.log('\n[Step 1b] Running Minimax Derek author analysis...');
+    let raw = null;
     try {
-      const raw = await callLLM({
+      raw = await callLLM({
         model: MINIMAX_MODEL,
         systemPrompt: SYSTEM_PROMPT,
         userPrompt: DEREK_ANALYSIS_PROMPT(formattedDerekChunks),
+        minimaxSchema: MINIMAX_SCHEMAS[DEREK_SCHEMA],
       });
       derekMinimaxDraft = parseJsonOrThrow(raw, 'Step 1b Derek author');
       console.log('[Step 1b] Minimax Derek author draft complete.');
       console.log(JSON.stringify(derekMinimaxDraft, null, 2));
     } catch (err) {
       console.error('[Step 1b] Minimax Derek author failed:', err.message);
-      console.error('[Step 1b] Raw response (first 500 chars):', raw.slice(0, 500));
+      if (raw) console.error('[Step 1b] Raw response (first 500 chars):', raw.slice(0, 500));
       console.warn('[Step 1b] Proceeding without Derek author draft...');
     }
   } else if (mode === 'opus-only' && process.env.DEREK_MINIMAX_DRAFT) {
