@@ -16,10 +16,11 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@slack/bolt": "^4.0.0",
+    "date-fns-tz": "^3.2.0",
     "googleapis": "^146.0.0",
-    "pg": "^8.11.0",
     "node-cron": "^3.0.0",
     "openai": "^4.0.0",
+    "pg": "^8.11.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
