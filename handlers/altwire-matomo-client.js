@@ -110,7 +110,12 @@ export async function getTopArticles(period, date, limit = 20) {
   if (result.error) return result;
 
   // Client-side exclusion filter: remove homepage, language redirects, root, system pages.
-  const EXCLUDE_LABELS = new Set(['/index', '/', 'es', 'fr', 'de', 'pt', 'it']);
+  // Matomo stores language variant pages at paths like /ru/, /es/, /fr/, etc.
+  // Also filter out taxonomy pages (reviews, tag) and system pages.
+  const EXCLUDE_LABELS = new Set([
+    '/index', '/', 'es', 'fr', 'de', 'pt', 'it', 'ru',
+    'reviews', 'tag', 'contact', 'about', 'home', 'search',
+  ]);
 
   const filtered = Array.isArray(result)
     ? result.filter((r) => {
