@@ -739,11 +739,25 @@ async function main() {
   if (trafficCriticResult.status === 'fulfilled' && trafficCriticResult.value) {
     results.traffic_summary = trafficCriticResult.value;
     log('Sonnet critic refined traffic_summary');
+  } else {
+    log('Sonnet critic skipped traffic_summary', { status: trafficCriticResult.status, hasValue: !!trafficCriticResult.value, error: trafficCriticResult.status === 'rejected' ? trafficCriticResult.reason?.message : null });
   }
   if (topicTrendsCriticResult.status === 'fulfilled' && topicTrendsCriticResult.value) {
     results.topic_trends = topicTrendsCriticResult.value;
     log('Sonnet critic refined topic_trends');
+  } else {
+    log('Sonnet critic skipped topic_trends', { status: topicTrendsCriticResult.status, hasValue: !!topicTrendsCriticResult.value, error: topicTrendsCriticResult.status === 'rejected' ? topicTrendsCriticResult.reason?.message : null });
   }
+
+  log('Minimally parsed results:', {
+    traffic_summary:     results.traffic_summary ? 'populated' : 'null',
+    top_articles_18m:     results.top_articles_18m ? 'populated' : 'null',
+    article_type_perf:    results.article_type_perf ? 'populated' : 'null',
+    topic_trends:        results.topic_trends ? 'populated' : 'null',
+    referrer_summary:    results.referrer_summary ? 'populated' : 'null',
+    search_keywords_18m:  results.search_keywords_18m ? 'populated' : 'null',
+    seasonality:        results.seasonality ? 'populated' : 'null',
+  });
 
   // Write all memory keys
   log('Writing memory keys to agent_memory...');
