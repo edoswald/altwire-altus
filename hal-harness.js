@@ -17,7 +17,7 @@ const SOUL_KEYS = {
 };
 
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
-const DEREK_AUTHOR_KEY = 'hal:altwire:derek_author_profile';
+const EDITORIAL_VOICE_KEY = 'hal:altwire:editorial_voice_profile';
 
 const ANALYTICS_KEYS = {
   traffic_summary:      'hal:altwire:analytics:traffic_summary',
@@ -75,7 +75,7 @@ async function loadDerekAuthorProfile() {
   try {
     const result = await pool.query(
       `SELECT value FROM agent_memory WHERE agent = 'hal' AND key = $1 LIMIT 1`,
-      [DEREK_AUTHOR_KEY]
+      [EDITORIAL_VOICE_KEY]
     );
     if (result.rows[0]?.value) {
       return JSON.parse(result.rows[0].value);

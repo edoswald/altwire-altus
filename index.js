@@ -1326,7 +1326,7 @@ safeToolHandler(async ({ status, limit }) => {
   scopedRegister(
     'get_author_profile',
     {
-      description: 'Returns Derek\'s full author profile JSON — writing voice, tone preferences, topics to avoid, and what to preserve in AI drafts.',
+      description: 'Returns the editorial voice profile — writing voice, tone preferences, and what to preserve in AI-generated drafts.',
     },
     safeToolHandler(async () => {
       const profile = await getDerekAuthorProfile();
@@ -1337,7 +1337,7 @@ safeToolHandler(async ({ status, limit }) => {
   scopedRegister(
     'update_author_profile',
     {
-      description: 'Update a single field of Derek\'s author profile. Valid field paths: writing_voice.tone, writing_voice.formality, what_to_preserve_in_ai_drafts, topics_to_explore, topics_to_avoid.',
+      description: 'Update a single field of the editorial voice profile. Valid field paths: writing_voice.tone, writing_voice.formality, writing_voice.sentence_patterns, writing_voice.first_person_usage, writing_voice.emotional_candor, writing_voice.humor_style, what_to_preserve_in_ai_drafts.',
       inputSchema: {
         field_path: z.string().describe('Dot-notation path to the field — e.g. "writing_voice.tone" or "what_to_preserve_in_ai_drafts"'),
         value: z.string().describe('New value for the field'),
@@ -1348,7 +1348,7 @@ safeToolHandler(async ({ status, limit }) => {
         'writing_voice.tone', 'writing_voice.formality',
         'writing_voice.sentence_patterns', 'writing_voice.first_person_usage',
         'writing_voice.emotional_candor', 'writing_voice.humor_style',
-        'what_to_preserve_in_ai_drafts', 'topics_to_explore', 'topics_to_avoid',
+        'what_to_preserve_in_ai_drafts',
       ];
       if (!ALLOWED_PATHS.includes(field_path)) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_field_path', allowed: ALLOWED_PATHS }) }] };
@@ -1361,7 +1361,7 @@ safeToolHandler(async ({ status, limit }) => {
         obj = obj[parts[i]];
       }
       obj[parts[parts.length - 1]] = value;
-      const key = 'hal:altwire:derek_author_profile';
+      const key = 'hal:altwire:editorial_voice_profile';
       await pool.query(
         `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
          ON CONFLICT (agent, key) DO UPDATE SET value = $3`,

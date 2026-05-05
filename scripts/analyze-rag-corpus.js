@@ -17,7 +17,7 @@ import altusDb, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 const pool = altusDb; // default export is the pool
 
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
-const DEREK_AUTHOR_KEY = 'hal:altwire:derek_author_profile';
+const EDITORIAL_VOICE_KEY = 'hal:altwire:editorial_voice_profile';
 const RAG_SAMPLE_SIZE = 250; // chunks to sample for analysis
 const DEREK_SAMPLE_SIZE = 100; // Derek's own chunks for author profiling
 const MINIMAX_MODEL = 'MiniMax-M2.7';
@@ -574,8 +574,8 @@ async function main() {
 
       // Write to agent_memory
       const derekValue = JSON.stringify(derekProfile, null, 2);
-      await writeAgentMemory('hal', DEREK_AUTHOR_KEY, derekValue);
-      console.log(`\n[Done] Wrote ${DEREK_AUTHOR_KEY} to agent_memory.`);
+      await writeAgentMemory('hal', EDITORIAL_VOICE_KEY, derekValue);
+      console.log(`\n[Done] Wrote ${EDITORIAL_VOICE_KEY} to agent_memory.`);
 
       if (mode === 'full') {
         await writeAgentMemory('hal', 'hal:altwire:derek_author_profile:draft', JSON.stringify(derekMinimaxDraft));
