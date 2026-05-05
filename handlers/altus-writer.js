@@ -451,11 +451,27 @@ Return ONLY the corrected section text including the heading. Do not include any
     draftContent = spliceSection(draftContent, sectionHeading, corrected);
   }
 
-  // Re-check
+  // Re-check the updated draft
   const reCheckResponse = await generate({
     toolName: 'fact_check_draft',
     system: factCheckSystem,
-    prompt: factCheckPrompt.replace(assignment.draft_content, draftContent),
+    prompt: `Fact-check the following corrected article about ${assignment.topic}. Use web search to verify specific claims about dates, names, album titles, chart positions, and factual statements.
+
+${draftContent}
+
+Return JSON:
+{
+  "passed": true/false,
+  "issues": [
+    {
+      "section_heading": "## Section Title",
+      "claim": "the specific claim that may be wrong",
+      "issue": "what appears to be incorrect",
+      "severity": "high|medium|low"
+    }
+  ]
+}
+If no issues found, return { "passed": true, "issues": [] }`,
     webSearch: true,
     jsonMode: true,
   });
