@@ -237,7 +237,7 @@ async function analyzeFitWithLLM(contextDump) {
   const { default: OpenAI } = await import('openai');
   const client = new OpenAI({
     apiKey: process.env.MINIMAX_API_KEY,
-    baseURL: 'https://api.minimax.chat/v1',
+    baseURL: 'https://api.minimax.io/v1',
   });
 
   const SYSTEM = `You are an editorial strategist for AltWire, an independent music and lifestyle publication. You evaluate whether external content or stories are a good fit for AltWire's editorial identity.
