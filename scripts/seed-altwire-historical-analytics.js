@@ -312,7 +312,7 @@ const minimaxClient = new OpenAI({
   baseURL: 'https://api.minimax.io/v1',
 });
 
-const ANALYSIS_MODEL = 'MiniMax-2.7';
+const ANALYSIS_MODEL = 'MiniMax-M2.7';
 
 const ANALYSIS_SYSTEM_PROMPT = `You are an editorial data analyst for AltWire, a music and lifestyle publication.
 Given structured analytics data about the publication's traffic over 18 months, produce concise, actionable
