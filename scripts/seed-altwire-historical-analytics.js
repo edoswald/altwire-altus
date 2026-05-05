@@ -731,17 +731,17 @@ async function main() {
 
   // Pass 2: Sonnet critic on traffic_summary and topic_trends
   log('Running Sonnet critic pass...');
-  const [criticTraffic, criticTopicTrends] = await Promise.allSettled([
+  const [trafficCriticResult, topicTrendsCriticResult] = await Promise.allSettled([
     results.traffic_summary ? criticTrafficSummary(results.traffic_summary) : Promise.resolve(null),
     results.topic_trends ? criticTopicTrends(results.topic_trends) : Promise.resolve(null),
   ]);
 
-  if (criticTraffic.status === 'fulfilled' && criticTraffic.value) {
-    results.traffic_summary = criticTraffic.value;
+  if (trafficCriticResult.status === 'fulfilled' && trafficCriticResult.value) {
+    results.traffic_summary = trafficCriticResult.value;
     log('Sonnet critic refined traffic_summary');
   }
-  if (criticTopicTrends.status === 'fulfilled' && criticTopicTrends.value) {
-    results.topic_trends = criticTopicTrends.value;
+  if (topicTrendsCriticResult.status === 'fulfilled' && topicTrendsCriticResult.value) {
+    results.topic_trends = topicTrendsCriticResult.value;
     log('Sonnet critic refined topic_trends');
   }
 
