@@ -187,6 +187,17 @@ const TOOL_CONTEXTS = {
   // Slack status (Altus outbound)
   post_slack_status:           [],
   get_slack_post_history:     [],
+  // Slack extended capabilities
+  add_slack_reaction:          [],
+  list_slack_reactions:        [],
+  get_slack_dnd_status:        [],
+  upload_slack_file:           [],
+  list_slack_channel_files:    [],
+  share_slack_file_public:     [],
+  send_slack_dm:               [],
+  open_slack_dm:               [],
+  search_slack_messages:       [],
+  schedule_slack_message:      [],
   // Hal memory — nimbus-only tools (scoped to 'nimbus' agentContext)
   hal_read_memory:             ['nimbus'],
   hal_write_memory:            ['nimbus'],
@@ -1409,6 +1420,166 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     safeToolHandler(async ({ limit, severity_filter }) => {
       const posts = await getSlackPostHistory({ limit, severity_filter });
       return { content: [{ type: 'text', text: JSON.stringify(posts) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // SLACK EXTENDED CAPABILITIES
+  // -------------------------------------------------------------------------
+
+  const { addReaction, listReactions, getDndStatus, uploadSlackFile, listChannelFiles, shareFilePublic, sendDm, openDm, searchSlackMessages, scheduleSlackMessage } = await import('./handlers/slack-altus.js');
+
+  scopedRegister(
+    'add_slack_reaction',
+    {
+      description: 'Add an emoji reaction to a Slack message. Use this when someone asks Hal to react to something, or as acknowledgment.',
+      inputSchema: {
+        channel: z.string().describe('Slack channel ID of the message'),
+        message_ts: z.string().describe('Timestamp of the message to react to'),
+        emoji: z.string().describe('Emoji name without colons, e.g. "white_check_mark" or "heart"'),
+      },
+    },
+    safeToolHandler(async ({ channel, message_ts, emoji }) => {
+      const result = await addReaction(channel, message_ts, emoji);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'list_slack_reactions',
+    {
+      description: 'List all emoji reactions on a specific Slack message. Useful for reading reaction context.',
+      inputSchema: {
+        channel: z.string().describe('Slack channel ID'),
+        message_ts: z.string().describe('Timestamp of the message'),
+      },
+    },
+    safeToolHandler(async ({ channel, message_ts }) => {
+      const reactions = await listReactions(channel, message_ts);
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, reactions }) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_slack_dnd_status',
+    {
+      description: "Get a Slack user's Do Not Disturb status. Pass no user_id to check the team member's own status. Useful for context-awareness before initiating contact.",
+      inputSchema: {
+        user_id: z.string().optional().describe('Slack user ID. Omit to check own DND status.'),
+      },
+    },
+    safeToolHandler(async ({ user_id }) => {
+      const result = await getDndStatus(user_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'upload_slack_file',
+    {
+      description: 'Upload a file to Slack, optionally posting it to one or more channels. Returns a file ID and permalink.',
+      inputSchema: {
+        content: z.string().optional().describe('File content as a string'),
+        filename: z.string().describe('Name of the file to upload'),
+        title: z.string().optional().describe('Title shown in Slack'),
+        channels: z.string().optional().describe('Comma-separated channel IDs to post the file to'),
+        initial_comment: z.string().optional().describe('Comment to attach when posting to channels'),
+      },
+    },
+    safeToolHandler(async ({ content, filename, title, channels, initial_comment }) => {
+      const result = await uploadSlackFile({ content, filename, title, channels, initialComment: initial_comment });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'list_slack_channel_files',
+    {
+      description: 'List recent files shared in a Slack channel. Useful for retrieving documents, exports, or assets.',
+      inputSchema: {
+        channel: z.string().describe('Slack channel ID to search'),
+        limit: z.number().int().min(1).max(100).default(10).optional().describe('Max files to return'),
+      },
+    },
+    safeToolHandler(async ({ channel, limit }) => {
+      const files = await listChannelFiles(channel, limit);
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, files }) }] };
+    })
+  );
+
+  scopedRegister(
+    'share_slack_file_public',
+    {
+      description: 'Generate a public shareable URL for a Slack file. Use this to share files outside Slack or via email.',
+      inputSchema: {
+        file_id: z.string().describe('Slack file ID'),
+      },
+    },
+    safeToolHandler(async ({ file_id }) => {
+      const result = await shareFilePublic(file_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'send_slack_dm',
+    {
+      description: 'Send a direct message to a Slack user. Opens a DM conversation if one does not exist.',
+      inputSchema: {
+        user_id: z.string().describe('Slack user ID to send the DM to'),
+        text: z.string().min(1).max(4000).describe('Message text (max 4000 chars)'),
+      },
+    },
+    safeToolHandler(async ({ user_id, text }) => {
+      const result = await sendDm(user_id, text);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'open_slack_dm',
+    {
+      description: 'Open a direct message conversation with a Slack user. Returns the channel ID for threading follow-up messages.',
+      inputSchema: {
+        user_id: z.string().describe('Slack user ID'),
+      },
+    },
+    safeToolHandler(async ({ user_id }) => {
+      const channel = await openDm(user_id);
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, channel }) }] };
+    })
+  );
+
+  scopedRegister(
+    'search_slack_messages',
+    {
+      description: 'Search past messages in Slack by keyword. Useful for finding context, prior decisions, or customer history across all channels.',
+      inputSchema: {
+        query: z.string().min(1).max(500).describe('Search query string'),
+        limit: z.number().int().min(1).max(100).default(20).optional().describe('Max results to return'),
+        channels: z.array(z.string()).optional().describe('Optional channel IDs to restrict search to'),
+      },
+    },
+    safeToolHandler(async ({ query, limit, channels }) => {
+      const result = await searchSlackMessages(query, limit, channels);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'schedule_slack_message',
+    {
+      description: 'Schedule a message to be posted to a Slack channel at a future time. Use for announcements, reminders, or time-sensitive posts.',
+      inputSchema: {
+        channel: z.string().describe('Slack channel ID to post to'),
+        text: z.string().min(1).max(4000).describe('Message text'),
+        post_at_ts: z.number().int().describe('Unix timestamp for when to deliver the message (must be in the future, max 120 days out)'),
+        emoji: z.string().optional().describe('Optional lead emoji'),
+      },
+    },
+    safeToolHandler(async ({ channel, text, post_at_ts, emoji }) => {
+      const result = await scheduleSlackMessage(channel, text, post_at_ts, emoji);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
 

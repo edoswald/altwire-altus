@@ -62,6 +62,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Lifecycle: proposed → accepted → completed / dismissed
   - `altus:heartbeat:last_run` memory key for session visibility
 
+- **Slack extended capabilities** (`handlers/slack-altus.js` + `index.js`):
+  - `add_slack_reaction` — add emoji reactions to messages
+  - `list_slack_reactions` — read reactions on any message (uses `reactions.get`)
+  - `get_slack_dnd_status` — read a user's Do Not Disturb status for context-awareness
+  - `upload_slack_file` — upload files to Slack, optionally post to channels
+  - `list_slack_channel_files` — list recent files in a channel
+  - `share_slack_file_public` — generate a public share URL for a Slack file
+  - `send_slack_dm` — proactively send a DM to any Slack user
+  - `open_slack_dm` — open a DM conversation (returns channel ID for threading)
+  - `search_slack_messages` — search past messages by keyword across all channels
+  - `schedule_slack_message` — schedule a message for future delivery to a channel
+  - All helpers use existing `slackApp` client with proper error handling and graceful degradation when Slack is uninitialized
+  - Labels added to `hal-labels.js` for all 10 new tools
+
+  - **New `/hal orders` slash command** — routed to nimbus for contextual order summaries from within Slack:
+    - `/hal orders summary` — brief 3-5 sentence ops summary of recent order activity
+    - `/hal orders search <query>` — search order records and customer history for a term
+    - Falls back to general nimbus routing for any other `/hal ...` input
+
+  **Required Slack OAuth scopes** (add to the AltWire Slack app in api.slack.com → OAuth & Permissions → Bot Token Scopes):
+  - `reactions:write` — for `add_slack_reaction`
+  - `reactions:read` — for `list_slack_reactions` (via `reactions.get`)
+  - `dnd:read` — for `get_slack_dnd_status` (via `dnd.info`)
+  - `files:read` — for `list_slack_channel_files` and `files.getPermalink`
+  - `files:write` — for `upload_slack_file` and `share_slack_file_public` (via `files.sharedPublicURL`)
+  - `channels:write` — for `conversations.open` (DMs)
+  - `chat:write` — for `send_slack_dm`, `open_slack_dm`, and `schedule_slack_message` (already likely present)
+  - `search:read.public` — for `search_slack_messages` (bot token; extend with `search:read.private` for private channels)
+
 ### Changed
 
 - `safe-tool-handler.js` — enhanced to emit SSE tool events and log to `altus_events`. Now emits `tool_start` before handler execution and `tool_done` after completion (success or error), with `duration_ms` and error message on failure.
