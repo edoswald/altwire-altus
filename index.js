@@ -136,6 +136,9 @@ const TOOL_CONTEXTS = {
   get_content_ideas:           [],
   // Link evaluation
   evaluate_link_fitness:       [],
+  // Author profile
+  get_author_profile:           [],
+  update_author_profile:         [],
 };
 
 // Canonical context names for the X-Agent-Context header values.
@@ -1343,6 +1346,8 @@ safeToolHandler(async ({ status, limit }) => {
     safeToolHandler(async ({ field_path, value }) => {
       const ALLOWED_PATHS = [
         'writing_voice.tone', 'writing_voice.formality',
+        'writing_voice.sentence_patterns', 'writing_voice.first_person_usage',
+        'writing_voice.emotional_candor', 'writing_voice.humor_style',
         'what_to_preserve_in_ai_drafts', 'topics_to_explore', 'topics_to_avoid',
       ];
       if (!ALLOWED_PATHS.includes(field_path)) {
