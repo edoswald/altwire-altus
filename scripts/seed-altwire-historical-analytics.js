@@ -759,6 +759,25 @@ async function main() {
     seasonality:        results.seasonality ? 'populated' : 'null',
   });
 
+  // Dump referrer_summary to see why it's null
+  log('Referrer summary raw debug:', {
+    typesLength: results.referrer_summary?.types?.length,
+    minimaxStatus: results.referrer_summary ? 'populated' : 'null',
+    breakdownMonths: Array.isArray(results.referrer_summary) ? results.referrer_summary.length : 'not array',
+  });
+
+  // Dump top_articles debug
+  log('Top articles raw debug:', {
+    articlesLength: results.top_articles_18m?.all_time_top_10?.length,
+    minimaxStatus: results.top_articles_18m ? 'populated' : 'null',
+  });
+
+  // Dump article_type debug
+  log('Article type perf raw debug:', {
+    typeBreakdown: results.article_type_perf?.type_breakdown,
+    minimaxStatus: results.article_type_perf ? 'populated' : 'null',
+  });
+
   // Write all memory keys
   log('Writing memory keys to agent_memory...');
   const writePromises = [
