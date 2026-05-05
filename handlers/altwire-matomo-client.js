@@ -28,9 +28,10 @@ function getConfig() {
  * @param {string} method  e.g. 'VisitsSummary.get'
  * @param {string} period  e.g. 'day', 'week', 'month'
  * @param {string} date    e.g. 'yesterday', '2024-06-15'
+ * @param {object} [extraParams]  Additional Matomo API params (e.g. filter_pattern, filter_limit)
  * @returns {Promise<object>}
  */
-async function callApi(method, period, date) {
+async function callApi(method, period, date, extraParams = {}) {
   const cfg = getConfig();
   if (!cfg.configured) return cfg;
 
@@ -42,6 +43,7 @@ async function callApi(method, period, date) {
     date,
     format: 'JSON',
     token_auth: cfg.token,
+    ...extraParams,
   });
 
   let response;
@@ -89,8 +91,11 @@ export async function getTrafficSummary(period, date) {
 }
 
 /**
- * Top pages: most viewed articles.
- * Uses Actions.getPageUrls.
+ * Top articles: most viewed articles (client-side filtered to exclude non-article pages).
+ * Matomo filter_pattern only supports inclusion (rows must match), not exclusion,
+ * so we fetch the full result and filter client-side.
+ *
+ * Excludes: homepage (/index), language redirects (/es, /fr, /de, /pt, /it), root (/).
  *
  * @param {string} period
  * @param {string} date
@@ -104,9 +109,39 @@ export async function getTopArticles(period, date, limit = 20) {
   const result = await callApi('Actions.getPageUrls', period, date);
   if (result.error) return result;
 
-  const pages = Array.isArray(result) ? result.slice(0, limit) : [];
+  // Client-side exclusion filter: remove homepage, language redirects, root, system pages.
+  const EXCLUDE_LABELS = new Set(['/index', '/', 'es', 'fr', 'de', 'pt', 'it']);
+
+  const filtered = Array.isArray(result)
+    ? result.filter((r) => {
+        const label = r.label ?? '';
+        // Exclude root pages: homepage (/index), root (/), language codes at any path depth
+        if (EXCLUDE_LABELS.has(label)) return false;
+        // Exclude labels that start with /es/, /fr/, /de/, /pt/, /it/ (language redirects)
+        if (/^\/(es|fr|de|pt|it)\//.test(label)) return false;
+        return true;
+      })
+    : [];
+
+  const pages = filtered.slice(0, limit);
   logger.info('AltWire Matomo top articles fetched', { period, date, count: pages.length });
   return pages;
+}
+
+/**
+ * Top pages: most viewed, entry pages, exit pages.
+ * Returns object with pageUrls array for compatibility.
+ * Now excludes non-article pages via the same filtering as getTopArticles.
+ *
+ * @param {string} period
+ * @param {string} date
+ * @param {number} [limit=20]
+ * @returns {Promise<object>}
+ */
+export async function getTopPages(period, date, limit = 20) {
+  const pages = await getTopArticles(period, date, limit);
+  if (pages.error) return pages;
+  return { pageUrls: pages };
 }
 
 /**
@@ -148,21 +183,6 @@ export async function getReferrerBreakdown(period, date) {
 
   logger.info('AltWire Matomo referrer breakdown fetched', { period, date });
   return { types, websites, campaigns };
-}
-
-/**
- * Top pages: most viewed, entry pages, exit pages.
- * Returns object with pageUrls array for compatibility.
- *
- * @param {string} period
- * @param {string} date
- * @param {number} [limit=20]
- * @returns {Promise<object>}
- */
-export async function getTopPages(period, date, limit = 20) {
-  const pages = await getTopArticles(period, date, limit);
-  if (pages.error) return pages;
-  return { pageUrls: pages };
 }
 
 /**
