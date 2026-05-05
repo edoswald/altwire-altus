@@ -31,6 +31,18 @@ export const LABEL_MAP = {
   post_slack_status: 'Posting to Slack',
   get_slack_post_history: 'Fetching Slack history',
 
+  // Slack extended capabilities
+  add_slack_reaction: 'Adding reaction',
+  list_slack_reactions: 'Reading reactions',
+  get_slack_dnd_status: 'Checking DND status',
+  upload_slack_file: 'Uploading file to Slack',
+  list_slack_channel_files: 'Listing Slack files',
+  share_slack_file_public: 'Sharing file publicly',
+  send_slack_dm: 'Sending DM',
+  open_slack_dm: 'Opening DM',
+  search_slack_messages: 'Searching Slack messages',
+  schedule_slack_message: 'Scheduling Slack message',
+
   // Agent memory
   hal_read_memory: 'Reading memory',
   hal_write_memory: 'Writing memory',

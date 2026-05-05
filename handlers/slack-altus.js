@@ -390,9 +390,50 @@ async function handleSlashCommand(payload) {
     await postEphemeral(channel_id, user_id, 'Usage: `/hal <your question>` — Ask Hal anything about AltWire operations.');
     return;
   }
+
+  const trimmed = text.trim();
+  const spaceIdx = trimmed.indexOf(' ');
+  const command = spaceIdx === -1 ? trimmed.toLowerCase() : trimmed.slice(0, spaceIdx).toLowerCase();
+  const args = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1);
+
+  if (command === 'orders') {
+    const subcommand = args.toLowerCase().trim();
+    if (subcommand === 'summary' || subcommand === '') {
+      await routeToNimbus({
+        message: 'Provide a brief (3-5 sentence) summary of recent order activity: number of orders, any notable customer issues or escalations, current return rate if known, and anything operationally significant from the past 24-48 hours. Use Cirrusly Weather operational context. Be concise.',
+        history: [],
+        channel: channel_id,
+        threadTs: thread_ts || null,
+        isDm: false,
+        slackUserId: user_id,
+        agentContext: 'cirrusly',
+        ephemeral: !thread_ts,
+        responseUrl: response_url,
+      });
+      return;
+    } else if (subcommand.startsWith('search ') || subcommand.startsWith('find ')) {
+      const query = subcommand.replace(/^(search|find)\s+/, '').trim();
+      await routeToNimbus({
+        message: `Search the order records and customer message history for: "${query}". Return relevant order IDs, customer names, and issue summaries. If nothing is found, say so.`,
+        history: [],
+        channel: channel_id,
+        threadTs: thread_ts || null,
+        isDm: false,
+        slackUserId: user_id,
+        agentContext: 'cirrusly',
+        ephemeral: !thread_ts,
+        responseUrl: response_url,
+      });
+      return;
+    } else {
+      await postEphemeral(channel_id, user_id, '`/hal orders` — Ask Hal for an order summary.\n\nUsage:\n`/hal orders summary` — Brief ops summary of recent orders\n`/hal orders search <query>` — Search orders and customer history for a term');
+      return;
+    }
+  }
+
   const channelCtx = getChannelContext(channel_id);
   await routeToNimbus({
-    message: text.trim(),
+    message: trimmed,
     history: [],
     channel: channel_id,
     threadTs: thread_ts || null,
@@ -598,6 +639,242 @@ export async function getSlackPostHistory({ limit = 10, severity_filter = null }
   params.push(effectiveLimit);
   const { rows } = await pool.query(query, params);
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Emoji / Reactions
+// ---------------------------------------------------------------------------
+
+/**
+ * Add a reaction (emoji) to a message.
+ * @param {string} channel - Channel ID
+ * @param {string} messageTs - Message timestamp
+ * @param {string} emoji - Emoji name without colons (e.g. 'white_check_mark')
+ */
+export async function addReaction(channel, messageTs, emoji) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  try {
+    await slackApp.client.reactions.add({ channel, timestamp: messageTs, name: emoji });
+    return { success: true };
+  } catch (err) {
+    logger.error('slack-altus: addReaction failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
+}
+
+/**
+ * List reactions on a message (for reading emoji context).
+ * @param {string} channel - Channel ID
+ * @param {string} messageTs - Message timestamp
+ */
+export async function listReactions(channel, messageTs) {
+  if (!slackApp) return [];
+  try {
+    const result = await slackApp.client.reactions.get({ channel, timestamp: messageTs });
+    return result.message?.reactions?.map(r => ({ name: r.name, count: r.count, users: r.users })) ?? [];
+  } catch (err) {
+    logger.error('slack-altus: listReactions failed', { error: err.message });
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DND Status
+// ---------------------------------------------------------------------------
+
+/**
+ * Get a user's Do Not Disturb status (for context-awareness).
+ * @param {string|null} [userId] - Slack user ID. If omitted, returns own DND status.
+ */
+export async function getDndStatus(userId = null) {
+  if (!slackApp) return null;
+  try {
+    const result = userId
+      ? await slackApp.client.dnd.info({ user: userId })
+      : await slackApp.client.dnd.info({});
+    return {
+      dnd_enabled: result.dnd_enabled,
+      next_dnd_start_ts: result.next_dnd_start_ts,
+      next_dnd_end_ts: result.next_dnd_end_ts,
+      snooze_enabled: result.snooze_enabled,
+    };
+  } catch (err) {
+    logger.error('slack-altus: getDndStatus failed', { error: err.message });
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File Read/Write
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload a file to Slack and optionally post it to a channel.
+ * @param {{ content?: string|null, filename: string, title?: string, channels?: string|string[], initialComment?: string|null }} params
+ */
+export async function uploadSlackFile({ content = null, filename, title = '', channels = null, initialComment = null }) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  if (!content && !filename) return { success: false, reason: 'content or filename required' };
+  try {
+    const opts = { filename, title };
+    if (content) opts.content = content;
+    if (channels) {
+      opts.channels = Array.isArray(channels) ? channels : channels.split(',').map(c => c.trim());
+    }
+    if (initialComment) opts.initial_comment = initialComment;
+    const result = await slackApp.client.files.uploadV2(opts);
+    return {
+      success: true,
+      file_id: result.file?.id,
+      permalink: result.file?.permalink,
+    };
+  } catch (err) {
+    logger.error('slack-altus: uploadSlackFile failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
+}
+
+/**
+ * List files in a channel (for reading recent files/context).
+ * @param {string} channelId - Channel ID to search
+ * @param {number} limit - Max files (default 10, max 100)
+ */
+export async function listChannelFiles(channelId, limit = 10) {
+  if (!slackApp) return [];
+  try {
+    const result = await slackApp.client.files.list({ channel: channelId, limit: Math.min(limit, 100) });
+    return result.files?.map(f => ({
+      id: f.id,
+      name: f.name,
+      title: f.title,
+      user: f.user,
+      created: f.created,
+      permalink: f.permalink,
+      filetype: f.filetype,
+    })) ?? [];
+  } catch (err) {
+    logger.error('slack-altus: listChannelFiles failed', { error: err.message });
+    return [];
+  }
+}
+
+/**
+ * Get a shareable public URL for a file (for sharing outside Slack).
+ * @param {string} fileId - Slack file ID
+ */
+export async function shareFilePublic(fileId) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  try {
+    const result = await slackApp.client.files.sharedPublicURL({ file: fileId });
+    return {
+      success: true,
+      permalink: result.file?.permalink,
+      public_url: result.file?.public_url,
+    };
+  } catch (err) {
+    logger.error('slack-altus: shareFilePublic failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proactive DM
+// ---------------------------------------------------------------------------
+
+/**
+ * Open or get an existing DM conversation with a user, then post a message.
+ * @param {string} userId - Slack user ID to DM
+ * @param {string} text - Message text to send
+ * @returns {{ success: boolean, channel?: string, ts?: string, reason?: string }}
+ */
+export async function sendDm(userId, text) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  try {
+    const openResult = await slackApp.client.conversations.open({ users: userId, return_im: true });
+    const channel = openResult.channel?.id;
+    if (!channel) return { success: false, reason: 'could_not_open_dm' };
+    const msgResult = await slackApp.client.chat.postMessage({ channel, text });
+    return { success: true, channel, ts: msgResult.ts };
+  } catch (err) {
+    logger.error('slack-altus: sendDm failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
+}
+
+/**
+ * Open a DM conversation with a user (returns channel ID for threading follow-up).
+ * @param {string} userId - Slack user ID
+ * @returns {Promise<string|null>} channel ID or null
+ */
+export async function openDm(userId) {
+  if (!slackApp) return null;
+  try {
+    const result = await slackApp.client.conversations.open({ users: userId, return_im: true });
+    return result.channel?.id ?? null;
+  } catch (err) {
+    logger.error('slack-altus: openDm failed', { error: err.message });
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message Search
+// ---------------------------------------------------------------------------
+
+/**
+ * Search messages across Slack.
+ * @param {string} query - Search query string
+ * @param {number} limit - Max results (default 20, max 100)
+ * @param {string[]|null} [channels] - Optional channel IDs to restrict search
+ */
+export async function searchSlackMessages(query, limit = 20, channels = null) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  try {
+    const opts = { query, count: Math.min(limit, 100) };
+    if (channels?.length) opts.channels = channels.join(',');
+    const result = await slackApp.client.search.all(opts);
+    return {
+      success: true,
+      messages: result.messages?.matches?.map(m => ({
+        channel: m.channel?.id,
+        ts: m.ts,
+        text: m.text,
+        user: m.username,
+        permalink: m.permalink,
+      })) ?? [],
+      total: result.messages?.total,
+    };
+  } catch (err) {
+    logger.error('slack-altus: searchSlackMessages failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled Messages
+// ---------------------------------------------------------------------------
+
+/**
+ * Schedule a message to be posted to a channel at a future time.
+ * @param {string} channel - Channel ID
+ * @param {string} text - Message text
+ * @param {number} postAtTs - Unix timestamp for scheduled delivery
+ * @param {string|null} [emoji] - Optional lead emoji
+ */
+export async function scheduleSlackMessage(channel, text, postAtTs, emoji = null) {
+  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+  try {
+    const messageText = emoji ? `${emoji} ${text}` : text;
+    const result = await slackApp.client.chat.scheduleMessage({
+      channel,
+      text: messageText,
+      post_at: new Date(postAtTs * 1000).toISOString(),
+    });
+    return { success: true, scheduled_message_id: result.scheduled_message_id, post_at: result.post_at };
+  } catch (err) {
+    logger.error('slack-altus: scheduleSlackMessage failed', { error: err.message });
+    return { success: false, reason: err.message };
+  }
 }
 
 // ---------------------------------------------------------------------------
