@@ -258,9 +258,14 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
     // Heartbeat schema (non-blocking)
     import('./handlers/altus-heartbeat.js')
-      .then(({ initHeartbeatSchema }) => initHeartbeatSchema().catch(err => {
-        logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
-      }))
+      .then(({ initHeartbeatSchema, initActionItemsSchema }) => {
+        initHeartbeatSchema().catch(err => {
+          logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
+        });
+        initActionItemsSchema().catch(err => {
+          logger.error('Altus action items schema init failed', { error: err.message, code: err.code });
+        });
+      })
       .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
 
     // Slack schema init (non-blocking)
