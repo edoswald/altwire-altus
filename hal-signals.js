@@ -7,7 +7,6 @@
  * - Can trigger alerts (Slack/email) via Laminar alerting
  */
 
-import { Laminar } from '@lmnr-ai/lmnr';
 import { logger } from './logger.js';
 
 const SIGNALS = [
@@ -80,6 +79,20 @@ const SIGNALS = [
 
 export async function registerSignals() {
   if (!process.env.LMNR_PROJECT_API_KEY) return;
+
+  let Laminar;
+  try {
+    const lmnr = await import('@lmnr-ai/lmnr');
+    Laminar = lmnr.Laminar ?? lmnr.default?.Laminar;
+  } catch (err) {
+    logger.warn('[altus-signals] Laminar SDK not available:', err.message);
+    return;
+  }
+
+  if (!Laminar) {
+    logger.warn('[altus-signals] Laminar SDK loaded but Laminar export not found');
+    return;
+  }
 
   for (const signal of SIGNALS) {
     try {
