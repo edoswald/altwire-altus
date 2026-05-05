@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Multi-admin onboarding** (`handlers/altus-onboarding.js`):
+  - Five-phase calibration: workload → tracking → checkins → communication → perch
+  - `altus_check_onboarding_status` — check onboarding phase for an admin
+  - `altus_save_onboarding_response` — save phase response, advances to next phase
+  - `altus_get_onboarding_preferences` — retrieve stored preferences per admin
+  - `altus_get_perch_agenda` — read shared monitoring agenda
+  - `altus_update_perch_agenda` — update per-admin monitoring topics
+  - `altus_reset_onboarding` — reset admin to start onboarding over
+  - Soul evolution via Haiku on onboarding completion
+
+- **Scoped memory for Altus** (`handlers/altus-memory-scope.js`):
+  - Key classification: shared (altus:soul, altus:perch_agenda, etc.) vs admin-scoped
+  - Admin-scoped keys stored as `altus:mem:{admin_id}:{key}`
+  - `scopedWriteMemory`, `scopedReadMemory`, `scopedDeleteMemory`, `scopedReadAllMemory`
+
+- **WP plugin editorial endpoints** (`wordpress/altus-galleries/altus-galleries.php` v1.1.0):
+  - `POST /wp-json/altus/v1/posts` — create post with Altus metadata (assignment_id, article_type, source_query)
+  - `GET /wp-json/altus/v1/posts` — lookup posts by assignment_id, status, or author
+  - `PATCH /wp-json/altus/v1/posts/:id` — update post status, publish, categories, tags
+  - `GET /wp-json/altus/v1/authors` — list authors for byline attribution
+
+- **AI cost summary tool**:
+  - `get_altus_ai_cost_summary` — cost breakdown by model, by tool, by period (today/7d/30d)
+  - Morning digest (`get_altwire_morning_digest`) now includes `ai_costs` section
+
 - **Observability infrastructure** (`tracing.js`, `altus-event-log.js`, `batch-client.js`):
   - New `tracing.js` — Laminar `@observe` decorator wrapper with graceful fallback. Mirrors the pattern from `cirrusly-nimbus/tracing.js`. Auto-instruments Anthropic API calls when `LMNR_PROJECT_API_KEY` is set.
   - New `altus-event-log.js` — Unified event log with `logAltusEvent`, `queryAltusEvents`, `synthesizeAudit`, `runAuditBatchCollection`, `runRetentionCron`. Writes to `altus_events` and `altus_audit_batches` tables. Direct Haiku synthesis for ≤24h windows; batch API for longer.

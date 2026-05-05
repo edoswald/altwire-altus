@@ -14,6 +14,7 @@ import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getAltwireUptime, getAltwireIncidents } from './altus-monitoring.js';
 import { getTrafficSummary } from './altwire-matomo-client.js';
+import { getAiCostSummary } from '../lib/ai-cost-tracker.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -55,6 +56,7 @@ export async function getAltwireMorningDigest() {
       review_deadlines: { reviews: [], count: 0 },
       overdue_loaners: { loaners: [], count: 0 },
       traffic: null,
+      ai_costs: null,
     };
   }
 
@@ -69,6 +71,7 @@ export async function getAltwireMorningDigest() {
     reviewsResult,
     loanersResult,
     trafficResult,
+    aiCostResult,
   ] = await Promise.allSettled([
     getAltwireUptime(),
     getAltwireIncidents(),
@@ -95,6 +98,7 @@ export async function getAltwireMorningDigest() {
        ORDER BY expected_return_date ASC`,
     ),
     getTrafficSummary('day', 'yesterday'),
+    getAiCostSummary(),
   ]);
 
   // Load historical analytics context alongside fresh fetches
@@ -220,6 +224,19 @@ export async function getAltwireMorningDigest() {
     warnings.push({ section: 'traffic', message: traffic_warning });
   }
 
+  // --- AI Costs ---
+  let ai_costs = null;
+  let ai_costs_warning = null;
+  if (aiCostResult.status === 'fulfilled') {
+    ai_costs = aiCostResult.value;
+  } else {
+    ai_costs = null;
+    ai_costs_warning = `AI cost summary failed: ${aiCostResult.reason?.message || aiCostResult.reason}`;
+  }
+  if (ai_costs_warning) {
+    warnings.push({ section: 'ai_costs', message: ai_costs_warning });
+  }
+
   // --- Build historical analytics context ---
   let historical = null;
   if (analyticsCtx) {
@@ -273,6 +290,7 @@ export async function getAltwireMorningDigest() {
     review_deadlines,
     overdue_loaners,
     traffic,
+    ai_costs,
     historical,
   };
 

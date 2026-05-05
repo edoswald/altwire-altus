@@ -206,9 +206,18 @@ const TOOL_CONTEXTS = {
   altus_post_incident_comment:  [],
   altus_get_status_updates:     [],
   altus_post_status_update:     [],
-  // Event log tools
+// Event log tools
   query_altus_events:           [],
-  get_altus_audit_log:          [],
+  get_altus_audit_log:         [],
+  // AI cost
+  get_altus_ai_cost_summary:    [],
+  // Multi-admin onboarding
+  altus_check_onboarding_status: [],
+  altus_save_onboarding_response: [],
+  altus_get_onboarding_preferences: [],
+  altus_get_perch_agenda:        [],
+  altus_update_perch_agenda:     [],
+  altus_reset_onboarding:        [],
 };
 
 // Canonical context names for the X-Agent-Context header values.
@@ -1652,6 +1661,121 @@ safeToolHandler(async ({ status, limit }) => {
         opportunities,
         analytics,
       }) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // AI Cost Summary
+  // -------------------------------------------------------------------------
+
+  const { getAiCostSummary } = await import('./lib/ai-cost-tracker.js');
+
+  scopedRegister(
+    'get_altus_ai_cost_summary',
+    {
+      description: 'Altus AI usage cost breakdown — by model, by tool, and by period (today, 7d, 30d). Use to track Anthropic API spend across all Altus operations.',
+    },
+    safeToolHandler(async () => {
+      const result = await getAiCostSummary();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Multi-Admin Onboarding
+  // -------------------------------------------------------------------------
+
+  const {
+    checkOnboardingStatus,
+    saveOnboardingResponse,
+    getOnboardingPreferences,
+    getPerchAgenda,
+    updatePerchAgenda,
+    resetOnboarding,
+  } = await import('./handlers/altus-onboarding.js');
+
+  scopedRegister(
+    'altus_check_onboarding_status',
+    {
+      description: 'Check whether a specific admin has completed Altus onboarding. Returns the current phase or "complete".',
+      inputSchema: {
+        admin_id: z.number().describe('Admin ID — must be a number'),
+      },
+    },
+    safeToolHandler(async ({ admin_id }) => {
+      const result = await checkOnboardingStatus({ admin_id });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_save_onboarding_response',
+    {
+      description: 'Save an admin\'s response for a specific onboarding phase. Advances to the next phase or completes onboarding when all five phases are done.',
+      inputSchema: {
+        admin_id: z.number().describe('Admin ID'),
+        phase: z.enum(['workload', 'tracking', 'checkins', 'communication', 'perch']).describe('Phase to save response for'),
+        response: z.string().describe('Admin\'s natural language response to the phase prompt'),
+      },
+    },
+    safeToolHandler(async ({ admin_id, phase, response }) => {
+      const result = await saveOnboardingResponse({ admin_id, phase, response });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_get_onboarding_preferences',
+    {
+      description: 'Retrieve all stored preferences for a specific admin — communication style, monitoring topics, etc.',
+      inputSchema: {
+        admin_id: z.number().describe('Admin ID'),
+      },
+    },
+    safeToolHandler(async ({ admin_id }) => {
+      const result = await getOnboardingPreferences({ admin_id });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_get_perch_agenda',
+    {
+      description: 'Read the shared Altus perch agenda — monitoring topics across all admins and scheduled jobs.',
+    },
+    safeToolHandler(async () => {
+      const result = await getPerchAgenda();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_update_perch_agenda',
+    {
+      description: 'Update a specific admin\'s monitoring topics in the shared perch agenda. Replaces the admin\'s topics and recomputes the merged monitoring list.',
+      inputSchema: {
+        admin_id: z.number().describe('Admin ID'),
+        monitoring: z.array(z.string()).describe('Array of monitoring topic strings'),
+      },
+    },
+    safeToolHandler(async ({ admin_id, monitoring }) => {
+      const result = await updatePerchAgenda({ admin_id, monitoring });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_reset_onboarding',
+    {
+      description: 'Reset an admin\'s onboarding state back to the beginning. Requires confirm: true.',
+      inputSchema: {
+        admin_id: z.number().describe('Admin ID'),
+        confirm: z.boolean().describe('Must be true to confirm the reset'),
+      },
+    },
+    safeToolHandler(async ({ admin_id, confirm }) => {
+      const result = await resetOnboarding({ admin_id, confirm });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
 
