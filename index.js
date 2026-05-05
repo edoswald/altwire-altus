@@ -57,8 +57,70 @@ import {
   getAssignment,
   listAssignments,
 } from './handlers/altus-writer.js';
+import { initOAuthSchema } from './lib/oauth-store.js';
+import { createRateLimiter } from './lib/rate-limiter.js';
+import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
+
+export const oauthClientStorage = new AsyncLocalStorage();
 
 const PORT = process.env.PORT || 3000;
+
+// Rate limiters
+const globalLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 200 });
+const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
+
+// OAuth Configuration
+// Discover clients by scanning OAUTH_CLIENT_ID_* env vars at startup.
+// Each OAUTH_CLIENT_ID_<OPERATOR> pairs with OAUTH_CLIENT_SECRET_<OPERATOR>.
+function discoverOAuthClients() {
+  const clients = new Map();
+  for (const [key, clientId] of Object.entries(process.env)) {
+    if (key.startsWith('OAUTH_CLIENT_ID_') && clientId) {
+      const operator = key.slice('OAUTH_CLIENT_ID_'.length);
+      clients.set(clientId, operator);
+    }
+  }
+  return clients;
+}
+
+const OAUTH_CLIENTS = discoverOAuthClients();
+
+const MCP_BASE_URL = process.env.MCP_BASE_URL || 'https://altus.altwire.net';
+
+const OAUTH_ALLOWED_REDIRECT_URIS = new Set([
+  process.env.OAUTH_REDIRECT_URI || `${MCP_BASE_URL}/oauth/callback`,
+  ...(process.env.OAUTH_ALLOWED_REDIRECT_URIS || '')
+    .split(',')
+    .map(u => u.trim())
+    .filter(Boolean),
+]);
+
+function generateAuthCode() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function generateAccessToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// Parse OAUTH_CLIENT_TOOLS → Map<clientId, Set<toolName>>
+// Format: "clientId1:tool1,tool2;clientId2:tool1"
+function parseClientTools() {
+  const map = new Map();
+  const raw = process.env.OAUTH_CLIENT_TOOLS;
+  if (!raw) return map;
+  for (const entry of raw.split(';')) {
+    const colonIdx = entry.indexOf(':');
+    if (colonIdx === -1) continue;
+    const clientId = entry.slice(0, colonIdx).trim();
+    const tools = entry.slice(colonIdx + 1).split(',').map(t => t.trim()).filter(Boolean);
+    map.set(clientId, new Set(tools));
+  }
+  return map;
+}
+
+const OAUTH_CLIENT_TOOLS = parseClientTools();
 // ---------------------------------------------------------------------------
 // Tool scoping — maps tool names to allowed agent contexts.
 // Tool is registered only if its contexts array is empty (no restriction)
@@ -157,6 +219,9 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     initAiUsageSchema().catch((err) => {
       logger.error('AI usage schema init failed', { error: err.message, code: err.code });
     });
+    initOAuthSchema().catch((err) => {
+      logger.error('OAuth schema init failed', { error: err.message, code: err.code });
+    });
     initReviewTrackerSchema().catch((err) => {
       logger.error('Review tracker schema init failed', { error: err.message, code: err.code });
     });
@@ -198,7 +263,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 // ---------------------------------------------------------------------------
 // MCP Server factory — new instance per stateless request
 // ---------------------------------------------------------------------------
-async function createMcpServer({ agentContext = null } = {}) {
+async function createMcpServer({ agentContext = null, allowedTools = null, clientId = null } = {}) {
   const server = new McpServer({
     name: 'altwire-altus',
     version: '1.0.0',
@@ -219,7 +284,7 @@ async function createMcpServer({ agentContext = null } = {}) {
   function scopedRegister(toolName, inputSchema, handler) {
     const allowed = TOOL_CONTEXTS[toolName];
     if (!allowed || allowed.length === 0 || (agentContext && allowed.includes(agentContext))) {
-      server.registerTool(toolName, inputSchema, handler);
+      server.registerTool(toolName, inputSchema, safeToolHandler(toolName, handler));
     }
   }
 
@@ -1439,8 +1504,205 @@ safeToolHandler(async ({ status, limit }) => {
 // ---------------------------------------------------------------------------
 // HTTP Server
 // ---------------------------------------------------------------------------
+
+async function identifyClient(req) {
+  const authHeader = req.headers['authorization'] || '';
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice(7).trim();
+  if (!token) return null;
+
+  const { getAccessToken } = await import('./lib/oauth-store.js');
+  const tokenData = await getAccessToken(token);
+  if (tokenData) return tokenData.clientId;
+
+  const providedHash = crypto.createHash('sha256').update(token).digest();
+  for (const [clientId, secretEnvKey] of Object.entries(process.env)) {
+    if (!clientId.startsWith('OAUTH_CLIENT_SECRET_')) continue;
+    const secretHash = crypto.createHash('sha256').update(secretEnvKey).digest();
+    try {
+      if (crypto.timingSafeEqual(providedHash, secretHash)) {
+        const operator = clientId.slice('OAUTH_CLIENT_SECRET_'.length);
+        const clientIdEnvKey = `OAUTH_CLIENT_ID_${operator}`;
+        return process.env[clientIdEnvKey] || null;
+      }
+    } catch { /* timingSafeEqual threw — lengths mismatch */ }
+  }
+  return null;
+}
+
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  if (!globalLimiter.check(req, res)) return;
+
+  if (url.pathname === '/.well-known/oauth-authorization-server' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      issuer: MCP_BASE_URL,
+      authorization_endpoint: `${MCP_BASE_URL}/authorize`,
+      token_endpoint: `${MCP_BASE_URL}/oauth/token`,
+      response_types_supported: ['code'],
+      code_challenge_methods_supported: ['S256'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+    }));
+    return;
+  }
+
+  if (url.pathname === '/authorize' && req.method === 'GET') {
+    if (!authLimiter.check(req, res, { errorMessage: 'Too many authentication attempts, please try again later.' })) return;
+
+    const clientId = url.searchParams.get('client_id');
+    const redirectUri = url.searchParams.get('redirect_uri');
+    const responseType = url.searchParams.get('response_type');
+    const scope = url.searchParams.get('scope') || 'read';
+    const state = url.searchParams.get('state');
+
+    if (responseType !== 'code') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unsupported_response_type' }));
+      return;
+    }
+    if (!clientId || !redirectUri) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request' }));
+      return;
+    }
+    if (!OAUTH_CLIENTS.has(clientId)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
+      return;
+    }
+    if (!OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri not allowed' }));
+      return;
+    }
+
+    const { storeAuthCode } = await import('./lib/oauth-store.js');
+    const authCode = generateAuthCode();
+    await storeAuthCode(authCode, {
+      clientId,
+      redirectUri,
+      scope,
+      state,
+      codeChallenge: url.searchParams.get('code_challenge'),
+      codeChallengeMethod: url.searchParams.get('code_challenge_method'),
+    });
+
+    const redirectUrl = new URL(redirectUri);
+    redirectUrl.searchParams.set('code', authCode);
+    if (state) redirectUrl.searchParams.set('state', state);
+    res.writeHead(302, { Location: redirectUrl.toString() });
+    res.end();
+    return;
+  }
+
+  if (url.pathname === '/oauth/token' && req.method === 'POST') {
+    if (!authLimiter.check(req, res, { errorMessage: 'Too many authentication attempts, please try again later.' })) return;
+
+    const MAX_BODY_BYTES = 262144;
+    let bodySize = 0;
+    let bodySizeExceeded = false;
+    let body = '';
+    req.on('data', (chunk) => {
+      bodySize += chunk.length;
+      if (bodySize > MAX_BODY_BYTES) { bodySizeExceeded = true; req.destroy(); return; }
+      body += chunk;
+    });
+    req.on('end', async () => {
+      if (bodySizeExceeded) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large' }));
+        return;
+      }
+      const params = new URLSearchParams(body);
+      const grantType = params.get('grant_type');
+      const code = params.get('code');
+      const redirectUri = params.get('redirect_uri');
+      const clientId = params.get('client_id');
+      const refreshToken = params.get('refresh_token');
+      const codeVerifier = params.get('code_verifier');
+      const presentedSecret = params.get('client_secret');
+
+      if (!clientId) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_client' }));
+        return;
+      }
+
+      const operator = OAUTH_CLIENTS.get(clientId);
+      if (!operator) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_client' }));
+        return;
+      }
+      const secretEnvKey = `OAUTH_CLIENT_SECRET_${operator}`;
+      const expectedSecret = process.env[secretEnvKey];
+      if (expectedSecret && presentedSecret !== expectedSecret) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_client' }));
+        return;
+      }
+
+      if (grantType === 'authorization_code') {
+        const { getAuthCode, deleteAuthCode, storeAccessToken, storeRefreshToken } = await import('./lib/oauth-store.js');
+        const authData = await getAuthCode(code);
+        if (!authData) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        if (redirectUri !== authData.redirectUri) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        if (authData.codeChallenge) {
+          if (!codeVerifier) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'code_verifier required' }));
+            return;
+          }
+          const digest = crypto.createHash('sha256').update(codeVerifier, 'ascii').digest('base64url');
+          if (digest !== authData.codeChallenge) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'code_verifier mismatch' }));
+            return;
+          }
+        }
+        await deleteAuthCode(code);
+        const accessToken = generateAccessToken();
+        const newRefreshToken = generateAccessToken();
+        await storeAccessToken(accessToken, { clientId, scope: authData.scope });
+        await storeRefreshToken(newRefreshToken, { clientId, scope: authData.scope });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600, refresh_token: newRefreshToken }));
+        return;
+      }
+
+      if (grantType === 'refresh_token') {
+        const { getRefreshToken, deleteRefreshToken, storeAccessToken, storeRefreshToken } = await import('./lib/oauth-store.js');
+        const refreshData = await getRefreshToken(refreshToken);
+        if (!refreshData) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        await deleteRefreshToken(refreshToken);
+        const accessToken = generateAccessToken();
+        const newRefreshToken = generateAccessToken();
+        await storeAccessToken(accessToken, { clientId, scope: refreshData.scope || 'read' });
+        await storeRefreshToken(newRefreshToken, { clientId, scope: refreshData.scope });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600, refresh_token: newRefreshToken }));
+        return;
+      }
+
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+    });
+    return;
+  }
 
   // Health check — no auth required
   if (url.pathname === '/health' && req.method === 'GET') {
@@ -1724,6 +1986,16 @@ const httpServer = createServer(async (req, res) => {
 
   // MCP endpoint — stateless POST
   if (url.pathname === '/' || url.pathname === '/mcp') {
+    if (!authLimiter.check(req, res)) return;
+
+    const clientId = await identifyClient(req);
+    if (!clientId) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId);
     const agentContext = req.headers['x-agent-context'] || null;
 
     // Extract session_id from request body for SSE event bus correlation
@@ -1744,18 +2016,23 @@ const httpServer = createServer(async (req, res) => {
       });
     });
 
-    const server = await createMcpServer({ agentContext });
+    const server = await createMcpServer({ agentContext, allowedTools, clientId });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
     await server.connect(transport);
 
+    const clientCtx = { clientId, allowedTools };
     if (sessionId) {
-      await sessionIdStorage.run(sessionId, async () => {
+      await oauthClientStorage.run(clientCtx, async () =>
+        sessionIdStorage.run(sessionId, async () => {
+          await transport.handleRequest(req, res);
+        })
+      );
+    } else {
+      await oauthClientStorage.run(clientCtx, async () => {
         await transport.handleRequest(req, res);
       });
-    } else {
-      await transport.handleRequest(req, res);
     }
     return;
   }
