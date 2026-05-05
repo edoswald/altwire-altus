@@ -43,17 +43,36 @@ async function initObserve() {
 }
 
 /**
+ * Strip PII and sensitive fields from tool params before logging to Laminar.
+ * @param {object} params — raw tool parameters
+ * @returns {object} — sanitized params
+ */
+export function sanitizeToolParams(params) {
+  if (!params || typeof params !== 'object') return params ?? {};
+  const sanitized = { ...params };
+  const piiFields = ['email', 'phone', 'order_id', 'phone_number', 'billing_phone'];
+  for (const field of piiFields) {
+    if (field in sanitized) delete sanitized[field];
+  }
+  for (const key of Object.keys(sanitized)) {
+    if (key.toLowerCase().includes('password')) delete sanitized[key];
+  }
+  return sanitized;
+}
+
+/**
  * Wrap a handler function with a Laminar span.
  *
- * @param {{ name: string, spanType?: 'DEFAULT'|'LLM'|'TOOL' }} options
+ * @param {{ name: string, spanType?: 'DEFAULT'|'LLM'|'TOOL', metadata?: object }} options
  * @param {Function} fn - async function to wrap
+ * @param {object} [params] - params to sanitize before logging
  * @returns {Function} - wrapped function
  */
-export function observe(options, fn) {
+export function observe(options, fn, params) {
   initObserve().catch(() => {});
 
   if (_observeFn) {
-    return _observeFn(options, fn);
+    return _observeFn(options, fn, params);
   }
   return fn;
 }

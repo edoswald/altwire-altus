@@ -7,6 +7,25 @@
  * Health: GET /health
  */
 
+// ---------------------------------------------------------------------------
+// Laminar initialization — must run before any other imports
+// ---------------------------------------------------------------------------
+if (process.env.LMNR_PROJECT_API_KEY) {
+  try {
+    const { Laminar } = await import('@lmnr-ai/lmnr');
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    Laminar.initialize({
+      projectApiKey: process.env.LMNR_PROJECT_API_KEY,
+      metadata: { service: 'altus' },
+      instrumentModules: { anthropic: Anthropic },
+    });
+    Laminar.patch({ anthropic: Anthropic });
+    console.log('[Laminar] Initialized — shared project, service: altus');
+  } catch (err) {
+    console.warn('[Laminar] Initialization failed:', err.message);
+  }
+}
+
 import { sessionIdStorage } from './lib/safe-tool-handler.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -336,6 +355,15 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 } else {
   logger.warn('No database URL set — ALTWIRE_DATABASE_URL and DATABASE_URL are both empty — skipping schema init and cron');
 }
+
+// ---------------------------------------------------------------------------
+// Laminar Signals — register on startup (idempotent, 409 = already exists)
+// ---------------------------------------------------------------------------
+
+import { registerSignals } from './hal-signals.js';
+registerSignals().catch((err) => {
+  logger.warn('[altus-signals] Registration failed:', err.message);
+});
 
 // ---------------------------------------------------------------------------
 // MCP Server factory — new instance per stateless request

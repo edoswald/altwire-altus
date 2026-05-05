@@ -25,6 +25,7 @@ import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logAltusEvent } from '../altus-event-log.js';
+import { observe } from '../tracing.js';
 
 const HEARTBEAT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -247,6 +248,7 @@ async function queueStaleProposedItems() {
  * @returns {Promise<{ items_evaluated: number, items_acted: number, items_queued: number, items_skipped: number, alerts_sent: number }>}
  */
 export async function runAltusHeartbeat() {
+  return observe({ name: 'altus_heartbeat', spanType: 'DEFAULT', metadata: { session_type: 'heartbeat' } }, async () => {
   const start = Date.now();
   const counters = { items_evaluated: 0, items_acted: 0, items_queued: 0, items_skipped: 0, alerts_sent: 0 };
 
@@ -343,6 +345,7 @@ export async function runAltusHeartbeat() {
     );
     return counters;
   }
+  });
 }
 
 // ---------------------------------------------------------------------------
