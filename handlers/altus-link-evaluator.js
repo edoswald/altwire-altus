@@ -266,7 +266,7 @@ Fit levels:
 Cite specific titles, numbers, or genres from the context in your reasoning. Be direct and specific.`;
 
   const response = await client.chat.completions.create({
-    model: 'MiniMax-Text-01',
+    model: 'MiniMax-2.7',
     messages: [
       { role: 'system', content: SYSTEM },
       { role: 'user', content: contextDump },

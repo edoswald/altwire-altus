@@ -1,6 +1,6 @@
 # AltWire AI Agent Platform
 ## Unified Specification — Altus MCP Server
-## May 3, 2026 — v0.5
+## May 5, 2026 — v1.1
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Component | Description | Status |
 |---|---|---|
-| Altus MCP Server | AltWire-dedicated MCP server on Railway — 57 tools | LIVE at altwire-altus-production.up.railway.app |
+| Altus MCP Server | AltWire-dedicated MCP server on Railway — 65 tools | LIVE at altwire-altus-production.up.railway.app |
 | PostgreSQL | Shared Railway instance — `altus_` table prefix | LIVE |
 | RAG Archive | Semantic search over AltWire's ~1,566 post archive | LIVE |
 | Analytics Layer | Matomo + GSC tools for editorial performance | LIVE |
@@ -42,9 +42,9 @@ We don't suggest that the "AltWire way" is the correct way to use AI within news
 
 Hal connects to Altus the same way it connects to other services. From Derek's perspective, it's just Hal responding to requests about AltWire. The server handles everything: content archive search, analytics, editorial tracking, AI-assisted writing, and WordPress posting.
 
-**Core architectural principle:** Altus is the single source of truth for all AltWire AI capabilities. No AltWire-specific tools live in Nimbus or the Cirrusly monolith.
+**Core architectural principle:** Altus is the single source of truth for all AltWire AI capabilities. No AltWire-specific tools live in Nimbus or the Cirrusly monolith. Admin authentication does pass through Nimbus, as well as some core Hal functionality.
 
-**Relationship to Hal Framework Architecture:** Altus is the greenfield reference implementation for the domain-aware system prompt architecture (see `hal_framework_architecture.md`). When the four-layer prompt assembly is built, Altus gets it first before Nimbus is backported.
+**Relationship to Hal Framework Architecture:** Altus is the greenfield reference implementation for the domain-aware system prompt architecture. When the four-layer prompt assembly is built, Altus gets it first before Nimbus is backported.
 
 ## 1.1 GitHub Repository
 
@@ -67,7 +67,7 @@ Hal connects to Altus the same way it connects to other services. From Derek's p
 | AI model (lightweight) | `claude-haiku-4-5-20251001` |
 | AI model (writer) | Configurable via `ALTUS_WRITER_MODEL` — default `claude-sonnet-4-5` |
 | Transport | `StreamableHTTPServerTransport`, stateless (`sessionIdGenerator: undefined`) |
-| Auth | Per-client API key — same pattern as Nimbus |
+| Auth | OAuth 2.0 + PKCE with SHA-256 challenge — per-client tool allowlists |
 | Node.js | ≥ 20.0.0 (Nixpacks `nodejs_22`) |
 | Build | Nixpacks via `nixpacks.toml` — `npm install --no-audit` |
 | Start command | `node --no-deprecation index.js` |
@@ -88,16 +88,58 @@ await transport.handleRequest(req, res);
 
 ## 2.2 REST Endpoints
 
-Altus exposes authenticated REST endpoints for the AI Writer UI under `/hal/writer/*` and a morning digest endpoint under `/altwire/digest`. Writer endpoints require `Authorization: Bearer <ALTUS_ADMIN_TOKEN>`. CORS enabled on writer routes.
+Altus exposes authenticated REST endpoints for the AI Writer UI under `/hal/writer/*`, search feedback under `/hal/*`, a morning digest endpoint under `/altwire/digest`, and OAuth 2.0 endpoints under `/oauth/*`. Writer endpoints require `Authorization: Bearer <ALTUS_ADMIN_TOKEN>`. CORS enabled on writer routes.
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
+| `/.well-known/oauth-authorization-server` | GET | None | OAuth 2.0 discovery endpoint — returns issuer, endpoints, supported grant types |
+| `/authorize` | GET | None (validates client_id + redirect_uri) | OAuth 2.0 authorization endpoint — initiates PKCE flow |
+| `/oauth/token` | POST | None (validates client_secret) | OAuth 2.0 token endpoint — issues access and refresh tokens |
 | `/hal/writer/assignments` | GET | Bearer ALTUS_ADMIN_TOKEN | List all article assignments from `altus_assignments` — supports `?status=` and `?article_type=` filters |
 | `/hal/writer/assignments/:id` | GET | Bearer ALTUS_ADMIN_TOKEN | Single assignment detail with joined `altus_editorial_decisions` |
 | `/hal/writer/opportunities` | GET | Bearer ALTUS_ADMIN_TOKEN | Story opportunities (delegates to `getStoryOpportunities`) |
 | `/hal/writer/news-alerts` | GET | Bearer ALTUS_ADMIN_TOKEN | Today's news monitor alerts from `agent_memory` |
+| `/hal/feedback` | POST | None | Log reader search feedback (thumbs up/down) from public AI search |
+| `/hal/search-feedback` | GET | None | Retrieve search feedback entries — supports `?rating=`, `?since=`, `?limit=` filters |
+| `/events/:sessionId` | GET | Session ID in URL | SSE event stream — streams tool_start/tool_done/thinking_done events to Chat UI |
 | `/altwire/digest` | GET | Bearer any HAL_KEY | Full morning digest — site uptime, incidents, news alerts, story opportunities, review deadlines, overdue loaners, yesterday's traffic |
 | `/slack/events` | POST | Slack signature | Slack event callback endpoint — handles url_verification and event_callback payloads |
+
+## 2.3 OAuth 2.0 Authorization Server
+
+Altus implements a full RFC 6749 + PKCE OAuth 2.0 authorization server. Clients are discovered at startup by scanning `OAUTH_CLIENT_ID_*` env vars. Each client pairs with `OAUTH_CLIENT_SECRET_<OPERATOR>`.
+
+**Client configuration format:**
+- `OAUTH_CLIENT_ID_<OPERATOR>=<clientId>` — public client identifier
+- `OAUTH_CLIENT_SECRET_<OPERATOR>=<secret>` — client secret (hashed at runtime)
+
+**Supported flows:**
+- Authorization Code + PKCE (primary for web/mobile clients)
+- Refresh token rotation for session persistence
+
+**Token lifetimes:** Auth codes: 10 min | Access tokens: 1 hr | Refresh tokens: 30 days
+
+**Per-client tool allowlists:** `OAUTH_CLIENT_TOOLS="clientId1:tool1,tool2;clientId2:tool1"` — clients not listed get full tool access. Tool scoping is enforced via `X-Agent-Context` header and `TOOL_CONTEXTS` map.
+
+**Session-scoped event context:** MCP requests with a `session_id` in the request body subscribe the session to a live SSE event bus. Events (tool_start, tool_done, thinking_done) are streamed to `GET /events/:sessionId`.
+
+## 2.4 Rate Limiting
+
+| Limiter | Window | Max requests | Scope |
+|---|---|---|---|
+| Global | 15 minutes | 200 | Per IP |
+| Auth | 15 minutes | 30 | Per IP |
+
+Rate limiters use sliding window cleanup and set standard `RateLimit-*` response headers. Exceeded limits return HTTP 429 with `Retry-After`.
+
+## 2.5 MCP Endpoint Auth Flow
+
+1. Client submits Bearer token in `Authorization` header
+2. Server computes `SHA-256(token)` and compares against all `OAUTH_CLIENT_SECRET_*` env var hashes (timing-safe)
+3. On match, `clientId` is extracted from the corresponding env var name
+4. `allowedTools` are loaded from `OAUTH_CLIENT_TOOLS` (if present)
+5. `agentContext` is read from `X-Agent-Context` header (`altwire`, `weather`, `nimbus`, or `null`)
+6. `scopedRegister()` only registers tools where `TOOL_CONTEXTS[toolName]` is empty (no restriction) or contains the current `agentContext`
 
 ---
 
@@ -353,6 +395,79 @@ Record of Hal-initiated Slack status posts. Created by `initSlackAltusSchema()` 
 
 **Indexes:** `idx_hal_slack_posts_channel_ts` on `(channel_id, message_ts)`
 
+## 3.14 `altus_search_queries`
+
+Analytics log for public AI search queries. Written by `searchAltwirePublic()` on every search. Enables search trend analysis and query volume tracking.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| query | TEXT NOT NULL | Search query text |
+| mode | TEXT NOT NULL | `ai` (always `ai` for MiniMax synthesis) |
+| result_count | INTEGER | Number of results returned |
+| response_time_ms | INTEGER | Response time in milliseconds |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+
+**Indexes:** `altus_search_queries_created_idx` on `created_at DESC`
+
+## 3.15 `altus_search_feedback`
+
+Reader feedback on AI search results — thumbs up/down from the public search beta. Written by `POST /hal/feedback`, read by `getSearchFeedback`.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| query | TEXT NOT NULL | Original search query |
+| rating | INTEGER NOT NULL | `1` = thumbs down, `2` = thumbs up |
+| comment | TEXT | Optional free-text comment |
+| answer_excerpt | TEXT | AI-generated answer snippet (for context) |
+| results_shown | TEXT[] | URLs of articles shown in results |
+| ip_address | TEXT | Anonymized IP for abuse detection |
+| user_agent | TEXT | Browser user agent |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+
+**Indexes:** `altus_search_feedback_created_idx` on `created_at DESC`
+
+## 3.16 OAuth Tables
+
+Created by `initOAuthSchema()` at startup. Persist OAuth 2.0 authorization state across deploys.
+
+### `oauth_auth_codes`
+
+| Column | Type | Description |
+|---|---|---|
+| code | VARCHAR(255) PK | Auth code value |
+| client_id | VARCHAR(255) NOT NULL | OAuth client ID |
+| redirect_uri | TEXT NOT NULL | Redirect URI used in authorization request |
+| scope | VARCHAR(255) NOT NULL | Default: `read` |
+| state | TEXT | CSRF state parameter |
+| code_challenge | TEXT | PKCE challenge (S256 method) |
+| code_challenge_method | VARCHAR(10) | `S256` |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| expires_at | TIMESTAMPTZ NOT NULL | 10-minute TTL |
+
+### `oauth_access_tokens`
+
+| Column | Type | Description |
+|---|---|---|
+| token | VARCHAR(255) PK | Access token value |
+| client_id | VARCHAR(255) NOT NULL | OAuth client ID |
+| scope | VARCHAR(255) NOT NULL | Default: `read` |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| expires_at | TIMESTAMPTZ NOT NULL | 1-hour TTL |
+
+**Indexes:** `idx_oauth_access_tokens_expires` on `expires_at`
+
+### `oauth_refresh_tokens`
+
+| Column | Type | Description |
+|---|---|---|
+| token | VARCHAR(255) PK | Refresh token value |
+| client_id | VARCHAR(255) NOT NULL | OAuth client ID |
+| scope | VARCHAR(255) | Token scope |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| expires_at | TIMESTAMPTZ | 30-day TTL (backfilled for existing rows) |
+
 ---
 
 # 4. Tool Catalog
@@ -361,7 +476,32 @@ All tools live in `index.js` on altwire-altus. All use `safeToolHandler` wrapper
 
 ## 4.1 RAG Archive Tools
 
-Handlers: `handlers/altus-search.js`, `handlers/altus-coverage.js`, `handlers/altus-reingest.js`, `handlers/altus-stats.js`, `handlers/altus-fetch.js`
+Handlers: `handlers/altus-search.js`, `handlers/altus-coverage.js`, `handlers/altus-reingest.js`, `handlers/altus-stats.js`, `handlers/altus-fetch.js`, `handlers/altwire-search.js`
+
+### search_altwire (Public AI Search)
+
+Public-facing AI-powered search for AltWire readers. Embeds the query via Voyage AI `voyage-3-lite`, searches `altus_content` for relevant posts using cosine similarity, and synthesizes a plain-language answer via MiniMax-2.7 with cited sources. Falls back to a ranked result list if the synthesis service is unavailable.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| query | string | required | The search query — artist name, topic, concept, or question |
+| limit | integer | 10 | Max archive results to retrieve (max 20) |
+
+Returns: `{ answer, citations[], results[], error? }`. Results include `title`, `url`, `excerpt`, `score`.
+
+**Note:** Does NOT use recency weighting (unlike `search_altwire_archive`). Uses minimum score threshold `ALTWIRE_SEARCH_MIN_SCORE` (default 0.70).
+
+### get_search_feedback
+
+Retrieves search feedback submitted by readers during the AI search beta. Useful for reviewing what users are saying about search quality, accuracy, and relevance.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| rating | integer | optional | Filter by rating — `1` = thumbs down, `2` = thumbs up |
+| since | string | optional | Return feedback created after this ISO date |
+| limit | integer | 50 | Max entries to return (max 200) |
+
+Returns: `{ feedback[], count, error? }`.
 
 ### search_altwire_archive
 
@@ -811,6 +951,12 @@ List active assignments with optional filters by status or type. Returns summary
 
 Returns: `{ assignments[], count, total }`.
 
+### get_writer_summary
+
+Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, search opportunities, and today's Matomo pageviews. All data fetched in parallel via `Promise.allSettled` so individual failures don't block the response.
+
+Returns: `{ success: true, writer: { active, action_needed, ready_to_post }, digest: { last_updated, warning_count }, opportunities: { high, medium, low }, analytics: { pageviews_today, top_article } }`.
+
 ---
 
 ## 4.8 Chart Generation Tool
@@ -914,11 +1060,118 @@ Returns: Array of post records ordered by `created_at` DESC.
 
 ---
 
-## 4.12 Hal Agent Memory Tools
+## 4.12 Editorial Tracking Tools
+
+Handler: `handlers/altus-editorial-tools.js`
+
+Article tracking and content idea management tools for editorial planning. Stored in `agent_memory` with `altwire:article:{slug}` and `altwire:idea:{uuid}` key patterns.
+
+### track_article
+
+Track an article for performance monitoring. Stores URL, title, category, and optional notes in agent memory.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| url | string | required | Article URL — slug is derived from the URL path |
+| title | string | required | Article title |
+| category | string | required | Content category — e.g. review, interview, feature, news |
+| notes | string | optional | Optional editorial notes |
+
+Returns: `{ success: true, key, slug }`.
+
+### list_tracked_articles
+
+List all tracked articles, newest first.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| limit | integer | 50 | Max articles to return (max 100) |
+
+Returns: `{ success: true, articles[], total }`.
+
+### add_content_idea
+
+Add a new editorial content idea.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| topic | string | required | The content topic or angle |
+| angle | string | optional | Specific angle or take |
+| status | enum `idea\|writing\|published` | `idea` | Pipeline status |
+| notes | string | optional | Optional notes |
+
+Returns: `{ success: true, id: uuid, key }`.
+
+### get_content_ideas
+
+Retrieve content ideas, optionally filtered by pipeline status.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| status | enum `idea\|writing\|published` | optional | Filter by status |
+| limit | integer | 50 | Max ideas to return (max 100) |
+
+Returns: `{ success: true, ideas[], total }`.
+
+## 4.13 Link Evaluator Tool
+
+Handler: `handlers/altus-link-evaluator.js`
+
+Pre-publication editorial fitness evaluation. Fetches the target URL, cross-references against AltWire's 18-month analytics, editorial context, and archive coverage, then returns a plain-language fit assessment.
+
+### evaluate_link_fitness
+
+Evaluate a URL for AltWire editorial fitness.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| url | string | required | The URL to evaluate |
+| description | string | optional | Admin-provided context or angle hint |
+
+Returns: `{ url, page_title, page_description, fetch_error, fit, reasoning, suggested_angle, evidence?, steps_completed[] }`.
+
+**Fit levels:** `excellent` | `decent` | `okay` | `questionable` | `poor`
+
+Uses MiniMax-2.7 via `MINIMAX_API_KEY` for analysis. SSE step events emitted via `emitToolEvent`.
+
+## 4.14 Author Profile Tools
+
+Handler: `hal-harness.js` — `getDerekAuthorProfile()`
+
+Editorial voice profile for AI Writer. Loaded and injected into draft generation context. Stored in `agent_memory` at `hal:altwire:editorial_voice_profile`.
+
+### get_author_profile
+
+Returns the editorial voice profile — writing voice, tone preferences, and what to preserve in AI-generated drafts.
+
+Returns: `{ success: true, profile: { writing_voice, what_to_preserve_in_ai_drafts, ... } }`.
+
+### update_author_profile
+
+Update a single field of the editorial voice profile. Valid dot-notation field paths:
+
+| Field Path | Description |
+|---|---|
+| `writing_voice.tone` | Overall tone |
+| `writing_voice.formality` | Formality level |
+| `writing_voice.sentence_patterns` | Sentence style notes |
+| `writing_voice.first_person_usage` | First-person usage preference |
+| `writing_voice.emotional_candor` | Emotional candor level |
+| `writing_voice.humor_style` | Humor style |
+| `what_to_preserve_in_ai_drafts` | What to preserve in AI-generated drafts |
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| field_path | string | required | Dot-notation path — e.g. `writing_voice.tone` |
+| value | string | required | New value for the field |
+
+Returns: `{ success: true, profile }`.
+
+## 4.15 Hal Agent Memory Tools
 
 Handler: `handlers/hal-memory.js`
 
-Memory read/write/list/delete tools scoped to the Hal agent. Used to access `hal:soul:altwire`, `hal:altwire:editorial_context`, and other Hal memory keys. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be deleted or overwritten via `hal_write_memory`.
+Memory read/write/list tools scoped to the Hal agent. Used to access `hal:soul:altwire`, `hal:altwire:editorial_context`, and other Hal memory keys. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be overwritten via `hal_write_memory`.
 
 ### hal_read_memory
 
@@ -951,35 +1204,27 @@ List all Hal agent memory keys and values, newest first.
 
 Returns: `{ success: true, entries: [{ key, value, updated_at }], total }`.
 
-### hal_delete_memory
-
-Delete a memory entry by key. Protected keys cannot be deleted.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| key | string | required | Memory key to delete |
-
-Returns: `{ success: true, deleted: boolean, reason? }`.
-
 ---
 
 # 5. Tool Count Summary
 
 | Section | Status | Count |
 |---|---|---|
-| RAG Archive | LIVE | 5 |
+| RAG Archive | LIVE | 7 |
 | Matomo Analytics | LIVE | 4 |
 | Google Search Console | LIVE | 3 |
 | Editorial Intelligence | LIVE | 4 |
 | Review & Loaner Tracker | LIVE | 16 |
 | Watch List | LIVE | 3 |
-| AI Writer | LIVE | 10 |
+| AI Writer | LIVE | 13 |
 | Chart Generation | LIVE | 1 |
 | Better Stack Monitoring | LIVE | 2 |
 | Morning Digest | LIVE | 1 |
 | Slack Integration | LIVE | 2 |
-| Hal Agent Memory | LIVE | 4 |
-| **Total live** | | **57** |
+| Hal Agent Memory | LIVE | 3 |
+| Editorial Tools | LIVE | 4 |
+| Link Evaluator | LIVE | 1 |
+| **Total live** | | **65** |
 
 ---
 
@@ -990,6 +1235,7 @@ All cron jobs are registered at startup in `index.js`, gated by `DATABASE_URL` p
 | Schedule | Timezone | Job | Handler |
 |---|---|---|---|
 | `0 3 * * *` | UTC | Daily content ingest | `lib/ingest-cron.js` → spawns `scripts/ingest.js` as child process |
+| `0 5 * * *` | America/New_York | AltWire Nightly Reflection | `handlers/altus-reflection.js` → `runAltwireReflection()` |
 | `0 6 * * *` | America/New_York | Performance snapshot collection | `handlers/altus-performance-tracker.js` → `runPerformanceSnapshotCron()` |
 | `0 9 * * *` | America/New_York | News monitor check | `handlers/altus-news-monitor.js` → `runNewsMonitorCron()` |
 
@@ -1008,6 +1254,10 @@ Iterates over all articles in `altus_article_assignments`. For each article, det
 ## 6.3 News Monitor Check (09:00 ET)
 
 Runs `getNewsOpportunities()` and stores the result in `agent_memory` under key `altus:news_alert:{today}`. Surfaces watch list matches for Derek's morning review. Never throws — errors are logged but don't crash the server.
+
+## 6.4 AltWire Nightly Reflection (05:00 ET)
+
+Lightweight nightly editorial context refresh. Writes to `hal:altwire:traffic_summary`, `hal:altwire:top_articles`, and `hal:altwire:site_search_keywords` in agent_memory. Monthly (every 30 days), triggers `scripts/seed-altwire-historical-analytics.js` to refresh 18-month analytics memory keys. Uses `Promise.allSettled` so individual failures don't crash the job.
 
 ---
 
@@ -1078,10 +1328,11 @@ The Hal soul for AltWire (`hal:soul:altwire`) is seeded at first deployment via 
 
 ```
 altwire-altus/
-├── index.js                           # Tool registry — 57 tools, HTTP server, cron registration
+├── index.js                           # Tool registry — 65 tools, HTTP server, OAuth, cron registration
 ├── logger.js                          # Structured JSON logger (stderr only)
 ├── hal-labels.js                      # AI Writer tool display labels for UI
 ├── hal-chart.js                       # Chart spec generator for Hal Chat UI
+├── hal-harness.js                     # assembleSystemPrompt + getDerekAuthorProfile — AltWire context switching
 │
 ├── handlers/
 │   ├── altus-search.js                # search_altwire_archive — semantic search with recency weighting
@@ -1089,35 +1340,45 @@ altwire-altus/
 │   ├── altus-reingest.js              # reingest_altwire_archive — full/recent ingest pipeline
 │   ├── altus-stats.js                 # get_archive_stats — health and coverage statistics
 │   ├── altus-fetch.js                 # get_content_by_url — URL/slug lookup
+│   ├── altwire-search.js              # search_altwire — public AI search via MiniMax-2.7 synthesis
 │   ├── altus-topic-discovery.js       # get_story_opportunities — GSC × archive cross-reference
 │   ├── altus-news-monitor.js          # get_news_opportunities — GSC News × watch list
 │   ├── altus-performance-tracker.js   # get_article_performance, get_news_performance_patterns, cron
 │   ├── altus-monitoring.js            # Better Stack uptime and incident fetchers
 │   ├── altus-digest.js                # Morning digest aggregator — 7 data sources
+│   ├── altus-reflection.js            # Nightly AltWire reflection — 5 AM ET + monthly historical seed
+│   ├── altus-editorial-tools.js       # Article tracking, content ideas — 4 tools
+│   ├── altus-link-evaluator.js        # evaluate_link_fitness — pre-publication editorial fitness
 │   ├── altwire-matomo-client.js       # Matomo Reporting API — 4 analytics tools
 │   ├── altwire-gsc-client.js         # Google Search Console API — search, opportunities, sitemap
 │   ├── review-tracker-handler.js      # Review, loaner, note CRUD + editorial digest — 16 tools
 │   ├── altus-watch-list.js            # Watch list CRUD — 3 tools
-│   ├── altus-writer.js               # AI Writer pipeline — 10 tools (assignment → outline → draft → post)
+│   ├── altus-writer.js               # AI Writer pipeline — 11 tools (assignment → outline → draft → post)
 │   ├── slack-altus.js                 # Slack integration — outbound status posting, hal_slack_posts
-│   └── hal-memory.js                  # Hal agent memory read/write/list/delete — 4 tools
+│   └── hal-memory.js                  # Hal agent memory read/write/list — 3 tools
 │
 ├── lib/
 │   ├── altus-db.js                    # PostgreSQL pool (named + default export), schema init, upsertContent
 │   ├── ai-cost-tracker.js             # AI usage cost tracking (ai_usage table)
-│   ├── safe-tool-handler.js           # safeToolHandler wrapper — try/catch with structured error
+│   ├── safe-tool-handler.js           # safeToolHandler wrapper + SSE event emitter
+│   ├── altus-event-bus.js             # In-memory SSE event bus per sessionId
 │   ├── synthesizer.js                 # Claude Haiku synthesis — galleries, coverage, pitches
 │   ├── voyage.js                      # Voyage AI embedding — embedDocuments, embedQuery
 │   ├── recency.js                     # Time decay weighting for search results
 │   ├── ingest-cron.js                 # Daily ingest scheduler (03:00 UTC)
 │   ├── wp-client.js                   # WordPress REST API client + buildAuthHeader
 │   ├── writer-client.js              # Unified AI generation abstraction (Anthropic/OpenAI routing)
-│   └── markdown.js                    # Shared markdown-to-HTML converter (regex-based, no deps)
+│   ├── markdown.js                    # Shared markdown-to-HTML converter (regex-based, no deps)
+│   ├── minimax-search.js             # MiniMax-2.7 synthesis for public search answers
+│   ├── editorial-helpers.js           # loadEditorialContext, scoreEditorialAffinity — shared editorial utils
+│   ├── rate-limiter.js               # Sliding-window rate limiter (global + auth)
+│   └── oauth-store.js                # OAuth 2.0 token store — auth codes, access tokens, refresh tokens
 │
 ├── scripts/
 │   ├── ingest.js                      # Standalone ingest script (spawned by cron)
 │   ├── analyze-rag-corpus.js         # Two-model corpus analysis → hal:altwire:editorial_context
 │   ├── seed-hal-soul-altwire.js      # Initial Hal soul seeding for AltWire
+│   ├── seed-altwire-historical-analytics.js  # 18-month analytics memory key seeding (monthly)
 │   └── test-seed-prereqs.js          # Prerequisite validation before seeding
 │
 ├── tests/
@@ -1160,6 +1421,9 @@ altwire-altus/
 | Analytics | Google Search Console via `googleapis`, Matomo via Reporting API |
 | Monitoring | Better Stack API (uptime, incidents) |
 | Slack | `@slack/bolt` — outbound status posting, no event bridging |
+| OAuth 2.0 | RFC 6749 + PKCE — auth codes, access tokens, refresh tokens via `oauth-store.js` |
+| Rate limiting | Sliding-window per-IP limiters — global (200/15min) and auth (30/15min) |
+| Public search | MiniMax-2.7 synthesis via `minimax-search.js` — no Anthropic dependency |
 | Testing | Vitest + `fast-check` for property-based testing |
 | Deployment | Railway (Nixpacks builder, auto-deploy on main branch push) |
 
@@ -1205,13 +1469,24 @@ altwire-altus/
 | `ALTWIRE_GSC_SERVICE_ACCOUNT_JSON` | Full JSON service account key (single line) |
 | `ALTWIRE_GSC_SITE_URL` | GSC site URL (e.g. `https://altwire.net` or `sc-domain:altwire.net`) |
 
-## 11.4 Better Stack Monitoring
+## 11.4 OAuth 2.0
+
+| Variable | Purpose |
+|---|---|
+| `OAUTH_CLIENT_ID_<OPERATOR>` | Public client ID for named operator (scanned at startup) |
+| `OAUTH_CLIENT_SECRET_<OPERATOR>` | Client secret for the operator (hashed at runtime via SHA-256) |
+| `OAUTH_REDIRECT_URI` | Primary redirect URI (defaults to `<MCP_BASE_URL>/oauth/callback`) |
+| `OAUTH_ALLOWED_REDIRECT_URIS` | Additional allowed redirect URIs, comma-separated |
+| `OAUTH_CLIENT_TOOLS` | Per-client tool allowlists — `clientId:tool1,tool2;clientId2:tool1` |
+| `MCP_BASE_URL` | Base URL for OAuth discovery endpoint (e.g. `https://altus.altwire.net`) |
+
+## 11.5 Better Stack Monitoring
 
 | Variable | Purpose |
 |---|---|
 | `BETTER_STACK_TOKEN` | Read-only Better Stack API token for uptime and incident monitoring |
 
-## 11.5 Slack Integration
+## 11.6 Slack Integration
 
 | Variable | Purpose |
 |---|---|
@@ -1222,20 +1497,24 @@ altwire-altus/
 | `SLACK_CHANNEL_BUG_REPORTS` | Channel for dave digest posts |
 | `SLACK_CHANNEL_WATERCOOLER` | Watercooler channel (reserved for future use) |
 
-## 11.6 Optional
+## 11.7 Optional
 
 | Variable | Default | Purpose |
-|---|---|---|
+|---|---|
 | `PORT` | 3000 | Railway sets this automatically |
 | `TEST_MODE` | false | Set true to skip live API calls in tests |
 | `LOG_LEVEL` | info | Minimum log level (`debug`, `info`, `warn`, `error`) |
 | `ALTUS_ADMIN_TOKEN` | — | Bearer token for writer REST endpoints (`/hal/writer/*`) |
 | `ALTUS_WRITER_MODEL` | `claude-sonnet-4-5` | AI model for writer pipeline. Prefix-based provider detection: `gpt-*`, `o1*`, `o3*` → OpenAI; all else → Anthropic |
 | `OPENAI_API_KEY` | — | Required only when `ALTUS_WRITER_MODEL` is set to an OpenAI model |
+| `MINIMAX_API_KEY` | — | Required for public AI search synthesis and link evaluator |
+| `ALTWIRE_SEARCH_MIN_SCORE` | 0.70 | Minimum similarity score for `search_altwire` (public search) |
 
 ---
 
 # 12. Test Suite
+
+
 
 22 test files covering unit tests, property-based tests, and integration tests.
 
@@ -1279,6 +1558,21 @@ altwire-altus/
 | `.kiro/specs/altus-ai-writer/` | AI Writer spec — 10 pipeline tools, 2 tables, writer-client abstraction |
 | `.kiro/specs/altus-html-export/` | HTML export spec — `get_draft_as_html` tool, shared markdown converter |
 
+### Changelog Summary (v0.5 → v1.1)
+
+- **OAuth 2.0 Authorization Server:** Full RFC 6749 + PKCE implementation with SHA-256 challenge, auth code/access token/refresh token flows, per-client tool allowlists, and `X-Agent-Context` header scoping. Replaces the previous API key pattern.
+- **Rate Limiting:** Sliding-window global (200/15min per IP) and auth-specific (30/15min per IP) limiters with standard `RateLimit-*` response headers.
+- **SSE Event Bus:** Real-time tool event streaming via `GET /events/:sessionId` — streams `tool_start`, `tool_done`, `thinking_done` events to the Chat UI.
+- **Public AI Search (`search_altwire`):** MiniMax-2.7 synthesis over AltWire archive — full-text answer with cited sources. Reader feedback tracked in `altus_search_feedback` table.
+- **AltWire Reflection cron (5 AM ET):** Nightly refresh of `hal:altwire:traffic_summary`, `hal:altwire:top_articles`, `hal:altwire:site_search_keywords`. Monthly historical analytics re-seed.
+- **New Editorial Tools:** `track_article`, `list_tracked_articles`, `add_content_idea`, `get_content_ideas` — article tracking and content idea management in `agent_memory`.
+- **Link Evaluator:** `evaluate_link_fitness` — pre-publication editorial fitness scoring via MiniMax-2.7 against 18-month analytics, editorial context, and archive coverage.
+- **Author Profile Tools:** `get_author_profile`, `update_author_profile` — editorial voice profile stored at `hal:altwire:editorial_voice_profile` for AI Writer context injection.
+- **Writer Summary:** `get_writer_summary` — aggregated writer stats for prompt page context card.
+- **Hal Memory:** Removed `hal_delete_memory` (was not registered as a tool). Read/write/list remain.
+- **New DB Tables:** `altus_search_queries`, `altus_search_feedback`, `oauth_auth_codes`, `oauth_access_tokens`, `oauth_refresh_tokens`.
+- **Tool count:** 57 → 65 tools.
+
 ### Changelog Summary (v0.4 → v0.5)
 
 - **PR #6–#13 (Morning Digest & Monitoring):** Added Better Stack uptime/incident monitoring, morning digest aggregating 7 data sources, GET `/altwire/digest` REST endpoint, Slack integration with outbound status posting and `hal_slack_posts` table, Hal agent memory tools (read/write/list/delete) for soul and editorial context seeding, chart generation tool for Hal Chat UI.
@@ -1309,7 +1603,13 @@ altwire-altus/
 - **Writer REST endpoints** — `/hal/writer/assignments` and `/hal/writer/assignments/:id` read from `altus_assignments` table. Require `ALTUS_ADMIN_TOKEN` bearer auth.
 - **Database URL priority** — `ALTWIRE_DATABASE_URL` takes precedence over `DATABASE_URL` when both are set. Use `ALTWIRE_DATABASE_URL` for AltWire-specific connections.
 - **Slack event handling** — `slack-altus.js` handles outbound posts only. Incoming Slack events (mentions, DMs, thread replies) require hal-harness.js which is nimbus-specific and not present in altwire-altus.
-- **Protected memory keys** — `hal:soul*` and `hal:onboarding_state:*` keys cannot be deleted via `hal_delete_memory` or overwritten via `hal_write_memory`. Use `scripts/seed-hal-soul-altwire.js` for soul updates.
+- **Protected memory keys** — `hal:soul*` and `hal:onboarding_state:*` keys cannot be overwritten via `hal_write_memory`. Use `scripts/seed-hal-soul-altwire.js` for soul updates. `hal_delete_memory` is not registered as a tool.
+- **OAuth clients must be pre-registered** — clients are discovered by scanning `OAUTH_CLIENT_ID_*` env vars at startup. Adding a new client requires a restart.
+- **Per-client tool allowlists** — if `OAUTH_CLIENT_TOOLS` is set, only listed tools are available to that client. Unlisted clients get full access.
+- **`MINIMAX_API_KEY`** required for public AI search synthesis and link evaluator. Not required for other AltWire tools.
+- **SSE event bus is in-memory** — events are not persisted across deploys. Chat UI must reconnect after restart.
+- **S256 PKCE is required** — plain code verifier (no challenge) is rejected at the token endpoint.
+- **`hal_delete_memory` removed** — was never registered as an MCP tool. Memory deletion is not exposed via API.
 
 ---
 
