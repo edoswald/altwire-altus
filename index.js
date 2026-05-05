@@ -201,6 +201,14 @@ const TOOL_CONTEXTS = {
   // Author profile
   get_author_profile:           [],
   update_author_profile:         [],
+  // Better Stack incident management
+  altus_get_incident_comments:  [],
+  altus_post_incident_comment:  [],
+  altus_get_status_updates:     [],
+  altus_post_status_update:     [],
+  // Event log tools
+  query_altus_events:           [],
+  get_altus_audit_log:          [],
 };
 
 // Canonical context names for the X-Agent-Context header values.
@@ -232,6 +240,20 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       logger.error('Writer schema init failed', { error: err.message, code: err.code });
     });
 
+    // Event log schema (non-blocking)
+    import('./altus-event-log.js')
+      .then(({ initAltusEventLogSchema }) => initAltusEventLogSchema().catch(err => {
+        logger.error('Altus event log schema init failed', { error: err.message, code: err.code });
+      }))
+      .catch(err => logger.error('altus-event-log: import failed', { error: err.message }));
+
+    // Heartbeat schema (non-blocking)
+    import('./handlers/altus-heartbeat.js')
+      .then(({ initHeartbeatSchema }) => initHeartbeatSchema().catch(err => {
+        logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
+      }))
+      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+
     // Slack schema init (non-blocking)
     import('./handlers/slack-altus.js')
       .then(({ initSlackAltusSchema, initSlackAltus }) => {
@@ -254,6 +276,36 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       await runAltwireReflection();
     } catch (err) {
       logger.error('AltWire reflection cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Altus Heartbeat — every 2 hours
+  cron.schedule('0 */2 * * *', async () => {
+    try {
+      const { runAltusHeartbeat } = await import('./handlers/altus-heartbeat.js');
+      await runAltusHeartbeat();
+    } catch (err) {
+      logger.error('Altus heartbeat cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Altus Event Log Retention — 3 AM ET daily
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      const { runRetentionCron } = await import('./altus-event-log.js');
+      await runRetentionCron();
+    } catch (err) {
+      logger.error('Altus event retention cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Altus Audit Batch Collection — every 2 hours
+  cron.schedule('0 */2 * * *', async () => {
+    try {
+      const { runAuditBatchCollection } = await import('./altus-event-log.js');
+      await runAuditBatchCollection();
+    } catch (err) {
+      logger.error('Altus audit batch collection cron failed', { error: err.message });
     }
   }, { timezone: 'America/New_York' });
 } else {
@@ -1168,6 +1220,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
 
   const { getAltwireUptime, getAltwireIncidents } = await import('./handlers/altus-monitoring.js');
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+  const { getAltwireIncidentComments, createAltwireIncidentComment, getAltwireStatusUpdates, createAltwireStatusUpdate } = await import('./handlers/altus-incident-handler.js');
+  const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1187,6 +1241,109 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     safeToolHandler(async () => {
       const result = await getAltwireIncidents();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Better Stack Incident Management
+  // -------------------------------------------------------------------------
+
+  scopedRegister(
+    'altus_get_incident_comments',
+    {
+      description: 'Retrieve comments on a Better Stack incident. Use to see diagnostic notes already posted, or review attribution history.',
+      inputSchema: {
+        incident_id: z.string().describe('Better Stack incident ID — numeric string, e.g. "123456"'),
+      },
+    },
+    safeToolHandler(async ({ incident_id }) => {
+      const result = await getAltwireIncidentComments(incident_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_post_incident_comment',
+    {
+      description: 'Post an attributed comment to a Better Stack incident. Altus identity is attributed in the Better Stack timeline. Use for editorial notes, status updates, or diagnosis context.',
+      inputSchema: {
+        incident_id: z.string().describe('Better Stack incident ID'),
+        content: z.string().describe('Comment content — markdown supported. Plain text preferred.'),
+      },
+    },
+    safeToolHandler(async ({ incident_id, content }) => {
+      const result = await createAltwireIncidentComment(incident_id, content);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_get_status_updates',
+    {
+      description: 'Retrieve status page updates for a Better Stack status report. Use to see recent public-facing status communications.',
+      inputSchema: {
+        status_report_id: z.string().describe('Better Stack status report ID'),
+      },
+    },
+    safeToolHandler(async ({ status_report_id }) => {
+      const result = await getAltwireStatusUpdates(status_report_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'altus_post_status_update',
+    {
+      description: 'Post a public status page update for a Better Stack status report. Use to communicate incident status, resolution, or maintenance windows to AltWire readers.',
+      inputSchema: {
+        status_report_id: z.string().describe('Better Stack status report ID'),
+        message: z.string().describe('Status update message — describe current status clearly'),
+        affected_resources: z.array(z.string()).optional().default([]).describe('Affected URLs or services'),
+        notify_subscribers: z.boolean().optional().default(false).describe('Email subscribers'),
+      },
+    },
+    safeToolHandler(async ({ status_report_id, message, affected_resources, notify_subscribers }) => {
+      const result = await createAltwireStatusUpdate({ status_report_id, message, affected_resources, notify_subscribers });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  // -------------------------------------------------------------------------
+  // Event Log Tools
+  // -------------------------------------------------------------------------
+
+  scopedRegister(
+    'query_altus_events',
+    {
+      description: 'Query the Altus event log — every tool call, error, cron trigger, and session boundary is recorded here. Use to audit what Altus has done, debug failures, or investigate agent behavior.',
+      inputSchema: {
+        event_type: z.string().optional().describe('Filter by event type: tool_call, tool_error, cron_trigger, session_start, session_end, scope_denied'),
+        tool_name: z.string().optional().describe('Filter by tool name'),
+        session_id: z.number().optional().describe('Filter by session ID'),
+        last_n_hours: z.number().optional().describe('Time window in hours (1-168, default 24)'),
+        limit: z.number().optional().default(50).describe('Max events to return (1-200)'),
+      },
+    },
+    safeToolHandler(async ({ event_type, tool_name, session_id, last_n_hours, limit }) => {
+      const result = await queryAltusEvents({ event_type, tool_name, session_id, last_n_hours, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_altus_audit_log',
+    {
+      description: 'Synthesize a plain-English audit narrative from Altus event logs for a time window. For windows ≤24h, returns a direct synthesis. For longer windows, queues a batch job and returns a batch_id to poll.',
+      inputSchema: {
+        last_n_hours: z.number().optional().default(24).describe('Time window in hours (1-168)'),
+        batch_id: z.string().optional().describe('Poll a pending batch by ID'),
+        last_n_days: z.number().optional().default(30).describe('For completed audits: how far back to search'),
+        limit: z.number().optional().default(5).describe('Max completed audits to return'),
+      },
+    },
+    safeToolHandler(async ({ last_n_hours, batch_id, last_n_days, limit }) => {
+      const result = await synthesizeAudit({ last_n_hours, batch_id });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
