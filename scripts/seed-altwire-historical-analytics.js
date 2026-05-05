@@ -217,7 +217,7 @@ async function fetchTopArticlesByMonth(startDate, endDate) {
         articles: result.map((r) => ({
           url: r.url ?? r.label ?? '',
           label: r.label ?? r.url ?? '',
-          pageviews: typeof r.value === 'number' ? r.value : 0,
+          pageviews: typeof r.nb_hits === 'number' ? r.nb_hits : 0,
         })),
       });
     }
@@ -275,7 +275,7 @@ async function fetchSearchKeywords(startDate, endDate) {
         month: formatDate(month),
         keywords: result.slice(0, 20).map((r) => ({
           keyword: r.label ?? r.keyword ?? '',
-          hits: typeof r.value === 'number' ? r.value : 0,
+          hits: typeof r.nb_visits === 'number' ? r.nb_visits : 0,
         })),
       });
     }
@@ -510,7 +510,7 @@ async function analyzeReferrerSummary(breakdowns) {
     if (types) {
       for (const t of types) {
         const label = t.label ?? '';
-        const visits = typeof t.value === 'number' ? t.value : 0;
+        const visits = typeof t.nb_visits === 'number' ? t.nb_visits : 0;
         if (label.includes('direct')) summary.direct += visits;
         else if (label.includes('search')) summary.search += visits;
         else if (label.includes('social')) summary.social += visits;
