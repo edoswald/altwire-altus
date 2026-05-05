@@ -123,14 +123,15 @@ export async function getTopArticles(period, date, limit = 20) {
       })
     : [];
 
-  // Reconstruct full URL from label — Matomo doesn't return the full URL, only the path.
-  // The DB stores full URLs like https://altwire.net/album-review-tool-fear-inoculum/
-  const BASE_URL = 'https://www.altwire.net';
+  // Reconstruct full URL from label — Matomo returns path label (e.g.
+  // 'album-review-tool-fear-inoculum' or '/album-review-tool-fear-inoculum').
+  // DB stores full URLs like 'https://altwire.net/album-review-tool-fear-inoculum/'.
+  const BASE_URL = 'https://altwire.net';
 
-  const pages = filtered.slice(0, limit).map((r) => ({
-    ...r,
-    url: `${BASE_URL}${r.label}`,
-  }));
+  const pages = filtered.slice(0, limit).map((item) => {
+    const normalizedLabel = (item.label ?? '').replace(/^\//, '');
+    return { ...item, url: `${BASE_URL}/${normalizedLabel}/` };
+  });
 
   logger.info('AltWire Matomo top articles fetched', { period, date, count: pages.length });
   return pages;
