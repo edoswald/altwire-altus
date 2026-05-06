@@ -1,8 +1,8 @@
 /**
  * Altus MCP Server — AltWire AI Operations
  *
- * 45 tools: RAG archive, analytics, editorial intelligence, review tracker,
- * watch list, and AI Writer pipeline.
+ * 88 tools: RAG archive, analytics, editorial intelligence, review tracker,
+ * watch list, AI Writer pipeline, Slack, memory, onboarding, and more.
  * Transport: StreamableHTTP (stateless — sessionIdGenerator: undefined)
  * Health: GET /health
  */
@@ -343,8 +343,8 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     }
   }, { timezone: 'America/New_York' });
 
-  // Altus Audit Batch Collection — every 2 hours
-  cron.schedule('0 */2 * * *', async () => {
+  // Altus Audit Batch Collection — every 2 hours, staggered 30 min from heartbeat
+  cron.schedule('30 */2 * * *', async () => {
     try {
       const { runAuditBatchCollection } = await import('./altus-event-log.js');
       await runAuditBatchCollection();
@@ -2341,7 +2341,9 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
 
-      const { query, rating, comment, answer_excerpt, results_shown, ip_address, user_agent } = data;
+      const { query, rating, comment, answer_excerpt, results_shown, user_agent } = data;
+      // Derive IP from the connection — never trust a caller-supplied value.
+      const ip_address = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || null;
 
       if (!query || !rating) {
         res.writeHead(400);
@@ -2360,7 +2362,7 @@ const httpServer = createServer(async (req, res) => {
             comment || null,
             answer_excerpt || null,
             results_shown || [],
-            ip_address || null,
+            ip_address,
             user_agent || null,
           ]
         );
@@ -2405,7 +2407,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken) {
+    if (!authToken || authToken !== process.env.HAL_KEY) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2483,20 +2485,22 @@ const httpServer = createServer(async (req, res) => {
     const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId);
     const agentContext = req.headers['x-agent-context'] || null;
 
-    // Extract session_id from request body for SSE event bus correlation
-    const sessionId = await new Promise((resolve) => {
-      if (req.body && typeof req.body === 'object' && req.body.session_id) {
-        resolve(req.body.session_id);
+    // Read the body once so we can extract session_id AND forward it to the transport.
+    // If we attach data/end listeners without saving the result, the body is consumed
+    // and transport.handleRequest would receive an empty stream.
+    const { sessionId, parsedBody } = await new Promise((resolve) => {
+      if (req.body && typeof req.body === 'object') {
+        resolve({ sessionId: req.body.session_id || null, parsedBody: req.body });
         return;
       }
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
       req.on('end', () => {
         try {
-          const data = JSON.parse(body);
-          resolve(data?.session_id || null);
+          const data = JSON.parse(raw);
+          resolve({ sessionId: data?.session_id || null, parsedBody: data });
         } catch {
-          resolve(null);
+          resolve({ sessionId: null, parsedBody: null });
         }
       });
     });
@@ -2511,12 +2515,12 @@ const httpServer = createServer(async (req, res) => {
     if (sessionId) {
       await oauthClientStorage.run(clientCtx, async () =>
         sessionIdStorage.run(sessionId, async () => {
-          await transport.handleRequest(req, res);
+          await transport.handleRequest(req, res, parsedBody);
         })
       );
     } else {
       await oauthClientStorage.run(clientCtx, async () => {
-        await transport.handleRequest(req, res);
+        await transport.handleRequest(req, res, parsedBody);
       });
     }
     return;
