@@ -27,6 +27,7 @@ if (process.env.LMNR_PROJECT_API_KEY) {
 }
 
 import { sessionIdStorage } from './lib/safe-tool-handler.js';
+import { observe } from './tracing.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from 'http';
@@ -2512,16 +2513,21 @@ const httpServer = createServer(async (req, res) => {
     await server.connect(transport);
 
     const clientCtx = { clientId, allowedTools };
+    const sessionMeta = { client_id: clientId, ...(agentContext && { agent_context: agentContext }) };
     if (sessionId) {
       await oauthClientStorage.run(clientCtx, async () =>
-        sessionIdStorage.run(sessionId, async () => {
+        sessionIdStorage.run(sessionId, async () =>
+          observe({ name: 'altus_session', spanType: 'DEFAULT', metadata: sessionMeta }, async () => {
+            await transport.handleRequest(req, res, parsedBody);
+          })
+        )
+      );
+    } else {
+      await oauthClientStorage.run(clientCtx, async () =>
+        observe({ name: 'altus_session', spanType: 'DEFAULT', metadata: sessionMeta }, async () => {
           await transport.handleRequest(req, res, parsedBody);
         })
       );
-    } else {
-      await oauthClientStorage.run(clientCtx, async () => {
-        await transport.handleRequest(req, res, parsedBody);
-      });
     }
     return;
   }
