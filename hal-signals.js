@@ -94,12 +94,17 @@ export async function registerSignals() {
     return;
   }
 
+  if (!Laminar?.signals) {
+    logger.debug('[altus-signals] Laminar.signals not available — skipping signal registration');
+    return;
+  }
+
   for (const signal of SIGNALS) {
     try {
       await Laminar.signals.create(signal);
     } catch (err) {
       if (err.status !== 409) {
-        logger.warn(`[altus-signals] Failed to register ${signal.name}:`, err.message);
+        logger.debug(`[altus-signals] Failed to register ${signal.name}:`, err.message);
       }
     }
   }
