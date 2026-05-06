@@ -34,6 +34,7 @@ export async function initWriterSchema() {
                         )),
       archive_research  JSONB,
       web_research      TEXT,
+      research_status   JSONB,
       review_notes_id   INTEGER REFERENCES altus_reviews(id) ON DELETE SET NULL,
       outline           JSONB,
       outline_notes     TEXT,
@@ -48,6 +49,8 @@ export async function initWriterSchema() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS altus_assignments_status_idx ON altus_assignments (status)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS altus_assignments_created_idx ON altus_assignments (created_at)`);
+  // Backfill: tables created before research_status existed need the column added.
+  await pool.query(`ALTER TABLE altus_assignments ADD COLUMN IF NOT EXISTS research_status JSONB`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS altus_editorial_decisions (
@@ -154,6 +157,15 @@ export async function createAssignment({ topic, article_type = 'article', review
     logger.error('Web research failed', { error: webResult.reason?.message, topic });
   }
 
+  // Capture partial-failure state so editors can see which research source was unavailable
+  // when the outline (and ultimately the draft) was generated.
+  const researchStatus = {
+    archive: archiveResult.status === 'fulfilled' ? 'ok' : 'failed',
+    web: webResult.status === 'fulfilled' ? 'ok' : 'failed',
+    ...(archiveResult.status === 'rejected' && { archive_error: archiveResult.reason?.message || 'unknown' }),
+    ...(webResult.status === 'rejected' && { web_error: webResult.reason?.message || 'unknown' }),
+  };
+
   // If review_notes_id provided, fetch notes and store as part of research context
   let reviewNotesContext = null;
   if (review_notes_id) {
@@ -167,6 +179,7 @@ export async function createAssignment({ topic, article_type = 'article', review
   const updated = await updateAssignment(assignment.id, {
     archive_research: archiveResearch ? JSON.stringify(archiveResearch) : null,
     web_research: webResearch,
+    research_status: JSON.stringify(researchStatus),
     status: 'outline_ready',
   });
 
@@ -180,6 +193,7 @@ export async function createAssignment({ topic, article_type = 'article', review
       archive_hits: archiveResearch?.results?.length || 0,
       web_research_summary: webResearch ? webResearch.slice(0, 200) : null,
       has_review_notes: !!reviewNotesContext,
+      research_status: researchStatus,
     },
   };
 }
@@ -676,7 +690,7 @@ export async function listAssignments({ status, article_type, limit = 20, offset
   const safeLimit = Math.min(Math.max(limit, 1), 50);
 
   const { rows } = await pool.query(
-    `SELECT id, topic, article_type, status, draft_word_count, wp_post_url, created_at, updated_at
+    `SELECT id, topic, article_type, status, draft_word_count, wp_post_url, research_status, created_at, updated_at
      FROM altus_assignments
      ${where}
      ORDER BY created_at DESC
