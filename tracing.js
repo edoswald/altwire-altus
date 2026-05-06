@@ -63,10 +63,13 @@ export function sanitizeToolParams(params) {
 /**
  * Wrap a handler function with a Laminar span.
  *
+ * observe(options, fn) returns a Promise — await it directly:
+ *   return observe({ name: 'altus_heartbeat' }, async () => { ... });
+ *
  * @param {{ name: string, spanType?: 'DEFAULT'|'LLM'|'TOOL', metadata?: object }} options
  * @param {Function} fn - async function to wrap
- * @param {object} [params] - params to sanitize before logging
- * @returns {Function} - wrapped function
+ * @param {object} [params] - optional params forwarded to fn
+ * @returns {Promise<*>} - result of fn
  */
 export function observe(options, fn, params) {
   initObserve().catch(() => {});
@@ -74,5 +77,6 @@ export function observe(options, fn, params) {
   if (_observeFn) {
     return _observeFn(options, fn, params);
   }
-  return fn;
+  // Laminar unavailable — call fn directly so the caller still gets a Promise.
+  return params !== undefined ? fn(params) : fn();
 }
