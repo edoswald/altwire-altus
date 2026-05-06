@@ -8,12 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **Laminar deep integration** (instrumentModules + Laminar.patch + hal-signals.js):
+- **Laminar deep integration** (instrumentModules):
+  - Upgraded `@lmnr-ai/lmnr` from `^0.4.0` to `^0.8.23` — this version has `Laminar.patch()` for instrumenting already-instantiated module-level Anthropic clients
   - Added `instrumentModules: { anthropic: Anthropic }` to `Laminar.initialize()` in `index.js` — auto-instruments all 5 `new Anthropic()` instantiation sites across the codebase
-  - Added `Laminar.patch({ anthropic: Anthropic })` after initialization — instruments already-instantiated module-level Anthropic clients
+  - `Laminar.patch({ anthropic: Anthropic })` call now works with v0.8.x SDK
   - `sanitizeToolParams()`: New function in `tracing.js` — strips PII fields (`email`, `phone`, `order_id`, `phone_number`, `billing_phone`) and any key containing `password` before they reach Laminar traces
   - Session metadata attached to `@observe` spans: `runAltusHeartbeat` now passes `metadata: { session_type: 'heartbeat' }`
-  - **`hal-signals.js`** (new): Registers 5 Laminar Signals on startup — `altus_agent_loop_detected`, `altus_session_error`, `altus_tool_failure`, `altus_high_token_session`, `altus_long_running_session` — each with structured output schemas for SQL Editor queries
+  - **`hal-signals.js`** (revised): Laminar Signals are configured via the Laminar web UI (app.lmnr.ai), not via SDK. The SDK provides tracing/observability only. Signal registration code updated accordingly.
 
 - **Multi-admin onboarding** (`handlers/altus-onboarding.js`):
   - Five-phase calibration: workload → tracking → checkins → communication → perch

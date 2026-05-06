@@ -78,34 +78,10 @@ const SIGNALS = [
 ];
 
 export async function registerSignals() {
+  // Note: Laminar Signals (plain-language pattern detection + alerting) are
+  // configured via the Laminar web UI (app.lmnr.ai), not via SDK. The SDK
+  // provides tracing and observability only. Signal registration was removed
+  // since Laminar.signals does not exist in any SDK version (0.4.x–0.8.x).
   if (!process.env.LMNR_PROJECT_API_KEY) return;
-
-  let Laminar;
-  try {
-    const lmnr = await import('@lmnr-ai/lmnr');
-    Laminar = lmnr.Laminar ?? lmnr.default?.Laminar;
-  } catch (err) {
-    logger.warn('[altus-signals] Laminar SDK not available:', err.message);
-    return;
-  }
-
-  if (!Laminar) {
-    logger.warn('[altus-signals] Laminar SDK loaded but Laminar export not found');
-    return;
-  }
-
-  if (!Laminar?.signals) {
-    logger.debug('[altus-signals] Laminar.signals not available — skipping signal registration');
-    return;
-  }
-
-  for (const signal of SIGNALS) {
-    try {
-      await Laminar.signals.create(signal);
-    } catch (err) {
-      if (err.status !== 409) {
-        logger.debug(`[altus-signals] Failed to register ${signal.name}:`, err.message);
-      }
-    }
-  }
+  logger.debug('[altus-signals] SDK initialized — signals configured via app.lmnr.ai');
 }
