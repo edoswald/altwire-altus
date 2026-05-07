@@ -95,6 +95,9 @@ async function shouldRefresh(force) {
   if (!r.success) return true;
   try {
     const last = new Date(JSON.parse(r.value).timestamp);
+    // Missing/invalid timestamp → treat as unknown refresh state and refresh,
+    // matching the behavior of !r.success and the catch block below.
+    if (Number.isNaN(last.getTime())) return true;
     return Date.now() - last.getTime() > THIRTY_DAYS_MS;
   } catch {
     return true;
