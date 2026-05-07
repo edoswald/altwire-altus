@@ -30,7 +30,7 @@ async function loadAnalyticsContext() {
   try {
     const { rows } = await pool.query(
       `SELECT key, value FROM agent_memory
-       WHERE agent = 'hal' AND key LIKE 'hal:altwire:analytics:%' AND deleted_at IS NULL`
+       WHERE agent = 'hal' AND (key LIKE 'hal:altwire:analytics:%' OR key LIKE 'hal:altwire:gsc:%' OR key = 'hal:altwire:combined_synthesis') AND deleted_at IS NULL`
     );
     if (!rows.length) return null;
     const ctx = {};
