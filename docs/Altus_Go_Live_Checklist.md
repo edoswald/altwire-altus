@@ -115,15 +115,31 @@ You should see at least:
 
 ## 8. Cron sanity
 
-The four crons register at boot when `DATABASE_URL` is set. Confirm in logs:
+Seven crons register at boot when a database URL is present (gated by
+`ALTWIRE_DATABASE_URL` / `DATABASE_URL`). Confirm in logs at startup
+and verify each has fired at least once after 24h via
+`SELECT event_type, MAX(created_at) FROM altus_event_log GROUP BY event_type;`
+or by asking Hal to run `query_altus_events`.
 
-- [ ] `cron registered: ingest (0 3 * * * UTC)`
-- [ ] `cron registered: reflection (0 5 * * * America/New_York)`
-- [ ] `cron registered: performance snapshot (0 6 * * * America/New_York)`
-- [ ] `cron registered: news monitor (0 9 * * * America/New_York)`
+| # | Schedule | Timezone | Job | Source |
+|---|---|---|---|---|
+| 1 | `0 3 * * *` | UTC | Daily content ingest | `lib/ingest-cron.js` → spawns `scripts/ingest.js` |
+| 2 | `0 5 * * *` | America/New_York | AltWire nightly reflection (Matomo + GSC + combined synthesis) | `handlers/altus-reflection.js` |
+| 3 | `0 6 * * *` | America/New_York | Performance snapshot collection (72h / 7d / 30d) | `handlers/altus-performance-tracker.js` |
+| 4 | `0 9 * * *` | America/New_York | News monitor check | `handlers/altus-news-monitor.js` |
+| 5 | `0 */2 * * *` | America/New_York | Altus heartbeat (every 2h, on the hour) | `handlers/altus-heartbeat.js` |
+| 6 | `0 3 * * *` | America/New_York | Event log retention | `altus-event-log.js` → `runRetentionCron` |
+| 7 | `30 */2 * * *` | America/New_York | Audit batch collection (every 2h, staggered :30) | `altus-event-log.js` → `runAuditBatchCollection` |
 
-After 24h, check `altus_event_log` for `cron_*` entries — each cron
-should have fired at least once.
+Tick when verified:
+
+- [ ] (1) Daily content ingest fired — check `altus_ingest_log` has a row dated within 24h.
+- [ ] (2) Reflection fired — `hal:altwire:traffic_summary` and `hal:altwire:combined_synthesis` updated within 24h.
+- [ ] (3) Performance snapshot fired — `altus_article_performance` has rows added.
+- [ ] (4) News monitor fired — `agent_memory` has `altus:news_alert:<today>`.
+- [ ] (5) Heartbeat fired — `altus_event_log` shows recent `heartbeat` events.
+- [ ] (6) Event log retention fired — older events pruned per the configured retention window.
+- [ ] (7) Audit batch collection fired — `altus_event_log` shows recent `audit_batch` events.
 
 ## 9. Tool surface smoke tests
 
