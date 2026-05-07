@@ -316,16 +316,34 @@ async function main() {
     monthly_buckets: monthly.length,
   });
 
-  let summary = null, topQueries = null, topPages = null, opps = null, news = null;
+  let summary = null, topQueries = null, topPages = null, opps = null, newsRaw = null, news = null;
   if (useLlm) {
     log('Running LLM analysis pass');
-    [summary, topQueries, topPages, opps, news] = await Promise.all([
+    [summary, topQueries, topPages, opps, newsRaw] = await Promise.all([
       analyzeSummary(monthly, aggregate.topQueries, aggregate.topPages),
       analyzeTopQueries(aggregate.topQueries),
       analyzeTopPages(aggregate.topPages),
       analyzeOpportunities(aggregate.oppZone),
       analyzeNews(aggregate.news),
     ]);
+    // Fallback to raw row data when LLM analysis fails
+    if (summary === null) {
+      summary = {
+        total_clicks: monthly.reduce((s, m) => s + (m.clicks ?? 0), 0),
+        total_impressions: monthly.reduce((s, m) => s + (m.impressions ?? 0), 0),
+        raw: true,
+      };
+    }
+    if (topQueries === null) {
+      topQueries = { top_30: (aggregate.topQueries.rows ?? []).slice(0, 30) };
+    }
+    if (topPages === null) {
+      topPages = { top_20: (aggregate.topPages.rows ?? []).slice(0, 20) };
+    }
+    if (opps === null) {
+      opps = { high_value_opportunities: (aggregate.oppZone.rows ?? []).slice(0, 15) };
+    }
+    news = newsRaw ?? { available: !!aggregate.news.rows?.length, top_news_queries: (aggregate.news.rows ?? []).slice(0, 20) };
   } else {
     summary = {
       total_clicks: monthly.reduce((s, m) => s + (m.clicks ?? 0), 0),
