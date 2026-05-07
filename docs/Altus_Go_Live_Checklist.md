@@ -144,7 +144,9 @@ return data, not an error:
 ## 10. Chat UI handshake
 
 - [ ] hal-chat-ui deployed with `VITE_ALTUS_URL` pointing at the Altus
-      service and built against the version shown in §5.
+      service. Confirm the deployed version is at least the one
+      currently set in `hal-chat-ui/package.json` (`version` field) /
+      top entry of `hal-chat-ui/src/changelog.ts`.
 - [ ] Open Altus tab → Settings drawer → **Analytics** tab. You should
       see Matomo and GSC sections both showing real numbers and no
       "not configured" warnings.
