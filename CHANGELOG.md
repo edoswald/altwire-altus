@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Google Search Console — full integration into Hal's memory** (`scripts/seed-altwire-historical-gsc.js`):
+  - New seed script pulls ~16 months of GSC history (queries, pages, opportunity-zone, News search) and writes 7 LLM-summarized memory keys under `hal:altwire:gsc:*` — `summary_16m`, `top_queries_16m`, `top_pages_16m`, `opportunities_16m`, `news_performance_16m`, `monthly_breakdown`, `last_refreshed`.
+  - Idempotent — skips if `last_refreshed` is < 30 days old; supports `--force` and `--no-llm` flags.
+  - Sonnet (claude-sonnet-4-6) used for summary/insight passes; raw rollups still produced under `--no-llm`.
+- **GSC MCP tools — completed surface**:
+  - `get_altwire_news_search_performance` — Google News search type performance.
+  - `get_altwire_opportunity_zone_queries` — queries in position 5–30.
+  - `get_altwire_page_performance` — per-URL clicks/impressions/CTR/position.
+- **Combined Matomo + GSC synthesis** (`handlers/altus-combined-analytics.js`):
+  - New MCP tool `get_altwire_combined_analytics` cross-references Matomo top articles with GSC page performance, finds search-demand gaps (opportunity-zone queries with no internal-search signal), estimates search-driven traffic share, and runs a Sonnet synthesis pass for narrative editorial recommendation.
+  - Loads historical GSC + Matomo memory keys for context.
+- **Nightly reflection — GSC + combined synthesis**:
+  - `handlers/altus-reflection.js` now writes `hal:altwire:gsc:fresh_summary` (7d/28d), `hal:altwire:gsc:fresh_opportunities` (28d), and `hal:altwire:combined_synthesis` (28d).
+  - Independent monthly historical re-seed for GSC alongside Matomo.
+- **Digest endpoint — provider config flags**:
+  - `/altwire/digest` now returns `providers.{matomo,gsc}.{configured,reachable}` based on env-var presence rather than transient call success — fixes Chat UI mis-labeling configured Matomo as "not configured" during transient API errors.
+  - Includes `historical.gsc_summary_16m` and `historical.combined_synthesis` for the Settings drawer.
+
 - **Laminar deep integration** (instrumentModules + Laminar.patch + hal-signals.js):
   - Added `instrumentModules: { anthropic: Anthropic }` to `Laminar.initialize()` in `index.js` — auto-instruments all 5 `new Anthropic()` instantiation sites across the codebase
   - Added `Laminar.patch({ anthropic: Anthropic })` after initialization — instruments already-instantiated module-level Anthropic clients

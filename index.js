@@ -41,7 +41,15 @@ import { getArchiveStats } from './handlers/altus-stats.js';
 import { getContentByUrl } from './handlers/altus-fetch.js';
 import { analyzeCoverageGaps } from './handlers/altus-coverage.js';
 import { getTrafficSummary, getReferrerBreakdown, getTopPages, getSiteSearch } from './handlers/altwire-matomo-client.js';
-import { getSearchPerformance, getSearchOpportunities, getSitemapHealth } from './handlers/altwire-gsc-client.js';
+import {
+  getSearchPerformance,
+  getSearchOpportunities,
+  getSitemapHealth,
+  getNewsSearchPerformance,
+  getOpportunityZoneQueries,
+  getPagePerformance,
+} from './handlers/altwire-gsc-client.js';
+import { getCombinedAnalytics } from './handlers/altus-combined-analytics.js';
 import { generateChart } from './hal-chart.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
@@ -161,6 +169,10 @@ const TOOL_CONTEXTS = {
   get_altwire_search_performance:   [],
   get_altwire_search_opportunities: [],
   get_altwire_sitemap_health:  [],
+  get_altwire_news_search_performance: [],
+  get_altwire_opportunity_zone_queries: [],
+  get_altwire_page_performance: [],
+  get_altwire_combined_analytics: [],
   // Editorial intelligence
   get_story_opportunities:      [],
   get_news_opportunities:       [],
@@ -645,6 +657,70 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     safeToolHandler(async () => {
       const result = await getSitemapHealth();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_altwire_news_search_performance',
+    {
+      description: 'AltWire Google News search type performance — queries and pages appearing in Google News results. Use to evaluate News visibility and identify which articles are getting News pickup.',
+      inputSchema: {
+        start_date: z.string().describe('Start date — ISO format'),
+        end_date: z.string().describe('End date — ISO format'),
+        row_limit: z.number().int().min(1).max(1000).default(25).optional(),
+        dimensions: z.string().optional().describe('Dimensions to group by — query (default), page, country'),
+      },
+    },
+    safeToolHandler(async ({ start_date, end_date, row_limit, dimensions }) => {
+      const result = await getNewsSearchPerformance(start_date, end_date, { rowLimit: row_limit, dimensions });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_altwire_opportunity_zone_queries',
+    {
+      description: 'AltWire GSC queries currently in the opportunity zone (positions 5–30). These are queries where AltWire is close to ranking on page 1 — small content or SEO improvements can move them up.',
+      inputSchema: {
+        start_date: z.string().describe('Start date — ISO format'),
+        end_date: z.string().describe('End date — ISO format'),
+      },
+    },
+    safeToolHandler(async ({ start_date, end_date }) => {
+      const result = await getOpportunityZoneQueries(start_date, end_date);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_altwire_page_performance',
+    {
+      description: 'GSC performance for a specific AltWire page — clicks, impressions, CTR, and average position over a date range. Use for post-publish article performance checks.',
+      inputSchema: {
+        page_url: z.string().describe('Full article URL'),
+        start_date: z.string().describe('Start date — ISO format'),
+        end_date: z.string().describe('End date — ISO format'),
+      },
+    },
+    safeToolHandler(async ({ page_url, start_date, end_date }) => {
+      const result = await getPagePerformance(page_url, start_date, end_date);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    })
+  );
+
+  scopedRegister(
+    'get_altwire_combined_analytics',
+    {
+      description: 'Synthesizes Matomo (on-site behavior) and Google Search Console (organic search visibility) for a date range into a unified editorial picture: which articles drive both pageviews AND impressions, search-driven traffic share, opportunity-zone queries paired with on-site reader interest, and content gaps where search demand exists but AltWire ranks weakly. Returns combined metrics plus historical context from agent_memory.',
+      inputSchema: {
+        start_date: z.string().optional().describe('Start date — ISO format. Default: 28 days ago.'),
+        end_date: z.string().optional().describe('End date — ISO format. Default: 3 days ago (GSC lag-aware).'),
+        synthesize: z.boolean().default(true).optional().describe('Run LLM synthesis pass for narrative insights (default true)'),
+      },
+    },
+    safeToolHandler(async ({ start_date, end_date, synthesize }) => {
+      const result = await getCombinedAnalytics({ startDate: start_date, endDate: end_date, synthesize });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     })
   );
