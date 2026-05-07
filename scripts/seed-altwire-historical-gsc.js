@@ -292,8 +292,16 @@ async function main() {
 
   const aggregate = await fetchAggregate(startDateStr, endDateStr);
 
-  if (aggregate.topQueries.error) {
-    console.error(`[seed-gsc] FATAL: GSC aggregate fetch failed: ${aggregate.topQueries.error}`);
+  // Validate every aggregate fetch. The `news` category is allowed to come
+  // back empty (sites not in the News index legitimately have no rows), but
+  // a hard `error` from any category indicates a fetch failure that would
+  // silently produce empty memory keys and then block retries for 30 days.
+  const aggregateErrors = ['topQueries', 'topPages', 'oppZone', 'news']
+    .filter((k) => aggregate[k]?.error)
+    .map((k) => ({ category: k, error: aggregate[k].error, message: aggregate[k].message }));
+
+  if (aggregateErrors.length > 0) {
+    console.error('[seed-gsc] FATAL: GSC aggregate fetch had errors — not writing memory keys', JSON.stringify(aggregateErrors));
     await pool.end().catch(() => {});
     process.exit(1);
   }
