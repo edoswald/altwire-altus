@@ -249,6 +249,16 @@ async function analyzeNews(news) {
   "top_news_queries": [{"query": string, "clicks": number, "impressions": number, "position": number}, ...],
   "insights": string
 }`);
+  // analyze() returns null on LLM failure or JSON parse error. Fall back to
+  // raw rows so downstream consumers don't see `{ available: true }` with no
+  // actual data — same shape as the --no-llm path.
+  if (!result) {
+    return {
+      available: true,
+      llm_summary_unavailable: true,
+      top_news_queries: rows.slice(0, 20),
+    };
+  }
   return { available: true, ...result };
 }
 
