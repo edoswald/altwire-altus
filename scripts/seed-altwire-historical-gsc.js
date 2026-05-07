@@ -123,7 +123,7 @@ async function fetchMonthlyBreakdown(startDate, endDate) {
   log(`Fetching monthly breakdown across ${buckets.length} months`);
   const monthly = [];
   for (const b of buckets) {
-    const r = await getSearchPerformance(b.start, b.end, { rowLimit: 1, dimensions: ['date'] });
+    const r = await getSearchPerformance(b.start, b.end, { dimensions: [] });
     if (r.error) {
       monthly.push({ month: b.label, error: r.error });
     } else {
