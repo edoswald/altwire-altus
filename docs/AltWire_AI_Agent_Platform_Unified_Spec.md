@@ -693,7 +693,7 @@ Handler: `handlers/altus-combined-analytics.js`
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| start_date | string | 28 days ago | ISO date |
+| start_date | string | 31 days ago | ISO date |
 | end_date | string | 3 days ago (GSC lag) | ISO date |
 | synthesize | boolean | true | If true, runs a Sonnet synthesis pass for narrative editorial recommendation |
 
