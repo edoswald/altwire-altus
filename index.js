@@ -426,12 +426,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Filter by content type'),
       },
     },
-    safeToolHandler(async ({ query, limit, content_type }) => {
+    async ({ query, limit, content_type }) => {
       const result = await searchAltwireArchive({ query, limit, content_type });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -447,12 +447,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Maximum number of results to retrieve (default 10)'),
       },
     },
-    safeToolHandler(async ({ query, limit }) => {
+    async ({ query, limit }) => {
       const result = await searchAltwirePublic({ query, limit });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -471,10 +471,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Maximum number of feedback entries to return (default 50)'),
       },
     },
-    safeToolHandler(async ({ rating, since, limit }) => {
+    async ({ rating, since, limit }) => {
       const result = await getSearchFeedback({ rating, since, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -491,10 +491,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('If true, fetches and processes content but does not write to the database'),
       },
     },
-    safeToolHandler(async ({ mode, dry_run }) => {
+    async ({ mode, dry_run }) => {
       const result = await reIngestHandler({ mode, dry_run });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -505,10 +505,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Returns health and coverage statistics for the AltWire content archive — total documents indexed, breakdown by type, last ingest run, and any errors.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getArchiveStats();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -525,13 +525,13 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('URL slug only, e.g. my-chemical-romance-philadelphia'),
       },
     },
-    safeToolHandler(async ({ url, slug }) => {
+    async ({ url, slug }) => {
       if (!url && !slug) {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'Either url or slug must be provided' }) }] };
       }
       const result = await getContentByUrl({ url, slug });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -548,10 +548,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Maximum number of archive results to analyze'),
       },
     },
-    safeToolHandler(async ({ subject, limit }) => {
+    async ({ subject, limit }) => {
       const result = await analyzeCoverageGaps({ subject, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -567,10 +567,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
       },
     },
-    safeToolHandler(async ({ period, date }) => {
+    async ({ period, date }) => {
       const result = await getTrafficSummary(period, date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -582,10 +582,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
       },
     },
-    safeToolHandler(async ({ period, date }) => {
+    async ({ period, date }) => {
       const result = await getReferrerBreakdown(period, date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -597,10 +597,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
       },
     },
-    safeToolHandler(async ({ period, date }) => {
+    async ({ period, date }) => {
       const result = await getTopPages(period, date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -612,10 +612,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
       },
     },
-    safeToolHandler(async ({ period, date }) => {
+    async ({ period, date }) => {
       const result = await getSiteSearch(period, date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -633,10 +633,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         dimensions: z.string().optional().describe('Dimensions to group by — e.g. query, page, country. Default: query'),
       },
     },
-    safeToolHandler(async ({ start_date, end_date, row_limit, dimensions }) => {
+    async ({ start_date, end_date, row_limit, dimensions }) => {
       const result = await getSearchPerformance(start_date, end_date, { rowLimit: row_limit, dimensions });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -648,10 +648,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         end_date: z.string().describe('End date — ISO format, e.g. 2024-06-30'),
       },
     },
-    safeToolHandler(async ({ start_date, end_date }) => {
+    async ({ start_date, end_date }) => {
       const result = await getSearchOpportunities(start_date, end_date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -659,10 +659,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Check GSC sitemap fetch status for altwire.net. Returns fetch status, last crawl date, and coverage counts. Alerts if sitemap is stale or unfetchable.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getSitemapHealth();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -676,10 +676,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         dimensions: z.string().optional().describe('Dimensions to group by — query (default), page, country'),
       },
     },
-    safeToolHandler(async ({ start_date, end_date, row_limit, dimensions }) => {
+    async ({ start_date, end_date, row_limit, dimensions }) => {
       const result = await getNewsSearchPerformance(start_date, end_date, { rowLimit: row_limit, dimensions });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -691,10 +691,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         end_date: z.string().describe('End date — ISO format'),
       },
     },
-    safeToolHandler(async ({ start_date, end_date }) => {
+    async ({ start_date, end_date }) => {
       const result = await getOpportunityZoneQueries(start_date, end_date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -707,10 +707,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         end_date: z.string().describe('End date — ISO format'),
       },
     },
-    safeToolHandler(async ({ page_url, start_date, end_date }) => {
+    async ({ page_url, start_date, end_date }) => {
       const result = await getPagePerformance(page_url, start_date, end_date);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -723,10 +723,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         synthesize: z.boolean().default(true).optional().describe('Run LLM synthesis pass for narrative insights (default true)'),
       },
     },
-    safeToolHandler(async ({ start_date, end_date, synthesize }) => {
+    async ({ start_date, end_date, synthesize }) => {
       const result = await getCombinedAnalytics({ startDate: start_date, endDate: end_date, synthesize });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -742,10 +742,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Lookback window in days for GSC data (default 28)'),
       },
     },
-    safeToolHandler(async ({ days }) => {
+    async ({ days }) => {
       const result = await getStoryOpportunities({ days });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -757,10 +757,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Lookback window in days for News data (default 7)'),
       },
     },
-    safeToolHandler(async ({ days }) => {
+    async ({ days }) => {
       const result = await getNewsOpportunities({ days });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -774,10 +774,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Filter to a specific snapshot interval'),
       },
     },
-    safeToolHandler(async ({ article_url, snapshot_type }) => {
+    async ({ article_url, snapshot_type }) => {
       const result = await getArticlePerformance({ article_url, snapshot_type });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -789,10 +789,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
           .describe('Lookback window in days for News performance data (default 30)'),
       },
     },
-    safeToolHandler(async ({ days }) => {
+    async ({ days }) => {
       const result = await getNewsPerformancePatterns({ days });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -813,12 +813,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Internal editorial notes'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: 1, title: params.title, reviewer: params.reviewer || 'Derek', status: 'assigned' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await createReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -836,12 +836,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Updated notes'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, status: params.status || 'assigned' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -852,12 +852,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         review_id: z.number().int().positive().describe('Review ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, title: 'Test Review', reviewer: 'Derek', status: 'assigned' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -869,12 +869,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         reviewer: z.string().optional().describe('Filter by reviewer name'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listReviews(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -885,12 +885,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         days: z.number().int().min(1).max(90).default(7).optional().describe('Lookahead window in days — default 7'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getUpcomingReviewDeadlines(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -907,12 +907,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Notes — serial number, condition, etc.'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: 1, item_name: params.item_name, borrower: params.borrower || 'Derek', status: params.is_loaner === false ? 'kept' : 'out' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -932,12 +932,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Updated notes'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, status: params.status || 'out' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -948,12 +948,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         loaner_id: z.number().int().positive().describe('Loaner ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, item_name: 'Test Item', borrower: 'Derek', status: 'out' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -965,12 +965,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         borrower: z.string().optional().describe('Filter by borrower name'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listLoaners(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -978,12 +978,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'All loaner items past their expected return date not yet returned.',
     },
-    safeToolHandler(async () => {
+    async () => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getOverdueLoaners();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -994,12 +994,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         days: z.number().int().min(1).max(90).default(14).optional().describe('Lookahead window in days — default 14'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getUpcomingLoanerReturns(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1012,12 +1012,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Note category — auto-classified if omitted'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: 1, review_id: params.review_id, note_text: params.note_text, category: params.category || 'pro' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await addReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1030,12 +1030,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Corrected category'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: params.note_id, category: params.category || 'pro' } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1047,12 +1047,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         category: z.enum(['pro', 'con', 'observation', 'uncategorized']).optional().describe('Filter by category'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, notes: [], count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listReviewNotes(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1063,12 +1063,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         note_id: z.number().int().positive().describe('Note ID to delete'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deleted: true, note_id: params.note_id }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await deleteReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1076,12 +1076,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Full editorial status: active reviews by status, overdue items, upcoming deadlines, loaner status. Use for morning digest or on-demand check-ins.',
     },
-    safeToolHandler(async () => {
+    async () => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review_pipeline: {}, loaner_summary: {}, upcoming_deadlines: [], overdue_loaners: [], generated_at: new Date().toISOString() }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getEditorialDigest();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1097,12 +1097,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe("Optional context — e.g. 'touring in summer 2026'"),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subject: { id: 1, name: params.name, active: true, added_at: new Date().toISOString(), notes: params.notes || null } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await addWatchSubject(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1114,12 +1114,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         name: z.string().optional().describe('Artist name or topic (case-insensitive match)'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deactivated_count: 1, subjects: [{ id: 1, name: params.name || 'Test Subject' }] }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await removeWatchSubject(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1130,12 +1130,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         include_inactive: z.boolean().default(false).optional().describe('Include previously removed subjects. Default false.'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subjects: [], total: 0, active_count: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listWatchSubjects(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1152,12 +1152,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         review_notes_id: z.number().int().positive().optional().describe('ID of an altus_reviews entry to pull pro/con notes from'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment: { id: 1, topic: params.topic, article_type: params.article_type || 'article', status: 'outline_ready', archive_hits: 3, web_research_summary: 'Test research...', has_review_notes: !!params.review_notes_id } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await createAssignment(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1168,12 +1168,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         assignment_id: z.number().int().positive().describe('Assignment ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, outline: { title_suggestion: 'Test Headline', sections: [{ title: 'Intro', points: ['Point 1'] }], angle: 'Test angle', estimated_words: 800 } }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await generateOutline(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1186,12 +1186,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         feedback: z.string().optional().describe('Derek\'s notes or modification instructions'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: params.decision === 'approved' ? 'outline_approved' : params.decision === 'rejected' ? 'cancelled' : 'outline_ready', decision_logged: true }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await approveOutline(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1202,12 +1202,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         assignment_id: z.number().int().positive().describe('Assignment ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: 'draft_ready', word_count: 850, draft_preview: 'Test draft content...' }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await generateDraft(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1218,12 +1218,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         assignment_id: z.number().int().positive().describe('Assignment ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, passed: true, issues_found: 0, status: 'ready_to_post' }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await factCheckDraft(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1237,12 +1237,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         tags: z.array(z.string()).optional().describe('WordPress tag names'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, wp_post_id: 12345, wp_post_url: 'https://altwire.net/?p=12345', status: 'posted' }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await postToWordPress(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1253,12 +1253,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         assignment_id: z.number().int().positive().describe('Assignment ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, topic: 'Test Topic', title_suggestion: 'Test Headline', html: '<h2>Test</h2><p>Draft content.</p>', word_count: 850, instructions: 'Copy the html field and paste into WordPress → Text/Code editor.' }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getDraftAsHtml(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1272,12 +1272,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         feedback: z.string().optional().describe('Derek\'s notes'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, decision_id: 1 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logEditorialDecision(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1288,12 +1288,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         id: z.number().int().positive().describe('Assignment ID'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, id: params.id, topic: 'Test Topic', status: 'outline_ready', decisions: [] }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getAssignment(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1307,12 +1307,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         offset: z.number().int().min(0).default(0).optional().describe('Pagination offset'),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignments: [], count: 0, total: 0 }) }] };
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listAssignments(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1346,10 +1346,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         ),
       },
     },
-    safeToolHandler(async (params) => {
+    async (params) => {
       const result = generateChart(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   const { getAltwireUptime, getAltwireIncidents } = await import('./handlers/altus-monitoring.js');
@@ -1362,10 +1362,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Live status of AltWire\'s uptime monitors — altwire.net and WP Cron. Returns overall health and per-monitor status.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getAltwireUptime();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1373,10 +1373,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Open (unresolved) incidents on AltWire\'s Better Stack monitors. Returns empty list when all is well.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getAltwireIncidents();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1391,10 +1391,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         incident_id: z.string().describe('Better Stack incident ID — numeric string, e.g. "123456"'),
       },
     },
-    safeToolHandler(async ({ incident_id }) => {
+    async ({ incident_id }) => {
       const result = await getAltwireIncidentComments(incident_id);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1406,10 +1406,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         content: z.string().describe('Comment content — markdown supported. Plain text preferred.'),
       },
     },
-    safeToolHandler(async ({ incident_id, content }) => {
+    async ({ incident_id, content }) => {
       const result = await createAltwireIncidentComment(incident_id, content);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1420,10 +1420,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         status_report_id: z.string().describe('Better Stack status report ID'),
       },
     },
-    safeToolHandler(async ({ status_report_id }) => {
+    async ({ status_report_id }) => {
       const result = await getAltwireStatusUpdates(status_report_id);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1437,10 +1437,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notify_subscribers: z.boolean().optional().default(false).describe('Email subscribers'),
       },
     },
-    safeToolHandler(async ({ status_report_id, message, affected_resources, notify_subscribers }) => {
+    async ({ status_report_id, message, affected_resources, notify_subscribers }) => {
       const result = await createAltwireStatusUpdate({ status_report_id, message, affected_resources, notify_subscribers });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1459,10 +1459,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().optional().default(50).describe('Max events to return (1-200)'),
       },
     },
-    safeToolHandler(async ({ event_type, tool_name, session_id, last_n_hours, limit }) => {
+    async ({ event_type, tool_name, session_id, last_n_hours, limit }) => {
       const result = await queryAltusEvents({ event_type, tool_name, session_id, last_n_hours, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1476,10 +1476,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().optional().default(5).describe('Max completed audits to return'),
       },
     },
-    safeToolHandler(async ({ last_n_hours, batch_id, last_n_days, limit }) => {
+    async ({ last_n_hours, batch_id, last_n_days, limit }) => {
       const result = await synthesizeAudit({ last_n_hours, batch_id });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1487,10 +1487,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Full AltWire morning briefing — site uptime, open incidents, today\'s news alerts, story opportunities, upcoming review deadlines, overdue loaners, and yesterday\'s traffic. Use at the start of a session or when Derek asks for a status overview.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getAltwireMorningDigest();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1511,10 +1511,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         channel_override: z.string().optional().describe('Post directly to a channel ID, bypassing post_type routing'),
       },
     },
-    safeToolHandler(async ({ text, post_type, emoji, severity, channel_override }) => {
+    async ({ text, post_type, emoji, severity, channel_override }) => {
       const result = await postStatusUpdate({ text, post_type, emoji, severity, channel_override });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1526,10 +1526,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         severity_filter: z.enum(['normal', 'urgent']).optional().describe('Filter by severity'),
       },
     },
-    safeToolHandler(async ({ limit, severity_filter }) => {
+    async ({ limit, severity_filter }) => {
       const posts = await getSlackPostHistory({ limit, severity_filter });
       return { content: [{ type: 'text', text: JSON.stringify(posts) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1548,10 +1548,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         emoji: z.string().describe('Emoji name without colons, e.g. "white_check_mark" or "heart"'),
       },
     },
-    safeToolHandler(async ({ channel, message_ts, emoji }) => {
+    async ({ channel, message_ts, emoji }) => {
       const result = await addReaction(channel, message_ts, emoji);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1563,10 +1563,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         message_ts: z.string().describe('Timestamp of the message'),
       },
     },
-    safeToolHandler(async ({ channel, message_ts }) => {
+    async ({ channel, message_ts }) => {
       const reactions = await listReactions(channel, message_ts);
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, reactions }) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1577,10 +1577,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         user_id: z.string().optional().describe('Slack user ID. Omit to check own DND status.'),
       },
     },
-    safeToolHandler(async ({ user_id }) => {
+    async ({ user_id }) => {
       const result = await getDndStatus(user_id);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1595,10 +1595,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         initial_comment: z.string().optional().describe('Comment to attach when posting to channels'),
       },
     },
-    safeToolHandler(async ({ content, filename, title, channels, initial_comment }) => {
+    async ({ content, filename, title, channels, initial_comment }) => {
       const result = await uploadSlackFile({ content, filename, title, channels, initialComment: initial_comment });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1610,10 +1610,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().int().min(1).max(100).default(10).optional().describe('Max files to return'),
       },
     },
-    safeToolHandler(async ({ channel, limit }) => {
+    async ({ channel, limit }) => {
       const files = await listChannelFiles(channel, limit);
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, files }) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1624,10 +1624,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         file_id: z.string().describe('Slack file ID'),
       },
     },
-    safeToolHandler(async ({ file_id }) => {
+    async ({ file_id }) => {
       const result = await shareFilePublic(file_id);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1639,10 +1639,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         text: z.string().min(1).max(4000).describe('Message text (max 4000 chars)'),
       },
     },
-    safeToolHandler(async ({ user_id, text }) => {
+    async ({ user_id, text }) => {
       const result = await sendDm(user_id, text);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1653,10 +1653,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         user_id: z.string().describe('Slack user ID'),
       },
     },
-    safeToolHandler(async ({ user_id }) => {
+    async ({ user_id }) => {
       const channel = await openDm(user_id);
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, channel }) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1669,10 +1669,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         channels: z.array(z.string()).optional().describe('Optional channel IDs to restrict search to'),
       },
     },
-    safeToolHandler(async ({ query, limit, channels }) => {
+    async ({ query, limit, channels }) => {
       const result = await searchSlackMessages(query, limit, channels);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1686,10 +1686,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         emoji: z.string().optional().describe('Optional lead emoji'),
       },
     },
-    safeToolHandler(async ({ channel, text, post_at_ts, emoji }) => {
+    async ({ channel, text, post_at_ts, emoji }) => {
       const result = await scheduleSlackMessage(channel, text, post_at_ts, emoji);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1707,10 +1707,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         key: z.string().describe('Memory key — e.g. hal:soul:altwire, hal:altwire:editorial_context'),
       },
     },
-    safeToolHandler(async ({ key }) => {
+    async ({ key }) => {
       const result = await readMemory(key);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1722,13 +1722,13 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         value: z.string().describe('Value to store'),
       },
     },
-    safeToolHandler(async ({ key, value }) => {
+    async ({ key, value }) => {
       if (key.startsWith('hal:soul') || key.startsWith('hal:onboarding_state:')) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, exit_reason: 'protected_key', message: 'Protected key — use the seed script to update hal:soul values.' }) }] };
       }
       const result = await writeMemory(key, value);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1739,10 +1739,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().int().min(1).max(100).default(50).optional().describe('Max entries to return (default 50)'),
       },
     },
-    safeToolHandler(async ({ limit }) => {
+    async ({ limit }) => {
       const rows = await listMemory();
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, entries: rows.slice(0, limit), total: rows.length }) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1760,10 +1760,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Optional editorial notes'),
       },
     },
-    safeToolHandler(async ({ url, title, category, notes }) => {
+    async ({ url, title, category, notes }) => {
       const result = await trackArticle({ url, title, category, notes });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1774,10 +1774,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().int().min(1).max(100).default(50).optional().describe('Max articles to return (default 50)'),
       },
     },
-    safeToolHandler(async ({ limit }) => {
+    async ({ limit }) => {
       const result = await listTrackedArticles({ limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1791,10 +1791,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         notes: z.string().optional().describe('Optional notes'),
       },
     },
-    safeToolHandler(async ({ topic, angle, status, notes }) => {
+    async ({ topic, angle, status, notes }) => {
       const result = await addContentIdea({ topic, angle, status, notes });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1806,10 +1806,10 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         limit: z.number().int().min(1).max(100).default(50).optional().describe('Max ideas to return (default 50)'),
       },
     },
-safeToolHandler(async ({ status, limit }) => {
+async ({ status, limit }) => {
       const result = await getContentIdeas({ status, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1827,10 +1827,10 @@ safeToolHandler(async ({ status, limit }) => {
         description: z.string().optional().describe('Optional admin context — any additional description or angle hint from the person asking'),
       },
     },
-    safeToolHandler(async ({ url, description }) => {
+    async ({ url, description }) => {
       const result = await evaluateLinkFitness({ url, description });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1844,10 +1844,10 @@ safeToolHandler(async ({ status, limit }) => {
     {
       description: 'Returns the editorial voice profile — writing voice, tone preferences, and what to preserve in AI-generated drafts.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const profile = await getDerekAuthorProfile();
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, profile: profile || null }) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -1859,7 +1859,7 @@ safeToolHandler(async ({ status, limit }) => {
         value: z.string().describe('New value for the field'),
       },
     },
-    safeToolHandler(async ({ field_path, value }) => {
+    async ({ field_path, value }) => {
       const ALLOWED_PATHS = [
         'writing_voice.tone', 'writing_voice.formality',
         'writing_voice.sentence_patterns', 'writing_voice.first_person_usage',
@@ -1884,7 +1884,7 @@ safeToolHandler(async ({ status, limit }) => {
         ['hal', key, JSON.stringify(current)]
       );
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, profile: current }) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1896,7 +1896,7 @@ safeToolHandler(async ({ status, limit }) => {
     {
       description: 'Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, search opportunities, and today\'s Matomo pageviews.',
     },
-    safeToolHandler(async () => {
+    async () => {
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const { rows: activeRows } = await pool.query(
         `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
@@ -1946,7 +1946,7 @@ safeToolHandler(async ({ status, limit }) => {
         opportunities,
         analytics,
       }) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1960,10 +1960,10 @@ safeToolHandler(async ({ status, limit }) => {
     {
       description: 'Altus AI usage cost breakdown — by model, by tool, and by period (today, 7d, 30d). Use to track Anthropic API spend across all Altus operations.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getAiCostSummary();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   // -------------------------------------------------------------------------
@@ -1987,10 +1987,10 @@ safeToolHandler(async ({ status, limit }) => {
         admin_id: z.number().describe('Admin ID — must be a number'),
       },
     },
-    safeToolHandler(async ({ admin_id }) => {
+    async ({ admin_id }) => {
       const result = await checkOnboardingStatus({ admin_id });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -2003,10 +2003,10 @@ safeToolHandler(async ({ status, limit }) => {
         response: z.string().describe('Admin\'s natural language response to the phase prompt'),
       },
     },
-    safeToolHandler(async ({ admin_id, phase, response }) => {
+    async ({ admin_id, phase, response }) => {
       const result = await saveOnboardingResponse({ admin_id, phase, response });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -2017,10 +2017,10 @@ safeToolHandler(async ({ status, limit }) => {
         admin_id: z.number().describe('Admin ID'),
       },
     },
-    safeToolHandler(async ({ admin_id }) => {
+    async ({ admin_id }) => {
       const result = await getOnboardingPreferences({ admin_id });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -2028,10 +2028,10 @@ safeToolHandler(async ({ status, limit }) => {
     {
       description: 'Read the shared Altus perch agenda — monitoring topics across all admins and scheduled jobs.',
     },
-    safeToolHandler(async () => {
+    async () => {
       const result = await getPerchAgenda();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -2043,10 +2043,10 @@ safeToolHandler(async ({ status, limit }) => {
         monitoring: z.array(z.string()).describe('Array of monitoring topic strings'),
       },
     },
-    safeToolHandler(async ({ admin_id, monitoring }) => {
+    async ({ admin_id, monitoring }) => {
       const result = await updatePerchAgenda({ admin_id, monitoring });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   scopedRegister(
@@ -2058,10 +2058,10 @@ safeToolHandler(async ({ status, limit }) => {
         confirm: z.boolean().describe('Must be true to confirm the reset'),
       },
     },
-    safeToolHandler(async ({ admin_id, confirm }) => {
+    async ({ admin_id, confirm }) => {
       const result = await resetOnboarding({ admin_id, confirm });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    })
+    }
   );
 
   return server;
