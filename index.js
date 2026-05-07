@@ -1,8 +1,12 @@
 /**
  * Altus MCP Server — AltWire AI Operations
  *
- * 88 tools: RAG archive, analytics, editorial intelligence, review tracker,
- * watch list, AI Writer pipeline, Slack, memory, onboarding, and more.
+ * 91 tools: RAG archive, public search, Matomo + GSC analytics, combined
+ * synthesis, editorial intelligence, monitoring, review tracker, watch list,
+ * AI Writer pipeline, author profile, Slack outbound + extended, Hal memory,
+ * editorial idea tools, link evaluator, Better Stack incidents, event log,
+ * AI cost tracking, and multi-admin onboarding. See spec §5 for the
+ * authoritative breakdown.
  * Transport: StreamableHTTP (stateless — sessionIdGenerator: undefined)
  * Health: GET /health
  */

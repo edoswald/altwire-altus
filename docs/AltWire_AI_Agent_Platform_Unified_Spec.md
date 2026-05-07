@@ -8,7 +8,7 @@
 
 | Component | Description | Status |
 |---|---|---|
-| Altus MCP Server | AltWire-dedicated MCP server on Railway — 65 tools | LIVE at altwire-altus-production.up.railway.app |
+| Altus MCP Server | AltWire-dedicated MCP server on Railway — 91 tools | LIVE at altwire-altus-production.up.railway.app |
 | PostgreSQL | Shared Railway instance — `altus_` table prefix | LIVE |
 | RAG Archive | Semantic search over AltWire's ~1,566 post archive | LIVE |
 | Analytics Layer | Matomo + GSC tools for editorial performance | LIVE |
@@ -1159,6 +1159,23 @@ Query recent Hal-initiated Slack status posts from the `hal_slack_posts` table.
 
 Returns: Array of post records ordered by `created_at` DESC.
 
+### Slack Extended Capabilities
+
+Beyond outbound status posting, the Slack handler also exposes 10 extended-capability tools for richer Slack interactions. All read/write through `@slack/bolt` using `SLACK_BOT_TOKEN_ALTUS`.
+
+| Tool | Description |
+|---|---|
+| `add_slack_reaction` | Add an emoji reaction to a Slack message. |
+| `list_slack_reactions` | List reactions on a Slack message. |
+| `get_slack_dnd_status` | Read a user's Slack Do-Not-Disturb status (used to gate non-urgent notifications). |
+| `upload_slack_file` | Upload a file (text, image, document) to a Slack channel. |
+| `list_slack_channel_files` | List recently uploaded files in a Slack channel. |
+| `share_slack_file_public` | Share a previously uploaded Slack file via a public link. |
+| `send_slack_dm` | Send a direct message to a Slack user. |
+| `open_slack_dm` | Open a DM channel with a Slack user (used before sending). |
+| `search_slack_messages` | Search Slack messages by query, optionally filtered by channel/user/time. |
+| `schedule_slack_message` | Schedule a Slack message for future delivery (e.g. respect quiet hours). |
+
 ---
 
 ## 4.12 Editorial Tracking Tools
@@ -1307,26 +1324,96 @@ Returns: `{ success: true, entries: [{ key, value, updated_at }], total }`.
 
 ---
 
+## 4.16 Public AltWire Search Tools
+
+Handler: `handlers/altwire-search.js`. Surfaces AltWire's public-facing site search and search-feedback endpoints to MCP clients.
+
+| Tool | Description |
+|---|---|
+| `search_altwire` | Run a search against AltWire's public site search. Returns ranked article results with title/url/snippet/score. |
+| `get_search_feedback` | Aggregated reader feedback on the public site search experience (helpfulness, clicked-through queries, abandonment). Used to identify search-UX gaps. |
+
+## 4.17 Better Stack Incident Management Tools
+
+Handler: `handlers/altus-monitoring.js` (also surfaces `get_altwire_uptime` and `get_altwire_incidents`).
+
+These tools wrap Better Stack's incident comments and status-page updates so Hal can read and post operational communications.
+
+| Tool | Description |
+|---|---|
+| `altus_get_incident_comments` | List comments on a specific Better Stack incident. |
+| `altus_post_incident_comment` | Post a new comment on a Better Stack incident. |
+| `altus_get_status_updates` | List status-page report updates for the AltWire Better Stack status page. |
+| `altus_post_status_update` | Publish a new status-page update (e.g. investigating / identified / resolved). |
+
+## 4.18 Event Log Tools
+
+Handler: `altus-event-log.js`. The event log captures all Hal/Altus tool invocations, errors, and operator actions.
+
+| Tool | Description |
+|---|---|
+| `query_altus_events` | Query the event log with filters: event_type, source, severity, time range, limit. Returns chronologically ordered events. |
+| `get_altus_audit_log` | Higher-level audit-log view — operator-relevant events (writes, escalations, decisions) only. |
+
+## 4.19 AI Cost Tracking Tool
+
+Handler: `lib/ai-cost-tracker.js`. AI usage is logged to `altus_ai_usage` on every Anthropic, Voyage, and Minimax call via `logAiUsage()`.
+
+### get_altus_ai_cost_summary
+
+Altus AI usage cost breakdown — by model, by tool, and by period (today, 7d, 30d). Use to track Anthropic / Voyage / Minimax spend across all Altus operations. No parameters.
+
+Returns `{ today, last_7d, last_30d, by_model, by_tool }` with cost in USD plus token totals.
+
+## 4.20 Multi-Admin Onboarding Tools
+
+Handler: `handlers/altus-onboarding.js`. Five-phase calibration flow for new admins: workload → tracking → checkins → communication → perch.
+
+| Tool | Description |
+|---|---|
+| `altus_check_onboarding_status` | Check whether a specific admin has completed Altus onboarding. Returns the current phase or `complete`. |
+| `altus_save_onboarding_response` | Save an admin's response for a specific onboarding phase. Advances to the next phase or completes onboarding when all five phases are done. |
+| `altus_get_onboarding_preferences` | Retrieve all stored preferences for a specific admin — communication style, monitoring topics, etc. |
+| `altus_get_perch_agenda` | Read the shared Altus perch agenda — monitoring topics across all admins and scheduled jobs. |
+| `altus_update_perch_agenda` | Update an admin's per-admin monitoring topics within the shared perch agenda. |
+| `altus_reset_onboarding` | Reset a specific admin to start onboarding over from phase 1. |
+
+---
+
 # 5. Tool Count Summary
+
+Counts below are derived from `scopedRegister(...)` calls in `index.js`.
 
 | Section | Status | Count |
 |---|---|---|
-| RAG Archive | LIVE | 7 |
+| RAG Archive | LIVE | 5 |
+| Public AltWire Search | LIVE | 2 |
 | Matomo Analytics | LIVE | 4 |
 | Google Search Console | LIVE | 6 |
 | Combined Matomo + GSC Synthesis | LIVE | 1 |
 | Editorial Intelligence | LIVE | 4 |
+| Chart Generation | LIVE | 1 |
+| Site & Incident Monitoring | LIVE | 3 |
 | Review & Loaner Tracker | LIVE | 16 |
 | Watch List | LIVE | 3 |
-| AI Writer | LIVE | 13 |
-| Chart Generation | LIVE | 1 |
-| Better Stack Monitoring | LIVE | 2 |
-| Morning Digest | LIVE | 1 |
-| Slack Integration | LIVE | 2 |
+| AI Writer pipeline | LIVE | 10 |
+| Writer Summary | LIVE | 1 |
+| Author Profile | LIVE | 2 |
+| Slack Status (Altus outbound) | LIVE | 2 |
+| Slack Extended Capabilities | LIVE | 10 |
 | Hal Agent Memory | LIVE | 3 |
-| Editorial Tools | LIVE | 4 |
+| Altus Editorial Tools | LIVE | 4 |
 | Link Evaluator | LIVE | 1 |
-| **Total live** | | **65** |
+| Better Stack Incident Management | LIVE | 4 |
+| Event Log | LIVE | 2 |
+| AI Cost Tracking | LIVE | 1 |
+| Multi-Admin Onboarding | LIVE | 6 |
+
+Note: the Slack outbound (2) and Slack extended (10) rows above sum to the 12 Slack tools in `handlers/slack-altus.js` — see §4.11 for the full list.
+
+| | | |
+|---|---|---|
+| **Total live** | | **91** |
 
 ---
 
@@ -1430,7 +1517,7 @@ The Hal soul for AltWire (`hal:soul:altwire`) is seeded at first deployment via 
 
 ```
 altwire-altus/
-├── index.js                           # Tool registry — 65 tools, HTTP server, OAuth, cron registration
+├── index.js                           # Tool registry — 91 tools, HTTP server, OAuth, cron registration
 ├── logger.js                          # Structured JSON logger (stderr only)
 ├── hal-labels.js                      # AI Writer tool display labels for UI
 ├── hal-chart.js                       # Chart spec generator for Hal Chat UI
@@ -1587,30 +1674,49 @@ altwire-altus/
 | Variable | Purpose |
 |---|---|
 | `BETTER_STACK_TOKEN` | Read-only Better Stack API token for uptime and incident monitoring |
+| `BETTERSTACK_STATUS_PAGE_ID` | Better Stack status-page ID — required for `altus_get_status_updates` / `altus_post_status_update` |
 
 ## 11.6 Slack Integration
 
+All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_ALTUS` references in code).
+
 | Variable | Purpose |
 |---|---|
-| `SLACK_BOT_TOKEN_ALTWUS` | Slack bot token for posting as the Altus app |
-| `SLACK_SIGNING_SECRET_ALTWUS` | Slack signing secret for `/slack/events` request verification |
-| `SLACK_CHANNEL_ALTWUS` | Default Slack channel for AltWire updates |
+| `SLACK_BOT_TOKEN_ALTUS` | Slack bot token for posting as the Altus app |
+| `SLACK_SIGNING_SECRET_ALTUS` | Slack signing secret for `/slack/events` request verification |
+| `SLACK_CHANNEL_ALTWIRE` | Default Slack channel for AltWire updates |
 | `SLACK_CHANNEL_ADMIN_ANNOUNCEMENTS` | Channel for status updates, alerts, incidents |
 | `SLACK_CHANNEL_BUG_REPORTS` | Channel for dave digest posts |
 | `SLACK_CHANNEL_WATERCOOLER` | Watercooler channel (reserved for future use) |
 
-## 11.7 Optional
+## 11.7 Hal Authentication
+
+| Variable | Purpose |
+|---|---|
+| `HAL_KEY` | Shared bearer token gate for `/hal/*` REST endpoints (e.g. writer pipeline, digest, memory). Set per-deployment. |
+
+## 11.8 Observability
+
+| Variable | Purpose |
+|---|---|
+| `LMNR_PROJECT_API_KEY` | Laminar project API key — when present, enables `Laminar.initialize()` + Anthropic auto-instrumentation at startup |
+| `NIMBUS_SLACK_WEBHOOK_URL` | Webhook for emitting AltWire signal events to a shared Nimbus Slack channel (used by `hal-signals.js`) |
+
+## 11.9 Optional
 
 | Variable | Default | Purpose |
-|---|---|
+|---|---|---|
 | `PORT` | 3000 | Railway sets this automatically |
+| `NODE_ENV` | — | Standard Node environment flag |
 | `TEST_MODE` | false | Set true to skip live API calls in tests |
 | `LOG_LEVEL` | info | Minimum log level (`debug`, `info`, `warn`, `error`) |
 | `ALTUS_ADMIN_TOKEN` | — | Bearer token for writer REST endpoints (`/hal/writer/*`) |
 | `ALTUS_WRITER_MODEL` | `claude-sonnet-4-5` | AI model for writer pipeline. Prefix-based provider detection: `gpt-*`, `o1*`, `o3*` → OpenAI; all else → Anthropic |
 | `OPENAI_API_KEY` | — | Required only when `ALTUS_WRITER_MODEL` is set to an OpenAI model |
-| `MINIMAX_API_KEY` | — | Required for public AI search synthesis and link evaluator |
+| `MINIMAX_API_KEY` | — | Required for public AI search synthesis, link evaluator, and the historical analytics seed |
+| `MINIMAX_DRAFT` / `DEREK_MINIMAX_DRAFT` | — | Override flags used by the writer/draft pipeline to route a draft to MiniMax instead of the default model |
 | `ALTWIRE_SEARCH_MIN_SCORE` | 0.70 | Minimum similarity score for `search_altwire` (public search) |
+| `ALTWIRE_MATOMO_START_DATE` | `2024-12-01` | Override the start date for the historical Matomo analytics seed |
 
 ---
 
@@ -1673,7 +1779,7 @@ altwire-altus/
 - **Writer Summary:** `get_writer_summary` — aggregated writer stats for prompt page context card.
 - **Hal Memory:** Removed `hal_delete_memory` (was not registered as a tool). Read/write/list remain.
 - **New DB Tables:** `altus_search_queries`, `altus_search_feedback`, `oauth_auth_codes`, `oauth_access_tokens`, `oauth_refresh_tokens`.
-- **Tool count:** 57 → 65 tools.
+- **Tool count:** 57 → 65 tools (subsequently grown to 91 — see §5 for the current breakdown).
 
 ### Changelog Summary (v0.4 → v0.5)
 
