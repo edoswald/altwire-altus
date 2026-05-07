@@ -651,6 +651,107 @@ Returns: `{ startDate, endDate, medianCtr, opportunities[] }`.
 
 Check GSC sitemap fetch status for altwire.net. Returns per-sitemap health: path, lastDownloaded, lastSubmitted, isPending, errors, warnings. Alerts if sitemap is stale or unfetchable. No parameters.
 
+### get_altwire_news_search_performance
+
+Google News search type performance — queries and pages appearing in Google News results. Use to evaluate News visibility.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| start_date | string | required | ISO date |
+| end_date | string | required | ISO date |
+| dimensions | string | `query` | `query`, `page`, `country`, etc. |
+| row_limit | integer | 25 | Max rows |
+
+Returns `{ startDate, endDate, rows[] }`. Empty `rows` with a `note` field when AltWire has no Google News index coverage for the period.
+
+### get_altwire_opportunity_zone_queries
+
+GSC queries currently in the opportunity zone (positions 5–30) — queries close to ranking on page 1 where small content/SEO improvements can move them up. Same shape as `get_altwire_search_performance` rows, filtered to `position ∈ [5, 30]`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| start_date | string | required | ISO date |
+| end_date | string | required | ISO date |
+
+### get_altwire_page_performance
+
+GSC performance for a specific AltWire URL — clicks, impressions, CTR, average position over a date range. Trailing slashes are normalized internally. Used for post-publish article performance checks.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| page_url | string | required | Full article URL |
+| start_date | string | required | ISO date |
+| end_date | string | required | ISO date |
+
+Returns `{ pageUrl, clicks, impressions, ctr, position }` or `{ ..., note: 'No GSC data...' }` when the URL has no impressions in the period.
+
+### get_altwire_combined_analytics
+
+Synthesizes Matomo (on-site behavior) and Google Search Console (organic search visibility) for a date range into a unified editorial picture: which articles drive both pageviews AND impressions, search-driven traffic share, opportunity-zone queries paired with on-site reader interest, and content gaps where search demand exists but AltWire ranks weakly.
+
+Handler: `handlers/altus-combined-analytics.js`
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| start_date | string | 28 days ago | ISO date |
+| end_date | string | 3 days ago (GSC lag) | ISO date |
+| synthesize | boolean | true | If true, runs a Sonnet synthesis pass for narrative editorial recommendation |
+
+Returns:
+```
+{
+  period: { start_date, end_date },
+  configured: { matomo: bool, gsc: bool },
+  matomo: { traffic, top_articles, referrers, site_search },
+  gsc: { top_queries, opportunities, opportunity_zone, page_performance },
+  cross_reference: [{url, title, pageviews, impressions, clicks, position, ctr, combined_score}, ...],
+  search_gaps: [{query, impressions, position, page}, ...],
+  search_traffic_share_pct: number | null,
+  synthesis: {
+    headline,
+    search_traffic_share_pct,
+    top_dual_winners[],
+    underperforming_in_search[],
+    opportunity_alignments[],
+    content_gaps[],
+    editorial_recommendation,
+  } | null,
+  generated_at: ISO,
+}
+```
+
+The synthesis pass also pulls historical context from the 16-month GSC and 18-month Matomo memory keys (see §4.3.1) so recommendations are grounded in long-term patterns. The nightly reflection cron runs this tool with `synthesize: true` and writes the result to `hal:altwire:combined_synthesis`.
+
+---
+
+## 4.3.1 GSC Historical Seed & Memory Keys
+
+Script: `scripts/seed-altwire-historical-gsc.js`
+
+Pulls the maximum available GSC history (~16 months — GSC's hard retention limit) and writes Sonnet-summarized memory keys under the `hal` agent. Idempotent — skips if `last_refreshed` is < 30 days old; supports `--force` (full re-fetch) and `--no-llm` (raw rollups only).
+
+Memory keys written:
+
+| Key | Contents |
+|---|---|
+| `hal:altwire:gsc:summary_16m` | Total clicks/impressions, avg CTR/position, peak month, trend direction, narrative insights |
+| `hal:altwire:gsc:top_queries_16m` | Top 30 queries, brand vs non-brand split, best-CTR queries |
+| `hal:altwire:gsc:top_pages_16m` | Top 20 landing pages, evergreen pages |
+| `hal:altwire:gsc:opportunities_16m` | High-value opportunity-zone queries, recurring themes |
+| `hal:altwire:gsc:news_performance_16m` | Top News queries (or `available: false` if AltWire is not in News index) |
+| `hal:altwire:gsc:monthly_breakdown` | Raw month-by-month clicks/impressions/CTR |
+| `hal:altwire:gsc:last_refreshed` | `{ timestamp, startDate, endDate }` |
+
+The nightly reflection (`handlers/altus-reflection.js`) triggers a 30-day re-seed automatically — so once the seed is run manually the first time, it stays fresh thereafter without operator intervention.
+
+The reflection also writes fresher GSC keys on each run:
+
+| Key | Period |
+|---|---|
+| `hal:altwire:gsc:fresh_summary` | 7-day + 28-day search performance |
+| `hal:altwire:gsc:fresh_opportunities` | 28-day opportunity queries |
+| `hal:altwire:combined_synthesis` | 28-day Matomo+GSC synthesis (full output of `get_altwire_combined_analytics`) |
+
 ---
 
 ## 4.4 Editorial Intelligence Tools
@@ -1212,7 +1313,8 @@ Returns: `{ success: true, entries: [{ key, value, updated_at }], total }`.
 |---|---|---|
 | RAG Archive | LIVE | 7 |
 | Matomo Analytics | LIVE | 4 |
-| Google Search Console | LIVE | 3 |
+| Google Search Console | LIVE | 6 |
+| Combined Matomo + GSC Synthesis | LIVE | 1 |
 | Editorial Intelligence | LIVE | 4 |
 | Review & Loaner Tracker | LIVE | 16 |
 | Watch List | LIVE | 3 |
