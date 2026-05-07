@@ -318,15 +318,34 @@ async function main() {
   }
 
   log('Writing memory keys');
-  await Promise.allSettled([
-    writeAgentMemory(AGENT, KEYS.SUMMARY,           JSON.stringify(summary ?? {})),
-    writeAgentMemory(AGENT, KEYS.TOP_QUERIES,       JSON.stringify(topQueries ?? {})),
-    writeAgentMemory(AGENT, KEYS.TOP_PAGES,         JSON.stringify(topPages ?? {})),
-    writeAgentMemory(AGENT, KEYS.OPPORTUNITIES,     JSON.stringify(opps ?? {})),
-    writeAgentMemory(AGENT, KEYS.NEWS_PERFORMANCE,  JSON.stringify(news ?? {})),
-    writeAgentMemory(AGENT, KEYS.MONTHLY_BREAKDOWN, JSON.stringify({ months: monthly })),
-    writeAgentMemory(AGENT, KEYS.LAST_REFRESHED,    JSON.stringify({ timestamp: new Date().toISOString(), startDate: startDateStr, endDate: endDateStr })),
-  ]);
+  const writes = [
+    [KEYS.SUMMARY,           JSON.stringify(summary ?? {})],
+    [KEYS.TOP_QUERIES,       JSON.stringify(topQueries ?? {})],
+    [KEYS.TOP_PAGES,         JSON.stringify(topPages ?? {})],
+    [KEYS.OPPORTUNITIES,     JSON.stringify(opps ?? {})],
+    [KEYS.NEWS_PERFORMANCE,  JSON.stringify(news ?? {})],
+    [KEYS.MONTHLY_BREAKDOWN, JSON.stringify({ months: monthly })],
+  ];
+  const results = await Promise.allSettled(
+    writes.map(([key, value]) => writeAgentMemory(AGENT, key, value))
+  );
+  const failures = results
+    .map((r, i) => ({ key: writes[i][0], status: r.status, reason: r.reason?.message ?? r.value?.error ?? null }))
+    .filter((r) => r.status === 'rejected' || r.reason);
+
+  if (failures.length > 0) {
+    log('Memory write failures — NOT updating LAST_REFRESHED so the next run will retry', { failures });
+    await pool.end().catch(() => {});
+    process.exit(1);
+  }
+
+  // Only mark LAST_REFRESHED once all data keys have been written successfully —
+  // otherwise a partial-write would skip retries for 30 days (see shouldRefresh).
+  await writeAgentMemory(
+    AGENT,
+    KEYS.LAST_REFRESHED,
+    JSON.stringify({ timestamp: new Date().toISOString(), startDate: startDateStr, endDate: endDateStr })
+  );
 
   log('Seed complete', {
     summary: !!summary, top_queries: !!topQueries, top_pages: !!topPages,
