@@ -21,13 +21,16 @@ const ANALYTICS_KEYS = {
   top_articles_18m:  'hal:altwire:analytics:top_articles_18m',
   seasonality:       'hal:altwire:analytics:seasonality',
   topic_trends:      'hal:altwire:analytics:topic_trends',
+  gsc_summary_16m:   'hal:altwire:gsc:summary_16m',
+  gsc_last_refreshed: 'hal:altwire:gsc:last_refreshed',
+  combined_synthesis: 'hal:altwire:combined_synthesis',
 };
 
 async function loadAnalyticsContext() {
   try {
     const { rows } = await pool.query(
       `SELECT key, value FROM agent_memory
-       WHERE agent = 'hal' AND key LIKE 'hal:altwire:analytics:%' AND deleted_at IS NULL`
+       WHERE agent = 'hal' AND (key LIKE 'hal:altwire:analytics:%' OR key LIKE 'hal:altwire:gsc:%' OR key = 'hal:altwire:combined_synthesis') AND deleted_at IS NULL`
     );
     if (!rows.length) return null;
     const ctx = {};
@@ -277,7 +280,59 @@ export async function getAltwireMorningDigest() {
     if (tt?.rising_topics?.length) {
       historical.rising_topics = tt.rising_topics.slice(0, 5).map((t) => t.topic);
     }
+
+    const gsc = analyticsCtx[ANALYTICS_KEYS.gsc_summary_16m];
+    const gscRefreshed = analyticsCtx[ANALYTICS_KEYS.gsc_last_refreshed];
+    if (gsc) {
+      historical.gsc_summary_16m = {
+        total_clicks: gsc.total_clicks ?? null,
+        total_impressions: gsc.total_impressions ?? null,
+        avg_ctr: gsc.avg_ctr ?? null,
+        avg_position: gsc.avg_position ?? null,
+        peak_month: gsc.peak_month ?? null,
+        trend_direction: gsc.trend_direction ?? null,
+        last_refreshed: gscRefreshed?.timestamp ?? null,
+      };
+    }
+
+    const synth = analyticsCtx[ANALYTICS_KEYS.combined_synthesis];
+    if (synth?.synthesis) {
+      historical.combined_synthesis = {
+        headline: synth.synthesis.headline ?? null,
+        search_traffic_share_pct: synth.synthesis.search_traffic_share_pct ?? null,
+        editorial_recommendation: synth.synthesis.editorial_recommendation ?? null,
+        generated_at: synth.generated_at ?? null,
+      };
+    }
   }
+
+  // --- Provider configuration flags (env-based, not error-based) ---
+  // Distinguish between "not configured" (env vars missing) and "transient failure"
+  // (configured but call failed). Also surface "not_configured" when the underlying
+  // call returned that specific error.
+  const matomoEnvPresent =
+    !!(process.env.ALTWIRE_MATOMO_URL && process.env.ALTWIRE_MATOMO_TOKEN_AUTH && process.env.ALTWIRE_MATOMO_SITE_ID);
+  const gscEnvPresent =
+    !!(process.env.ALTWIRE_GSC_SERVICE_ACCOUNT_JSON && process.env.ALTWIRE_GSC_SITE_URL);
+
+  // If the matomo call returned a configuration error, mark it as not configured even
+  // if env vars are present (e.g. JSON parse error on token).
+  const matomoNotConfiguredError =
+    trafficResult.status === 'fulfilled' &&
+    trafficResult.value?.error === 'matomo_not_configured';
+
+  const providers = {
+    matomo: {
+      configured: matomoEnvPresent && !matomoNotConfiguredError,
+      reachable: trafficResult.status === 'fulfilled' && !trafficResult.value?.error,
+      last_error: trafficResult.status === 'fulfilled' ? (trafficResult.value?.error ?? null) : (trafficResult.reason?.message ?? 'unknown'),
+    },
+    gsc: {
+      configured: gscEnvPresent,
+      reachable: !!historical?.gsc_summary_16m,
+      last_refreshed: historical?.gsc_summary_16m?.last_refreshed ?? null,
+    },
+  };
 
   // --- Build response ---
   const digest = {
@@ -292,6 +347,7 @@ export async function getAltwireMorningDigest() {
     traffic,
     ai_costs,
     historical,
+    providers,
   };
 
   // Include per-section warning fields for failed sections
