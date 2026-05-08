@@ -37,7 +37,18 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from 'http';
 import { z } from 'zod';
 import { logger } from './logger.js';
-import pool, { initSchema } from './lib/altus-db.js';
+import pool, { initSchema, initMountaineeringSchema } from './lib/altus-db.js';
+import {
+  seedMountaineeringClimbs,
+  collectClimbScores,
+  createClimb,
+  startClimbIteration,
+  scoreClimbIteration,
+  getClimbStatus,
+  supervisorDecision,
+  peakClimb,
+  getClimbHistory,
+} from './handlers/altus-mountaineering.js';
 import { safeToolHandler } from './lib/safe-tool-handler.js';
 import { searchAltwireArchive } from './handlers/altus-search.js';
 import { reIngestHandler } from './handlers/altus-reingest.js';
@@ -265,6 +276,14 @@ const TOOL_CONTEXTS = {
   altus_get_perch_agenda:        [],
   altus_update_perch_agenda:     [],
   altus_reset_onboarding:        [],
+  // Mountaineering — supervised hill-climbing optimization
+  altus_create_climb:             [],
+  altus_start_climb_iteration:    [],
+  altus_score_climb_iteration:    [],
+  altus_get_climb_status:         [],
+  altus_supervisor_decision:      [],
+  altus_peak_climb:               [],
+  altus_get_climb_history:        [],
 };
 
 // Canonical context names for the X-Agent-Context header values.
@@ -294,6 +313,12 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     });
     initWriterSchema().catch((err) => {
       logger.error('Writer schema init failed', { error: err.message, code: err.code });
+    });
+    initMountaineeringSchema().catch((err) => {
+      logger.error('Mountaineering schema init failed', { error: err.message, code: err.code });
+    });
+    seedMountaineeringClimbs().catch((err) => {
+      logger.error('seedMountaineeringClimbs failed', { error: err.message });
     });
 
     // Event log schema (non-blocking)
@@ -380,6 +405,15 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       logger.error('Altus audit batch collection cron failed', { error: err.message });
     }
   }), { timezone: 'America/New_York' });
+
+  // Mountaineering Batch Collection — every 2 hours, staggered 45 min from heartbeat
+  cron.schedule('45 */2 * * *', () => observe({ name: 'mountaineering_batch', spanType: 'DEFAULT' }, async () => {
+    try {
+      await collectClimbScores();
+    } catch (err) {
+      logger.error('altus mountaineering batch cron failed', { error: err.message });
+    }
+  }));
 
   // Daily morning digest email — Mon-Fri 5:15 AM ET
   cron.schedule('15 5 * * 1-5', () => observe({ name: 'morning_digest', spanType: 'DEFAULT' }, async () => {
@@ -2091,6 +2125,116 @@ async ({ status, limit }) => {
     },
     async ({ admin_id, confirm }) => {
       const result = await resetOnboarding({ admin_id, confirm });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // Mountaineering tools — supervised hill-climbing optimization loop
+  // -------------------------------------------------------------------------
+  scopedRegister(
+    'altus_create_climb',
+    {
+      description: 'Create a new mountaineering optimization climb. A climb defines what to optimize (objective), how to measure it (metric_description), where the mutable state lives (workspace_key in agent_memory), and frozen evaluation criteria (eval_snapshot). Name must be lowercase kebab-case.',
+      inputSchema: {
+        name: z.string().describe('Climb name — lowercase kebab-case, min 2 chars (e.g. "morning-digest-v1")'),
+        objective: z.string().describe('Plain-English goal for what this climb optimizes'),
+        metric_description: z.string().describe('How success is measured — what signals or data are used to score iterations'),
+        workspace_key: z.string().describe('Key in agent_memory holding the value to optimize (must already exist)'),
+        eval_snapshot: z.record(z.unknown()).describe('Frozen evaluation criteria as a JSON object — cannot be empty'),
+      },
+    },
+    async ({ name, objective, metric_description, workspace_key, eval_snapshot }) => {
+      const result = await createClimb({ name, objective, metric_description, workspace_key, eval_snapshot });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_start_climb_iteration',
+    {
+      description: 'Start a new iteration for a climb. Reads the current workspace_key value, asks Claude Haiku to propose a targeted change, writes the proposal to agent_memory, and records the iteration. Only allowed when climb status is idle or running.',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb to iterate on'),
+      },
+    },
+    async ({ climb_name }) => {
+      const result = await startClimbIteration({ climb_name });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_score_climb_iteration',
+    {
+      description: 'Submit a scoring batch request for a completed iteration. Reads eval_snapshot from the database (not from caller) and queues an Anthropic Batch API job. Results are collected automatically every 2 hours by the mountaineering batch cron.',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb'),
+        iteration_number: z.number().int().describe('Iteration number to score'),
+      },
+    },
+    async ({ climb_name, iteration_number }) => {
+      const result = await scoreClimbIteration({ climb_name, iteration_number });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_climb_status',
+    {
+      description: 'Get current status, score trend, and plateau detection for a climb. Returns plateau_alert: true when the last 3+ consecutive decisions are all "plateau".',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb'),
+      },
+    },
+    async ({ climb_name }) => {
+      const result = await getClimbStatus({ climb_name });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_supervisor_decision',
+    {
+      description: 'Record your decision on a scored iteration. "keep" — accept the proposed change (workspace stays updated). "revert" — reject the change (previous value restored to agent_memory). "plateau" — reject and signal the climb is stalling (previous value restored).',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb'),
+        iteration_number: z.number().int().describe('Iteration number to decide on'),
+        decision: z.enum(['keep', 'revert', 'plateau']).describe('Your decision: keep, revert, or plateau'),
+      },
+    },
+    async ({ climb_name, iteration_number, decision }) => {
+      const result = await supervisorDecision({ climb_name, iteration_number, decision });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_peak_climb',
+    {
+      description: 'Declare a climb peaked — the current best workspace value is the optimum. Sets status to "peaked" and records the best_workspace_value. Only allowed on running or paused climbs.',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb to peak'),
+      },
+    },
+    async ({ climb_name }) => {
+      const result = await peakClimb({ climb_name });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_climb_history',
+    {
+      description: 'Return paginated iteration history for a climb — all proposed changes, scores, decisions, and evidence summaries.',
+      inputSchema: {
+        climb_name: z.string().describe('Name of the climb'),
+        limit: z.number().int().min(1).max(200).default(50).optional().describe('Max iterations to return (default 50, max 200)'),
+        offset: z.number().int().min(0).default(0).optional().describe('Pagination offset (default 0)'),
+      },
+    },
+    async ({ climb_name, limit, offset }) => {
+      const result = await getClimbHistory({ climb_name, limit, offset });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
