@@ -118,7 +118,7 @@ async function generateBriefText({ trafficSummary, topArticles, siteSearchKw, ne
   const storyOppsParsed = storyOpportunities ? safeParseJson(storyOpportunities) : null;
   const editorialCtxParsed = editorialContext ? safeParseJson(editorialContext) : null;
   const priorParsed = priorBrief ? safeParseJson(priorBrief) : null;
-  const morningDigestParsed = morningDigest ? safeParseJson(morningDigest) : null;
+  const morningDigestParsed = morningDigest || null;
 
   const systemPrompt = 'You are Altus, the AI operations layer for AltWire — an independent music publication covering indie rock, alternative, and emerging artists.';
 
