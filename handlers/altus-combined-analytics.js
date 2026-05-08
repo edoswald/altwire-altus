@@ -68,7 +68,7 @@ function buildCrossReference(matomoTopArticles, gscPagePerformance) {
     if (!url) continue;
     byUrl.set(url, {
       url: a.url ?? a.label,
-      title: a.label ?? a.url,
+      title: a.title ?? a.label ?? a.url,
       pageviews: a.pageviews ?? a.nb_hits ?? a.nb_visits ?? 0,
       impressions: 0,
       clicks: 0,
