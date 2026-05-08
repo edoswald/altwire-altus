@@ -2525,6 +2525,27 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // GET /altwire/digest/send — trigger morning digest email (auth via Authorization header)
+  if (url.pathname === '/altwire/digest/send' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.HAL_KEY) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const { sendMorningDigestEmail } = await import('./handlers/altus-digest-mailer.js');
+      await sendMorningDigestEmail();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'Morning digest email sent' }));
+    } catch (err) {
+      logger.error('AltWire digest send endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'send_failed', message: err.message }));
+    }
+    return;
+  }
+
   // Health check — Railway liveness/readiness probe
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
