@@ -16,6 +16,7 @@
 
 import { spawn } from 'child_process';
 import { logger } from '../logger.js';
+import { normalizeTopArticles } from '../lib/matomo-utils.js';
 import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
 import { getTrafficSummary, getTopArticles, getSiteSearchKeywords } from './altwire-matomo-client.js';
 import {
@@ -48,44 +49,6 @@ async function shouldRefreshHistorical(key) {
   const last = await getLastRefreshTimestamp(key);
   if (!last || isNaN(last.getTime())) return true;
   return Date.now() - last.getTime() > THIRTY_DAYS_MS;
-}
-
-function normalizeTopArticles(rawArticles, baseUrl) {
-  if (!Array.isArray(rawArticles)) return [];
-
-  const JUNK_PATH_PATTERNS = [
-    /^[a-z]{2}$/,
-    /^\/?(tag|author|category|reviews|news|index|board-review)\/?/i,
-    /^\/?$/,
-  ];
-
-  const normalized = [];
-
-  for (const row of rawArticles) {
-    const rawPath = row.label ?? row.url ?? '';
-    const pageviews = typeof row.nb_hits === 'number'
-      ? row.nb_hits
-      : (typeof row.nb_visits === 'number' ? row.nb_visits : 0);
-
-    if (!rawPath) continue;
-
-    const cleanPath = rawPath.replace(/^\//, '');
-    if (JUNK_PATH_PATTERNS.some((re) => re.test(cleanPath))) continue;
-
-    let fullUrl;
-    if (rawPath.startsWith('http')) {
-      fullUrl = rawPath;
-    } else {
-      const separator = rawPath.startsWith('/') ? '' : '/';
-      fullUrl = `${baseUrl}${separator}${rawPath}`;
-    }
-
-    const title = row.label ?? cleanPath;
-
-    normalized.push({ url: fullUrl, title, pageviews });
-  }
-
-  return normalized.sort((a, b) => b.pageviews - a.pageviews);
 }
 
 function spawnHistoricalSeed(scriptPath, force = false) {

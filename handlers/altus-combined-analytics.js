@@ -17,6 +17,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { normalizeTopArticles } from '../lib/matomo-utils.js';
 import { logger } from '../logger.js';
 import { readAgentMemory } from '../lib/altus-db.js';
 import {
@@ -68,7 +69,7 @@ function buildCrossReference(matomoTopArticles, gscPagePerformance) {
     byUrl.set(url, {
       url: a.url ?? a.label,
       title: a.label ?? a.url,
-      pageviews: a.nb_hits ?? a.nb_visits ?? 0,
+      pageviews: a.pageviews ?? a.nb_hits ?? a.nb_visits ?? 0,
       impressions: 0,
       clicks: 0,
       position: null,
@@ -303,9 +304,13 @@ export async function getCombinedAnalytics(opts = {}) {
   ]);
 
   const v = (r) => (r.status === 'fulfilled' ? r.value : { error: r.reason?.message });
+  const wpBase = process.env.ALTWIRE_WP_URL ?? 'https://altwire.net';
+  const rawTopArticles = v(topArticlesResult);
   const matomo = {
     traffic: v(trafficResult),
-    top_articles: v(topArticlesResult),
+    top_articles: Array.isArray(rawTopArticles)
+      ? normalizeTopArticles(rawTopArticles, wpBase)
+      : rawTopArticles,
     referrers: v(referrerResult),
     site_search: v(siteSearchResult),
   };
@@ -369,7 +374,7 @@ export async function getCombinedAnalytics(opts = {}) {
       top_articles: topArticlesArr.slice(0, 10).map((a) => ({
         url: a.url ?? a.label,
         label: a.label ?? a.url,
-        pageviews: a.nb_hits ?? a.nb_visits ?? 0,
+      pageviews: a.pageviews ?? a.nb_hits ?? a.nb_visits ?? 0,
       })),
       top_queries: (gsc.top_queries?.rows ?? []).slice(0, 10).map((r) => ({
         query: r.keys?.[0],
