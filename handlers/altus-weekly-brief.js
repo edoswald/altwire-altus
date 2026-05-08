@@ -59,7 +59,7 @@ export async function sendAltusWeeklyBrief() {
     const siteSearchKwVal = getValue(siteSearchKw);
     const editorialContextVal = getValue(editorialContext);
     const priorBriefVal = getValue(priorBrief);
-    const morningDigestVal = getValue(morningDigest);
+const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.value : null;
     const newsAlertToday = getNewsAlert(newsAlerts[0]);
     const newsAlertYesterday = getNewsAlert(newsAlerts[1]);
     const storyOppsVal =
