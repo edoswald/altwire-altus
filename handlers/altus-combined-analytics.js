@@ -237,7 +237,8 @@ async function synthesize(payload) {
       temperature: 0.3,
       system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
-Be specific and cite numbers, articles, and queries.`,
+Be specific and cite numbers, articles, and queries.
+AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.`,
       tools: [SYNTHESIS_TOOL],
       tool_choice: { type: 'any' },
       messages: [
