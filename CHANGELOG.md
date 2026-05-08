@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Current Time block in system prompt** (`hal-harness.js`): `assembleSystemPrompt()` now injects a `## Current Time` section in every session (interactive, task, autonomous). Uses `Intl.DateTimeFormat` with `America/New_York` timezone. Block format:
+  ```
+  ## Current Time
+  Day: Friday, May 8, 2026
+  Time: 2:04 PM (America/New_York / EDT)
+  Relative: today, Friday
+  ```
+  This ensures Altus always has current date/time in context.
+
 - **Google Search Console — full integration into Hal's memory** (`scripts/seed-altwire-historical-gsc.js`):
   - New seed script pulls ~16 months of GSC history (queries, pages, opportunity-zone, News search) and writes 7 LLM-summarized memory keys under `hal:altwire:gsc:*` — `summary_16m`, `top_queries_16m`, `top_pages_16m`, `opportunities_16m`, `news_performance_16m`, `monthly_breakdown`, `last_refreshed`.
   - Idempotent — skips if `last_refreshed` is < 30 days old; supports `--force` and `--no-llm` flags.

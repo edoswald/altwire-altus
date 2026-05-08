@@ -16,6 +16,35 @@ const SOUL_KEYS = {
   default: 'hal:soul',
 };
 
+/**
+ * Build a ## Current Time block in a given timezone.
+ * Injected into every session prompt so Altus never loses track of date/time.
+ *
+ * @param {string} timezone — IANA timezone string, e.g. 'America/New_York'
+ * @returns {string}
+ */
+function buildCurrentTimeBlock(timezone = 'America/New_York') {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (type) => parts.find(p => p.type === type)?.value ?? '';
+  return [
+    `## Current Time`,
+    `Day: ${get('weekday')}, ${get('month')} ${get('day')}, ${get('year')}`,
+    `Time: ${get('hour')}:${get('minute')} ${get('dayPeriod')} (${timezone} / ${get('timeZoneName')})`,
+    `Relative: today, ${get('weekday')}`,
+  ].join('\n');
+}
+
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
 const EDITORIAL_VOICE_KEY = 'hal:altwire:editorial_voice_profile';
 
@@ -170,6 +199,9 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
   } else {
     parts.push(`## Identity\nYou are Hal, the admin AI agent for AltWire Altus.`);
   }
+
+  // Current Time — always present, every session type
+  parts.push(buildCurrentTimeBlock('America/New_York'));
 
   // Session type instruction
   if (sessionType === 'task') {
