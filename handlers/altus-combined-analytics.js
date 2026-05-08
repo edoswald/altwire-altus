@@ -374,7 +374,7 @@ export async function getCombinedAnalytics(opts = {}) {
       },
       top_articles: topArticlesArr.slice(0, 10).map((a) => ({
         url: a.url ?? a.label,
-        label: a.label ?? a.url,
+        label: a.label ?? a.title ?? a.url,
       pageviews: a.pageviews ?? a.nb_hits ?? a.nb_visits ?? 0,
       })),
       top_queries: (gsc.top_queries?.rows ?? []).slice(0, 10).map((r) => ({

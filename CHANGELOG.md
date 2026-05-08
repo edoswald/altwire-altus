@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_altwire_combined_analytics` top_articles label fallback** (`handlers/altus-combined-analytics.js`): Changed `label: a.label ?? a.url` to `label: a.label ?? a.title ?? a.url` — `normalizeTopArticles()` returns objects with `title` (not `label`), so synthesis payload was always receiving URLs instead of human-readable article titles.
+
 ### Added
 
 - **Google Search Console — full integration into Hal's memory** (`scripts/seed-altwire-historical-gsc.js`):
