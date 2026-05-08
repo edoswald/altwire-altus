@@ -324,8 +324,19 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
   startIngestCron();
 
-  // News Monitor — 9 AM ET daily
-  cron.schedule('0 9 * * *', () => observe({ name: 'news_monitor', spanType: 'DEFAULT' }, async () => { runNewsMonitorCron(); }), { timezone: 'America/New_York' });
+  // News Monitor — 4:30 AM ET daily (after 4 AM reflection so fresh GSC data is available)
+  cron.schedule('30 4 * * *', () => observe({ name: 'news_monitor', spanType: 'DEFAULT' }, async () => { runNewsMonitorCron(); }), { timezone: 'America/New_York' });
+
+  // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; writes altus:story_opportunities:{date} cache)
+  cron.schedule('0 5 * * 1-5', () => observe({ name: 'story_opportunities', spanType: 'DEFAULT' }, async () => {
+    try {
+      const { getStoryOpportunities } = await import('./handlers/altus-topic-discovery.js');
+      await getStoryOpportunities({ days: 28 });
+      logger.info('story_opportunities cron: completed');
+    } catch (err) {
+      logger.error('story_opportunities cron failed', { error: err.message });
+    }
+  }), { timezone: 'America/New_York' });
 
   // Performance Snapshot — 6 AM ET daily
   cron.schedule('0 6 * * *', () => observe({ name: 'performance_snapshot', spanType: 'DEFAULT' }, async () => { runPerformanceSnapshotCron(); }), { timezone: 'America/New_York' });

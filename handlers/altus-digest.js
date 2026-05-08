@@ -75,6 +75,10 @@ export async function getAltwireMorningDigest() {
     loanersResult,
     trafficResult,
     aiCostResult,
+    freshTrafficResult,
+    freshTopArticlesResult,
+    freshGscOppsResult,
+    editorialSynthesisResult,
   ] = await Promise.allSettled([
     getAltwireUptime(),
     getAltwireIncidents(),
@@ -102,6 +106,10 @@ export async function getAltwireMorningDigest() {
     ),
     getTrafficSummary('day', 'yesterday'),
     getAiCostSummary(),
+    pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:traffic_summary']),
+    pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:top_articles']),
+    pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:gsc:fresh_opportunities']),
+    pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:combined_synthesis']),
   ]);
 
   // Load historical analytics context alongside fresh fetches
@@ -129,31 +137,22 @@ export async function getAltwireMorningDigest() {
 
   // --- News Alerts (agent memory) ---
   let news_alerts = null;
-  let news_alerts_warning = null;
   if (newsAlertsResult.status === 'fulfilled') {
     const rows = newsAlertsResult.value.rows;
     if (rows && rows.length > 0) {
       try {
         news_alerts = JSON.parse(rows[0].value);
       } catch (e) {
-        news_alerts = null;
-        news_alerts_warning = `Failed to parse news alerts JSON: ${e.message}`;
+        warnings.push({ section: 'news_alerts', message: `Failed to parse news alerts JSON: ${e.message}` });
       }
-    } else {
-      news_alerts = null;
-      news_alerts_warning = 'No data available for today';
     }
+    // Empty rows = no GSC news signals today — not an error, render gracefully in email
   } else {
-    news_alerts = null;
-    news_alerts_warning = `News alerts fetch failed: ${newsAlertsResult.reason?.message || newsAlertsResult.reason}`;
-  }
-  if (news_alerts_warning) {
-    warnings.push({ section: 'news_alerts', message: news_alerts_warning });
+    warnings.push({ section: 'news_alerts', message: `News alerts fetch failed: ${newsAlertsResult.reason?.message || newsAlertsResult.reason}` });
   }
 
   // --- Story Opportunities (agent memory) ---
   let story_opportunities = null;
-  let story_opportunities_warning = null;
   if (storyOppsResult.status === 'fulfilled') {
     const rows = storyOppsResult.value.rows;
     if (rows && rows.length > 0) {
@@ -163,21 +162,15 @@ export async function getAltwireMorningDigest() {
         story_opportunities = {
           count: opportunities.length,
           top: opportunities.slice(0, 3),
+          pitches: parsed.pitches || null,
         };
       } catch (e) {
-        story_opportunities = null;
-        story_opportunities_warning = `Failed to parse story opportunities JSON: ${e.message}`;
+        warnings.push({ section: 'story_opportunities', message: `Failed to parse story opportunities JSON: ${e.message}` });
       }
-    } else {
-      story_opportunities = null;
-      story_opportunities_warning = 'No data available for today';
     }
+    // Empty rows = cron hasn't run yet today — render gracefully in email
   } else {
-    story_opportunities = null;
-    story_opportunities_warning = `Story opportunities fetch failed: ${storyOppsResult.reason?.message || storyOppsResult.reason}`;
-  }
-  if (story_opportunities_warning) {
-    warnings.push({ section: 'story_opportunities', message: story_opportunities_warning });
+    warnings.push({ section: 'story_opportunities', message: `Story opportunities fetch failed: ${storyOppsResult.reason?.message || storyOppsResult.reason}` });
   }
 
   // --- Review Deadlines ---
@@ -239,6 +232,19 @@ export async function getAltwireMorningDigest() {
   if (ai_costs_warning) {
     warnings.push({ section: 'ai_costs', message: ai_costs_warning });
   }
+
+  // --- Fresh reflection data (written by 4 AM cron) ---
+  const parseMemoryRow = (result) => {
+    if (result.status !== 'fulfilled') return null;
+    const row = result.value?.rows?.[0];
+    if (!row) return null;
+    try { return JSON.parse(row.value); } catch { return null; }
+  };
+
+  const fresh_traffic       = parseMemoryRow(freshTrafficResult);
+  const fresh_top_articles  = parseMemoryRow(freshTopArticlesResult);
+  const fresh_gsc_opps      = parseMemoryRow(freshGscOppsResult);
+  const editorial_synthesis = parseMemoryRow(editorialSynthesisResult);
 
   // --- Build historical analytics context ---
   let historical = null;
@@ -348,6 +354,10 @@ export async function getAltwireMorningDigest() {
     ai_costs,
     historical,
     providers,
+    fresh_traffic,
+    fresh_top_articles,
+    fresh_gsc_opps,
+    editorial_synthesis,
   };
 
   // Include per-section warning fields for failed sections
@@ -362,8 +372,10 @@ export async function getAltwireMorningDigest() {
 
   logger.info('Morning digest generated', {
     date: today,
-    sections_ok: 7 - warnings.length,
     sections_warned: warnings.length,
+    has_fresh_traffic: !!fresh_traffic,
+    has_fresh_articles: !!fresh_top_articles,
+    has_editorial_synthesis: !!editorial_synthesis,
   });
 
   return digest;
