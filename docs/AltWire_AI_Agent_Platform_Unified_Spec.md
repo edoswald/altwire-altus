@@ -1424,7 +1424,8 @@ All cron jobs are registered at startup in `index.js`, gated by `DATABASE_URL` p
 | Schedule | Timezone | Job | Handler |
 |---|---|---|---|
 | `0 3 * * *` | UTC | Daily content ingest | `lib/ingest-cron.js` → spawns `scripts/ingest.js` as child process |
-| `0 5 * * *` | America/New_York | AltWire Nightly Reflection | `handlers/altus-reflection.js` → `runAltwireReflection()` |
+| `0 4 * * *` | America/New_York | AltWire Nightly Reflection | `handlers/altus-reflection.js` → `runAltwireReflection()` |
+| `15 5 * * 1-5` | America/New_York | AltWire Morning Digest Email | `handlers/altus-digest-mailer.js` → `sendMorningDigestEmail()` |
 | `0 6 * * *` | America/New_York | Performance snapshot collection | `handlers/altus-performance-tracker.js` → `runPerformanceSnapshotCron()` |
 | `0 9 * * *` | America/New_York | News monitor check | `handlers/altus-news-monitor.js` → `runNewsMonitorCron()` |
 

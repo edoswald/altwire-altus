@@ -330,8 +330,8 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   // Performance Snapshot — 6 AM ET daily
   cron.schedule('0 6 * * *', () => runPerformanceSnapshotCron(), { timezone: 'America/New_York' });
 
-  // AltWire Nightly Reflection — 5 AM ET daily
-  cron.schedule('0 5 * * *', async () => {
+  // AltWire Nightly Reflection — 4 AM ET daily
+  cron.schedule('0 4 * * *', async () => {
     try {
       const { runAltwireReflection } = await import('./handlers/altus-reflection.js');
       await runAltwireReflection();
@@ -370,8 +370,8 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     }
   }, { timezone: 'America/New_York' });
 
-  // Daily morning digest email — Mon-Fri 9:30 AM ET
-  cron.schedule('30 9 * * 1-5', async () => {
+  // Daily morning digest email — Mon-Fri 5:15 AM ET
+  cron.schedule('15 5 * * 1-5', async () => {
     try {
       const { sendMorningDigestEmail } = await import('./handlers/altus-digest-mailer.js');
       await sendMorningDigestEmail();
