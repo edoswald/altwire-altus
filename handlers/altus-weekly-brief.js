@@ -59,6 +59,7 @@ export async function sendAltusWeeklyBrief() {
     const siteSearchKwVal = getValue(siteSearchKw);
     const editorialContextVal = getValue(editorialContext);
     const priorBriefVal = getValue(priorBrief);
+    const morningDigestVal = getValue(morningDigest);
     const newsAlertToday = getNewsAlert(newsAlerts[0]);
     const newsAlertYesterday = getNewsAlert(newsAlerts[1]);
     const storyOppsVal =
@@ -85,6 +86,7 @@ export async function sendAltusWeeklyBrief() {
       storyOpportunities: storyOppsVal,
       editorialContext: editorialContextVal,
       priorBrief: priorBriefVal,
+      morningDigest: morningDigestVal,
     });
 
     const briefHtml = markdownToHtml(briefText);
@@ -109,13 +111,14 @@ export async function sendAltusWeeklyBrief() {
   }
 }
 
-async function generateBriefText({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief }) {
+async function generateBriefText({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief, morningDigest }) {
   const trafficParsed = trafficSummary ? safeParseJson(trafficSummary) : null;
   const topArticlesParsed = topArticles ? safeParseJson(topArticles) : null;
   const siteSearchParsed = siteSearchKw ? safeParseJson(siteSearchKw) : null;
   const storyOppsParsed = storyOpportunities ? safeParseJson(storyOpportunities) : null;
   const editorialCtxParsed = editorialContext ? safeParseJson(editorialContext) : null;
   const priorParsed = priorBrief ? safeParseJson(priorBrief) : null;
+  const morningDigestParsed = morningDigest ? safeParseJson(morningDigest) : null;
 
   const systemPrompt = 'You are Altus, the AI operations layer for AltWire — an independent music publication covering indie rock, alternative, and emerging artists.';
 
@@ -155,6 +158,7 @@ NEWS ALERTS THIS WEEK: ${newsAlerts || 'None'}
 STORY OPPORTUNITIES: ${storyOppsParsed ? JSON.stringify(storyOppsParsed, null, 2) : 'No data available'}
 EDITORIAL CONTEXT: ${editorialCtxParsed ? JSON.stringify(editorialCtxParsed, null, 2) : 'No data available'}
 PRIOR BRIEF (for continuity): ${priorParsed ? JSON.stringify(priorParsed, null, 2) : 'No prior brief'}
+MORNING DIGEST: ${morningDigestParsed ? JSON.stringify(morningDigestParsed, null, 2) : 'No morning digest available'}
 
 Write only the brief. No preamble, no "Here is your brief:", no sign-off beyond "— Altus".
 Target length: 400–600 words.`;
@@ -263,7 +267,12 @@ function formatWeekRange(date) {
   const sunday = new Date(monday);
   sunday.setDate(monday.getDate() + 6);
   const opts = { month: 'long', day: 'numeric' };
-  return `${monday.toLocaleDateString('en-US', opts)}–${sunday.getDate()}, ${sunday.getFullYear()}`;
+  const mondayStr = monday.toLocaleDateString('en-US', opts);
+  const sundayStr = sunday.toLocaleDateString('en-US', opts);
+  const yearSuffix = monday.getFullYear() !== sunday.getFullYear()
+    ? `, ${monday.getFullYear()}–${sunday.getFullYear()}`
+    : `, ${sunday.getFullYear()}`;
+  return `${mondayStr}–${sundayStr}${yearSuffix}`;
 }
 
 function safeParseJson(str) {

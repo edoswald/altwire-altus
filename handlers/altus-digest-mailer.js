@@ -14,8 +14,12 @@ export async function sendMorningDigestEmail() {
     const html = buildDigestHtml(digest);
     const text = buildDigestText(digest);
 
-    await sendEmail({ to: process.env.DEREK_EMAIL, subject, html, text });
-    logger.info(`[altus-digest-mailer] Sent morning digest to Derek — ${digest.date}`);
+    const result = await sendEmail({ to: process.env.DEREK_EMAIL, subject, html, text });
+    if (result.success) {
+      logger.info(`[altus-digest-mailer] Sent morning digest to Derek — ${digest.date}`);
+    } else {
+      logger.error(`[altus-digest-mailer] Failed to send morning digest to Derek — ${result.error}`);
+    }
   } catch (err) {
     logger.error('[altus-digest-mailer] Failed to send morning digest', { error: err.message });
   }
@@ -147,9 +151,10 @@ function buildDigestText(digest) {
   const siteStatus = digest.uptime?.site?.status || 'unknown';
   const wpStatus = digest.uptime?.wp_cron?.status || 'unknown';
   lines.push(siteStatus === 'up' && wpStatus === 'up' ? 'All systems operational' : `Issues — site: ${siteStatus}, wp-cron: ${wpStatus}`);
-  if (digest.incidents?.site?.length > 0) {
+  if (digest.incidents?.site?.length > 0 || digest.incidents?.wp_cron?.length > 0) {
     lines.push('OPEN INCIDENTS');
-    for (const inc of digest.incidents.site) lines.push(`• ${inc.name}: ${inc.status}`);
+    for (const inc of (digest.incidents.site || [])) lines.push(`• ${inc.name}: ${inc.status}`);
+    for (const inc of (digest.incidents.wp_cron || [])) lines.push(`• WP-Cron ${inc.name}: ${inc.status}`);
   }
   if (digest.news_alerts) {
     lines.push('NEWS ALERTS');
