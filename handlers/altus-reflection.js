@@ -46,8 +46,46 @@ async function getLastRefreshTimestamp(key) {
 
 async function shouldRefreshHistorical(key) {
   const last = await getLastRefreshTimestamp(key);
-  if (!last) return true;
+  if (!last || isNaN(last.getTime())) return true;
   return Date.now() - last.getTime() > THIRTY_DAYS_MS;
+}
+
+function normalizeTopArticles(rawArticles, baseUrl) {
+  if (!Array.isArray(rawArticles)) return [];
+
+  const JUNK_PATH_PATTERNS = [
+    /^[a-z]{2}$/,
+    /^\/?(tag|author|category|reviews|news|index|board-review)\/?/i,
+    /^\/?$/,
+  ];
+
+  const normalized = [];
+
+  for (const row of rawArticles) {
+    const rawPath = row.label ?? row.url ?? '';
+    const pageviews = typeof row.nb_hits === 'number'
+      ? row.nb_hits
+      : (typeof row.nb_visits === 'number' ? row.nb_visits : 0);
+
+    if (!rawPath) continue;
+
+    const cleanPath = rawPath.replace(/^\//, '');
+    if (JUNK_PATH_PATTERNS.some((re) => re.test(cleanPath))) continue;
+
+    let fullUrl;
+    if (rawPath.startsWith('http')) {
+      fullUrl = rawPath;
+    } else {
+      const separator = rawPath.startsWith('/') ? '' : '/';
+      fullUrl = `${baseUrl}${separator}${rawPath}`;
+    }
+
+    const title = row.label ?? cleanPath;
+
+    normalized.push({ url: fullUrl, title, pageviews });
+  }
+
+  return normalized.sort((a, b) => b.pageviews - a.pageviews);
 }
 
 function spawnHistoricalSeed(scriptPath, force = false) {
@@ -106,12 +144,19 @@ export async function runAltwireReflection() {
     }));
 
     // Top articles — 7d (most viewed)
-    const topArticles7d = await getTopArticles('week', 'yesterday', 20);
-    await writeAgentMemory('hal', 'hal:altwire:top_articles', JSON.stringify({
-      period: '7d',
-      articles: topArticles7d,
-      generated_at: new Date().toISOString(),
-    }));
+    const topArticles7dRaw = await getTopArticles('week', 'yesterday', 30);
+    const wpBase = process.env.ALTWIRE_WP_URL ?? 'https://altwire.net';
+
+    if (topArticles7dRaw?.error) {
+      logger.warn('[altus-reflection] getTopArticles returned an error — skipping write to preserve prior data', { error: topArticles7dRaw.error });
+    } else {
+      const topArticles7d = normalizeTopArticles(topArticles7dRaw, wpBase);
+      await writeAgentMemory('hal', 'hal:altwire:top_articles', JSON.stringify({
+        period: '7d',
+        articles: topArticles7d,
+        generated_at: new Date().toISOString(),
+      }));
+    }
 
     // Site search keywords — what readers are searching for on AltWire
     const searchKeywords = await getSiteSearchKeywords('week', 'yesterday');
