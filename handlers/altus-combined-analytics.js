@@ -154,9 +154,10 @@ async function synthesize(payload) {
       system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
 Output a JSON object only — no markdown, no commentary. Be specific and cite numbers, articles, and queries.`,
-      messages: [{
-        role: 'user',
-        content: `Synthesize the following Matomo + GSC data for AltWire:
+      messages: [
+        {
+          role: 'user',
+          content: `Synthesize the following Matomo + GSC data for AltWire:
 
 ${JSON.stringify(payload, null, 2)}
 
@@ -170,14 +171,18 @@ Return JSON with shape:
   "content_gaps": [{"query": string, "impressions": number, "rationale": string}, ...] (top 3 GSC searches with no on-site coverage signal),
   "editorial_recommendation": "2-3 sentences: what to publish, optimize, or amplify next"
 }`,
-      }],
+        },
+        {
+          role: 'assistant',
+          content: '{',
+        },
+      ],
     });
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+    const text = '{' + (response.content[0]?.type === 'text' ? response.content[0].text : '');
     const trimmed = text.trim();
-    const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
-    if (first === -1 || last === -1) return null;
-    return JSON.parse(trimmed.slice(first, last + 1));
+    if (last === -1) return null;
+    return JSON.parse(trimmed.slice(0, last + 1));
   } catch (err) {
     logger.warn('combined-analytics: synthesis failed', { error: err.message });
     return null;
