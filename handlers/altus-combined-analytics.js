@@ -278,14 +278,37 @@ export async function getCombinedAnalytics(opts = {}) {
 
   let synthesis = null;
   if (doSynth && (matomoConfigured || gscConfigured)) {
-    synthesis = await synthesize({
-      ...baseline,
-      historical_summary: {
-        gsc_16m: historical['hal:altwire:gsc:summary_16m'] ?? null,
-        traffic_18m: historical['hal:altwire:analytics:traffic_summary'] ?? null,
-        topic_trends: historical['hal:altwire:analytics:topic_trends'] ?? null,
+    const synthPayload = {
+      period: { start_date: startDate, end_date: endDate },
+      search_traffic_share_pct,
+      traffic_summary: {
+        nb_visits: matomo.traffic?.nb_visits ?? null,
+        nb_pageviews: matomo.traffic?.nb_pageviews ?? null,
+        bounce_rate: matomo.traffic?.bounce_rate ?? null,
       },
-    });
+      top_articles: topArticlesArr.slice(0, 10).map((a) => ({
+        url: a.url ?? a.label,
+        label: a.label ?? a.url,
+        pageviews: a.nb_hits ?? a.nb_visits ?? 0,
+      })),
+      top_queries: (gsc.top_queries?.rows ?? []).slice(0, 10).map((r) => ({
+        query: r.keys?.[0],
+        impressions: r.impressions,
+        clicks: r.clicks,
+        position: r.position,
+        ctr: r.ctr,
+      })),
+      top_opportunities: (gsc.opportunities?.opportunities ?? []).slice(0, 10),
+      cross_reference: cross_reference.slice(0, 10),
+      search_gaps: search_gaps.slice(0, 10),
+      historical_summary: {
+        gsc_16m_insights: historical['hal:altwire:gsc:summary_16m']?.insights ?? null,
+        gsc_16m_trend: historical['hal:altwire:gsc:summary_16m']?.trend_direction ?? null,
+        traffic_trend: historical['hal:altwire:analytics:traffic_summary']?.trend_direction ?? null,
+        rising_topics: historical['hal:altwire:analytics:topic_trends']?.rising_topics?.slice(0, 3) ?? null,
+      },
+    };
+    synthesis = await synthesize(synthPayload);
   }
 
   return {
