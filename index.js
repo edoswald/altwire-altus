@@ -369,6 +369,26 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       logger.error('Altus audit batch collection cron failed', { error: err.message });
     }
   }, { timezone: 'America/New_York' });
+
+  // Daily morning digest email — Mon-Fri 9:30 AM ET
+  cron.schedule('30 9 * * 1-5', async () => {
+    try {
+      const { sendMorningDigestEmail } = await import('./handlers/altus-digest-mailer.js');
+      await sendMorningDigestEmail();
+    } catch (err) {
+      logger.error('altus-digest-mailer cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Weekly prose brief email — Sundays 8 AM ET
+  cron.schedule('0 8 * * 0', async () => {
+    try {
+      const { sendAltusWeeklyBrief } = await import('./handlers/altus-weekly-brief.js');
+      await sendAltusWeeklyBrief();
+    } catch (err) {
+      logger.error('altus-weekly-brief cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
 } else {
   logger.warn('No database URL set — ALTWIRE_DATABASE_URL and DATABASE_URL are both empty — skipping schema init and cron');
 }

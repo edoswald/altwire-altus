@@ -50,6 +50,44 @@ async function shouldRefreshHistorical(key) {
   return Date.now() - last.getTime() > THIRTY_DAYS_MS;
 }
 
+function normalizeTopArticles(rawArticles, baseUrl) {
+  if (!Array.isArray(rawArticles)) return [];
+
+  const JUNK_PATH_PATTERNS = [
+    /^[a-z]{2}$/,
+    /^\/?(tag|author|category|reviews|news|index|board-review)\/?/i,
+    /^\/?$/,
+  ];
+
+  const normalized = [];
+
+  for (const row of rawArticles) {
+    const rawPath = row.label ?? row.url ?? '';
+    const pageviews = typeof row.nb_hits === 'number'
+      ? row.nb_hits
+      : (typeof row.nb_visits === 'number' ? row.nb_visits : 0);
+
+    if (!rawPath) continue;
+
+    const cleanPath = rawPath.replace(/^\//, '');
+    if (JUNK_PATH_PATTERNS.some((re) => re.test(cleanPath))) continue;
+
+    let fullUrl;
+    if (rawPath.startsWith('http')) {
+      fullUrl = rawPath;
+    } else {
+      const separator = rawPath.startsWith('/') ? '' : '/';
+      fullUrl = `${baseUrl}${separator}${rawPath}`;
+    }
+
+    const title = row.label ?? cleanPath;
+
+    normalized.push({ url: fullUrl, title, pageviews });
+  }
+
+  return normalized.sort((a, b) => b.pageviews - a.pageviews);
+}
+
 function spawnHistoricalSeed(scriptPath, force = false) {
   return new Promise((resolve) => {
     const args = [scriptPath];
@@ -106,7 +144,9 @@ export async function runAltwireReflection() {
     }));
 
     // Top articles — 7d (most viewed)
-    const topArticles7d = await getTopArticles('week', 'yesterday', 20);
+    const topArticles7dRaw = await getTopArticles('week', 'yesterday', 30);
+    const wpBase = process.env.ALTWIRE_WP_URL ?? 'https://altwire.net';
+    const topArticles7d = normalizeTopArticles(topArticles7dRaw, wpBase);
     await writeAgentMemory('hal', 'hal:altwire:top_articles', JSON.stringify({
       period: '7d',
       articles: topArticles7d,
