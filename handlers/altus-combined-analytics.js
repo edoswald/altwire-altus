@@ -144,45 +144,120 @@ const anthropic = process.env.ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   : null;
 
+const SYNTHESIS_TOOL = {
+  name: 'record_synthesis',
+  description: 'Record the combined Matomo + GSC editorial synthesis for AltWire.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      headline: {
+        type: 'string',
+        description: '1-sentence summary of organic + on-site performance for the period',
+      },
+      search_traffic_share_pct: {
+        type: 'number',
+        description: 'Estimated % of pageviews driven by organic search',
+      },
+      top_dual_winners: {
+        type: 'array',
+        description: 'Top 3 articles strong in BOTH pageviews AND search impressions',
+        items: {
+          type: 'object',
+          properties: {
+            url: { type: 'string' },
+            title: { type: 'string' },
+            why: { type: 'string' },
+          },
+          required: ['url', 'title', 'why'],
+        },
+      },
+      underperforming_in_search: {
+        type: 'array',
+        description: 'Top 3 articles popular on-site but weak in GSC — indexing/SEO gaps',
+        items: {
+          type: 'object',
+          properties: {
+            url: { type: 'string' },
+            title: { type: 'string' },
+            why: { type: 'string' },
+          },
+          required: ['url', 'title', 'why'],
+        },
+      },
+      opportunity_alignments: {
+        type: 'array',
+        description: 'Top 3 GSC opportunity-zone queries that align with reader interest signals',
+        items: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            page: { type: 'string' },
+            recommendation: { type: 'string' },
+          },
+          required: ['query', 'page', 'recommendation'],
+        },
+      },
+      content_gaps: {
+        type: 'array',
+        description: 'Top 3 GSC searches with no on-site coverage signal',
+        items: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            impressions: { type: 'number' },
+            rationale: { type: 'string' },
+          },
+          required: ['query', 'impressions', 'rationale'],
+        },
+      },
+      editorial_recommendation: {
+        type: 'string',
+        description: '2-3 sentences: what to publish, optimize, or amplify next',
+      },
+    },
+    required: [
+      'headline',
+      'search_traffic_share_pct',
+      'top_dual_winners',
+      'underperforming_in_search',
+      'opportunity_alignments',
+      'content_gaps',
+      'editorial_recommendation',
+    ],
+  },
+};
+
 async function synthesize(payload) {
   if (!anthropic) return null;
   try {
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1500,
+      max_tokens: 2000,
       temperature: 0.3,
       system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
-Output a JSON object only — no markdown, no commentary. Be specific and cite numbers, articles, and queries.`,
+Be specific and cite numbers, articles, and queries.`,
+      tools: [SYNTHESIS_TOOL],
+      tool_choice: { type: 'any' },
       messages: [
         {
           role: 'user',
-          content: `Synthesize the following Matomo + GSC data for AltWire:
+          content: `Synthesize the following Matomo + GSC data for AltWire and call the record_synthesis tool with your analysis:
 
-${JSON.stringify(payload, null, 2)}
-
-Return JSON with shape:
-{
-  "headline": "1-sentence summary of organic + on-site performance for the period",
-  "search_traffic_share_pct": number (estimate of % of pageviews driven by organic search),
-  "top_dual_winners": [{"url": string, "title": string, "why": string}, ...] (top 3 articles strong in BOTH pageviews AND search impressions),
-  "underperforming_in_search": [{"url": string, "title": string, "why": string}, ...] (top 3 articles popular on-site but weak in GSC — indexing/SEO gaps),
-  "opportunity_alignments": [{"query": string, "page": string, "recommendation": string}, ...] (top 3 GSC opportunity-zone queries that align with reader interest signals),
-  "content_gaps": [{"query": string, "impressions": number, "rationale": string}, ...] (top 3 GSC searches with no on-site coverage signal),
-  "editorial_recommendation": "2-3 sentences: what to publish, optimize, or amplify next"
-}`,
-        },
-        {
-          role: 'assistant',
-          content: '{',
+${JSON.stringify(payload, null, 2)}`,
         },
       ],
     });
-    const text = '{' + (response.content[0]?.type === 'text' ? response.content[0].text : '');
-    const trimmed = text.trim();
-    const last = trimmed.lastIndexOf('}');
-    if (last === -1) return null;
-    return JSON.parse(trimmed.slice(0, last + 1));
+
+    const toolUse = response.content.find((b) => b.type === 'tool_use' && b.name === 'record_synthesis');
+    if (!toolUse) {
+      logger.warn('combined-analytics: synthesis tool not called', {
+        stop_reason: response.stop_reason,
+        content_types: response.content.map((b) => b.type),
+      });
+      return null;
+    }
+    return toolUse.input;
   } catch (err) {
     logger.warn('combined-analytics: synthesis failed', { error: err.message });
     return null;
