@@ -323,20 +323,34 @@ async function _startClimbIterationCore(climb_name) {
     return { success: false, exit_reason: 'proposal_error', message: err.message };
   }
 
+  if (typeof proposed_change !== 'string' || proposed_change.trim() === '') {
+    return { success: false, exit_reason: 'proposal_error', message: 'Response JSON missing or empty proposed_change field' };
+  }
+
   logAiUsage('mountaineering_proposal', 'claude-haiku-4-5', response.usage);
 
   const iteration_number = climb.iterations + 1;
 
-  await pool.query(`UPDATE agent_memory SET value = $1 WHERE key = $2`, [proposed_change, climb.workspace_key]);
-  await pool.query(
-    `INSERT INTO altus_climb_iterations (climb_id, iteration_number, proposed_change, previous_workspace_value)
-     VALUES ($1, $2, $3, $4)`,
-    [climb.id, iteration_number, proposed_change, previous_workspace_value]
-  );
-  await pool.query(
-    `UPDATE altus_climbs SET iterations = iterations + 1, status = 'running', updated_at = NOW() WHERE id = $1`,
-    [climb.id]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE agent_memory SET value = $1 WHERE key = $2`, [proposed_change, climb.workspace_key]);
+    await client.query(
+      `INSERT INTO altus_climb_iterations (climb_id, iteration_number, proposed_change, previous_workspace_value)
+       VALUES ($1, $2, $3, $4)`,
+      [climb.id, iteration_number, proposed_change, previous_workspace_value]
+    );
+    await client.query(
+      `UPDATE altus_climbs SET iterations = iterations + 1, status = 'running', updated_at = NOW() WHERE id = $1`,
+      [climb.id]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    return { success: false, exit_reason: 'proposal_error', message: err.message };
+  } finally {
+    client.release();
+  }
 
   logger.info(`altus-mountaineering: iteration ${iteration_number} started for climb '${climb_name}'`);
   return { success: true, climb_name, iteration_number, proposed_change, rationale, previous_workspace_value };
@@ -443,7 +457,7 @@ export async function collectClimbScores() {
 
     for (const item of results) {
       const iterRow = await pool.query(
-        `SELECT i.id, i.climb_id, i.iteration_number, c.workspace_key, c.best_score
+        `SELECT i.id, i.climb_id, i.iteration_number, i.proposed_change, c.workspace_key, c.best_score
          FROM altus_climb_iterations i
          JOIN altus_climbs c ON c.id = i.climb_id
          WHERE i.id = $1 AND i.score IS NULL`,
@@ -479,11 +493,9 @@ export async function collectClimbScores() {
           [score, iter.climb_id]
         );
         if (iter.best_score === null || score > parseFloat(iter.best_score)) {
-          const memResult = await pool.query(`SELECT value FROM agent_memory WHERE key = $1`, [iter.workspace_key]);
-          const workspaceValue = memResult.rows[0]?.value || null;
           await pool.query(
             `UPDATE altus_climbs SET best_score = $1, best_workspace_value = $2, updated_at = NOW() WHERE id = $3`,
-            [score, workspaceValue, iter.climb_id]
+            [score, iter.proposed_change, iter.climb_id]
           );
         }
         logger.info(`altus-mountaineering: scored iteration ${iter.iteration_number} of climb_id=${iter.climb_id} — score=${score}`);
