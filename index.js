@@ -2283,12 +2283,12 @@ async function identifyClient(req) {
   if (tokenData) return tokenData.clientId;
 
   const providedHash = crypto.createHash('sha256').update(token).digest();
-  for (const [clientId, secretEnvKey] of Object.entries(process.env)) {
-    if (!clientId.startsWith('OAUTH_CLIENT_SECRET_')) continue;
-    const secretHash = crypto.createHash('sha256').update(secretEnvKey).digest();
+  for (const [secretEnvVarName, secretValue] of Object.entries(process.env)) {
+    if (!secretEnvVarName.startsWith('OAUTH_CLIENT_SECRET_')) continue;
+    const secretHash = crypto.createHash('sha256').update(secretValue).digest();
     try {
       if (crypto.timingSafeEqual(providedHash, secretHash)) {
-        const operator = clientId.slice('OAUTH_CLIENT_SECRET_'.length);
+        const operator = secretEnvVarName.slice('OAUTH_CLIENT_SECRET_'.length);
         const clientIdEnvKey = `OAUTH_CLIENT_ID_${operator}`;
         return process.env[clientIdEnvKey] || null;
       }
@@ -2512,7 +2512,10 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'origin_not_allowed' }));
       return;
     }
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin || '*');
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 

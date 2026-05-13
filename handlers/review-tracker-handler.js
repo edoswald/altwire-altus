@@ -103,13 +103,21 @@ export async function initReviewTrackerSchema() {
  * to ISO YYYY-MM-DD strings for consistent API responses.
  */
 function formatDates(row) {
-  const dateFields = ['due_date', 'assigned_date', 'loaned_date', 'expected_return_date', 'actual_return_date'];
-  for (const field of dateFields) {
-    if (row[field] instanceof Date) {
-      row[field] = row[field].toISOString().slice(0, 10);
-    }
-  }
-  return row;
+  if (!row) return row;
+  return {
+    ...row,
+    due_date: row.due_date instanceof Date ? row.due_date.toISOString().slice(0, 10) : row.due_date,
+    assigned_date: row.assigned_date instanceof Date ? row.assigned_date.toISOString().slice(0, 10) : row.assigned_date,
+    loaned_date: row.loaned_date instanceof Date ? row.loaned_date.toISOString().slice(0, 10) : row.loaned_date,
+    expected_return_date: row.expected_return_date instanceof Date ? row.expected_return_date.toISOString().slice(0, 10) : row.expected_return_date,
+    actual_return_date: row.actual_return_date instanceof Date ? row.actual_return_date.toISOString().slice(0, 10) : row.actual_return_date,
+  };
+}
+
+function normalizeDays(days, fallback, max = 365) {
+  const numericDays = Number(days);
+  if (!Number.isFinite(numericDays)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(numericDays)));
 }
 
 /**
@@ -222,17 +230,18 @@ export async function listReviews({ status, reviewer } = {}) {
 }
 
 export async function getUpcomingReviewDeadlines({ days = 7 } = {}) {
+  const safeDays = normalizeDays(days, 7);
   const { rows } = await pool.query(
     `SELECT * FROM altus_reviews
      WHERE due_date IS NOT NULL
        AND due_date <= CURRENT_DATE + $1 * INTERVAL '1 day'
        AND status NOT IN ('published', 'cancelled')
      ORDER BY due_date ASC`,
-    [days],
+    [safeDays],
   );
 
   if (rows.length === 0) {
-    return { reviews: [], count: 0, note: `No review deadlines in the next ${days} days` };
+    return { reviews: [], count: 0, note: `No review deadlines in the next ${safeDays} days` };
   }
   return { reviews: rows.map(formatDates), count: rows.length };
 }
@@ -348,6 +357,7 @@ export async function getOverdueLoaners() {
 }
 
 export async function getUpcomingLoanerReturns({ days = 14 } = {}) {
+  const safeDays = normalizeDays(days, 14);
   const { rows } = await pool.query(
     `SELECT * FROM altus_loaners
      WHERE expected_return_date IS NOT NULL
@@ -356,11 +366,11 @@ export async function getUpcomingLoanerReturns({ days = 14 } = {}) {
        AND actual_return_date IS NULL
        AND status NOT IN ('kept', 'lost')
      ORDER BY expected_return_date ASC`,
-    [days],
+    [safeDays],
   );
 
   if (rows.length === 0) {
-    return { loaners: [], count: 0, note: `No loaner returns due in the next ${days} days` };
+    return { loaners: [], count: 0, note: `No loaner returns due in the next ${safeDays} days` };
   }
   return { loaners: rows.map(formatDates), count: rows.length };
 }

@@ -220,19 +220,20 @@ export function shouldIgnoreEvent(event) {
 // ---------------------------------------------------------------------------
 
 export function handleSlackRequest(req, res) {
-  const MAX_BODY_BYTES = 262144;
+  let rawBody = '';
   let bodySize = 0;
   let bodySizeExceeded = false;
-  let rawBody = '';
+  const bodyChunks = [];
+  const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB hard limit
 
-  req.on('data', chunk => {
+  req.on('data', (chunk) => {
     bodySize += chunk.length;
     if (bodySize > MAX_BODY_BYTES) {
       bodySizeExceeded = true;
       req.destroy();
       return;
     }
-    rawBody += chunk;
+    bodyChunks.push(chunk);
   });
 
   req.on('end', async () => {
@@ -241,6 +242,8 @@ export function handleSlackRequest(req, res) {
       res.end(JSON.stringify({ error: 'Payload too large' }));
       return;
     }
+
+    rawBody = Buffer.concat(bodyChunks).toString('utf8');
 
     let payload;
     const contentType = req.headers['content-type'] || '';
@@ -253,20 +256,6 @@ export function handleSlackRequest(req, res) {
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Malformed payload' }));
-      return;
-    }
-
-    // url_verification is handled before signature check because Slack sends this
-    // challenge before the signing secret is provisioned during initial app setup.
-    // Validate challenge format to prevent abuse of the reflection endpoint.
-    if (payload.type === 'url_verification') {
-      if (typeof payload.challenge === 'string' && payload.challenge.length > 0 && payload.challenge.length <= 500) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ challenge: payload.challenge }));
-      } else {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'invalid_challenge' }));
-      }
       return;
     }
 
@@ -283,6 +272,17 @@ export function handleSlackRequest(req, res) {
       logger.warn('slack-altus: invalid signature');
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid signature' }));
+      return;
+    }
+
+    if (payload.type === 'url_verification') {
+      if (typeof payload.challenge === 'string' && payload.challenge.length > 0 && payload.challenge.length <= 500) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ challenge: payload.challenge }));
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_challenge' }));
+      }
       return;
     }
 
