@@ -24,9 +24,9 @@ if (process.env.LMNR_PROJECT_API_KEY) {
       instrumentModules: { anthropic: Anthropic },
     });
     Laminar.patch({ anthropic: Anthropic });
-    console.log('[Laminar] Initialized — shared project, service: altus');
+    logger.info('Laminar initialized — shared project, service: altus');
   } catch (err) {
-    console.warn('[Laminar] Initialization failed:', err.message);
+    logger.warn('Laminar initialization failed', { error: err.message });
   }
 }
 
@@ -70,7 +70,7 @@ import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
-import { emitEvent, getEvents, clearBus, hasEvents } from './lib/altus-event-bus.js';
+import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRegistered } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
@@ -164,8 +164,34 @@ function parseClientTools() {
 }
 
 const OAUTH_CLIENT_TOOLS = parseClientTools();
-// ---------------------------------------------------------------------------
-// Tool scoping — maps tool names to allowed agent contexts.
+// Parse OAUTH_CLIENT_CONTEXTS → Map<clientId, Set<agentContext>>
+  // Format: "clientId1:altwire,nimbus;clientId2:altwire"
+  // If a client is not listed here, no agentContext restriction applies (backwards-compatible).
+  // If a client IS listed, it may only use listed contexts.
+  function parseClientContexts() {
+    const map = new Map();
+    const raw = process.env.OAUTH_CLIENT_CONTEXTS;
+    if (!raw) return map;
+    for (const entry of raw.split(';')) {
+      const colonIdx = entry.indexOf(':');
+      if (colonIdx === -1) continue;
+      const clientId = entry.slice(0, colonIdx).trim();
+      const contexts = entry.slice(colonIdx + 1).split(',').map(c => c.trim()).filter(Boolean);
+      map.set(clientId, new Set(contexts));
+    }
+    return map;
+  }
+
+  const OAUTH_CLIENT_CONTEXTS = parseClientContexts();
+
+  // Check whether a clientId is authorized to claim a given agentContext.
+  // Returns true if no restriction exists for the client; false otherwise.
+  function isContextAllowed(clientId, agentContext) {
+    if (!agentContext) return true;
+    const allowed = OAUTH_CLIENT_CONTEXTS.get(clientId);
+    if (!allowed) return true; // no restriction defined — allow
+    return allowed.has(agentContext);
+  }
 // Tool is registered only if its contexts array is empty (no restriction)
 // or contains the current agentContext.
 // ---------------------------------------------------------------------------
@@ -2379,14 +2405,19 @@ const httpServer = createServer(async (req, res) => {
       }
       const secretEnvKey = `OAUTH_CLIENT_SECRET_${operator}`;
       const expectedSecret = process.env[secretEnvKey];
-      if (expectedSecret && presentedSecret !== expectedSecret) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'invalid_client' }));
-        return;
+      if (expectedSecret) {
+        // Hash both secrets before timing-safe comparison to prevent timing side-channel leaks
+        const presentedHash = crypto.createHash('sha256').update(presentedSecret).digest();
+        const expectedHash = crypto.createHash('sha256').update(expectedSecret).digest();
+        if (!crypto.timingSafeEqual(presentedHash, expectedHash)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_client' }));
+          return;
+        }
       }
 
       if (grantType === 'authorization_code') {
-        const { getAuthCode, deleteAuthCode, storeAccessToken, storeRefreshToken } = await import('./lib/oauth-store.js');
+        const { getAuthCode, storeAccessToken, storeRefreshToken } = await import('./lib/oauth-store.js');
         const authData = await getAuthCode(code);
         if (!authData) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2411,7 +2442,7 @@ const httpServer = createServer(async (req, res) => {
             return;
           }
         }
-        await deleteAuthCode(code);
+        // Code is already deleted atomically within getAuthCode — no separate delete needed.
         const accessToken = generateAccessToken();
         const newRefreshToken = generateAccessToken();
         await storeAccessToken(accessToken, { clientId, scope: authData.scope });
@@ -2461,12 +2492,27 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // CORS allowlist for writer REST endpoints
+  const ALLOWED_ORIGINS = new Set(
+    (process.env.ALTUS_WRITER_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map(u => u.trim())
+      .filter(Boolean)
+  );
+
   // ---------------------------------------------------------------------------
   // Writer REST endpoints — authenticated via ALTUS_ADMIN_TOKEN
   // ---------------------------------------------------------------------------
   if (url.pathname.startsWith('/hal/writer/')) {
-    // CORS headers for all writer routes
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+    // CORS headers — use explicit allowlist, reject unexpected origins
+    const origin = req.headers.origin;
+    const allowedOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : '';
+    if (origin && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'origin_not_allowed' }));
+      return;
+    }
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 
@@ -2582,8 +2628,17 @@ const httpServer = createServer(async (req, res) => {
   // Search Feedback REST endpoint — for WordPress plugin
   // POST /hal/feedback — log feedback from search results
   // GET /hal/search-feedback — retrieve feedback entries (for wp plugin polling)
+  // Auth: requires HAL_KEY shared secret
   // ---------------------------------------------------------------------------
   if (url.pathname === '/hal/feedback' && req.method === 'POST') {
+    // Authenticate via shared secret
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.HAL_KEY) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
@@ -2606,6 +2661,13 @@ const httpServer = createServer(async (req, res) => {
       if (!query || !rating) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'query and rating are required' }));
+        return;
+      }
+
+      // Validate field lengths to prevent abuse
+      if (query.length > 1000 || (comment && comment.length > 5000) || (answer_excerpt && answer_excerpt.length > 2000)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'field too long' }));
         return;
       }
 
@@ -2636,6 +2698,14 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/hal/search-feedback' && req.method === 'GET') {
+    // Authenticate via shared secret
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.HAL_KEY) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
@@ -2714,10 +2784,26 @@ const httpServer = createServer(async (req, res) => {
   // SSE Event Stream — GET /events/:sessionId
   // Streams tool_start/tool_done/thinking_done events to the Chat UI.
   // Client subscribes via EventSource, receives events from the in-memory bus.
+  // Auth: requires a valid Bearer token whose clientId matches the session's owner.
   // ---------------------------------------------------------------------------
   const eventsMatch = url.pathname.match(/^\/events\/(.+)$/);
   if (eventsMatch && req.method === 'GET') {
     const sessionId = eventsMatch[1];
+
+    // Authenticate the SSE subscriber
+    const authHeader = req.headers['authorization'] || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    const token = authHeader.slice(7).trim();
+    const clientId = await identifyClient(req);
+    if (!clientId || !isSessionRegistered(sessionId, clientId)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'session_not_found_or_not_owned' }));
+      return;
+    }
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -2764,6 +2850,13 @@ const httpServer = createServer(async (req, res) => {
     const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId);
     const agentContext = req.headers['x-agent-context'] || null;
 
+    // Reject agentContext claims that this clientId is not authorized to make
+    if (!isContextAllowed(clientId, agentContext)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'agent_context_not_allowed' }));
+      return;
+    }
+
     // Read the body once so we can extract session_id AND forward it to the transport.
     // If we attach data/end listeners without saving the result, the body is consumed
     // and transport.handleRequest would receive an empty stream.
@@ -2793,6 +2886,8 @@ const httpServer = createServer(async (req, res) => {
     const clientCtx = { clientId, allowedTools };
     const sessionMeta = { client_id: clientId, ...(agentContext && { agent_context: agentContext }) };
     if (sessionId) {
+      // Register session so SSE stream can authenticate the owner
+      registerSession(sessionId, clientId);
       await oauthClientStorage.run(clientCtx, async () =>
         sessionIdStorage.run(sessionId, async () =>
           observe({ name: 'altus_session', spanType: 'DEFAULT', metadata: sessionMeta }, async () => {

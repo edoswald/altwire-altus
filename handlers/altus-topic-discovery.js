@@ -41,7 +41,9 @@ export function classifyCoverageGap(weightedScore) {
  * @returns {number}
  */
 export function scoreOpportunity(impressions, position, gapMultiplier) {
-  const positionProximity = 1 - (position - 5) / 25;
+  // Clamp position to the expected 5–30 range; scores outside get 0
+  const safePosition = Math.max(5, Math.min(30, position));
+  const positionProximity = 1 - (safePosition - 5) / 25;
   return impressions * positionProximity * gapMultiplier;
 }
 
@@ -108,47 +110,55 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
   }
 
   const scored = [];
-  for (const row of gscResult.rows) {
-    const query = row.keys[0];
-    const archiveResult = await searchAltwireArchive({ query, limit: 3, content_type: 'all' });
-    const topScore = archiveResult?.results?.[0]?.weighted_score ?? 0;
-    const gap = classifyCoverageGap(topScore);
+  // Batch archive searches in chunks of 10 to avoid overwhelming the search service
+  const CHUNK_SIZE = 10;
+  for (let i = 0; i < gscResult.rows.length; i += CHUNK_SIZE) {
+    const chunk = gscResult.rows.slice(i, i + CHUNK_SIZE);
+    const archiveResults = await Promise.all(
+      chunk.map((row) => searchAltwireArchive({ query: row.keys[0], limit: 3, content_type: 'all' }))
+    );
+    for (let j = 0; j < chunk.length; j++) {
+      const row = chunk[j];
+      const query = row.keys[0];
+      const archiveResult = archiveResults[j];
+      const topScore = archiveResult?.results?.[0]?.weighted_score ?? 0;
+      const gap = classifyCoverageGap(topScore);
 
-    const { affinity } = scoreEditorialAffinity(query, editorialContext, topicTrends);
-    const baseScore = scoreOpportunity(row.impressions, row.position, gap.multiplier);
-    const editorialMultiplier = affinity > 0 ? affinity : 0;
+      const { affinity } = scoreEditorialAffinity(query, editorialContext, topicTrends);
+      const baseScore = scoreOpportunity(row.impressions, row.position, gap.multiplier);
+      // Use minimum multiplier of 1.0 so zero-affinity queries still score; only boost upward
+      const editorialMultiplier = affinity > 0 ? affinity : 1.0;
 
-    // Seasonality bonus: boost topics that peak in the current month
-    let seasonalityBonus = 1.0;
-    if (seasonalityCtx?.monthly_pattern?.avg_pageviews_by_month) {
-      const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
-      const monthAvg = seasonalityCtx.monthly_pattern.avg_pageviews_by_month[currentMonth] ?? 0;
-      const overallAvg = Object.values(seasonalityCtx.monthly_pattern.avg_pageviews_by_month)
-        .reduce((s, v) => s + v, 0) / 12;
-      if (monthAvg > overallAvg * 1.2) {
-        seasonalityBonus = 1.15; // currently in peak season
-      } else if (monthAvg < overallAvg * 0.8) {
-        seasonalityBonus = 0.85; // currently in low season
+      // Seasonality bonus: boost topics that peak in the current month
+      let seasonalityBonus = 1.0;
+      if (seasonalityCtx?.monthly_pattern?.avg_pageviews_by_month) {
+        const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+        const monthAvg = seasonalityCtx.monthly_pattern.avg_pageviews_by_month[currentMonth] ?? 0;
+        const overallAvg = Object.values(seasonalityCtx.monthly_pattern.avg_pageviews_by_month)
+          .reduce((s, v) => s + v, 0) / 12;
+        if (monthAvg > overallAvg * 1.2) {
+          seasonalityBonus = 1.15; // currently in peak season
+        } else if (monthAvg < overallAvg * 0.8) {
+          seasonalityBonus = 0.85; // currently in low season
+        }
       }
+
+      const finalScore = baseScore * editorialMultiplier * seasonalityBonus;
+
+      scored.push({
+        query,
+        page: row.keys[1] ?? null,
+        impressions: row.impressions,
+        clicks: row.clicks,
+        position: row.position,
+        coverageStatus: gap.status,
+        gapMultiplier: gap.multiplier,
+        score: finalScore,
+        editorialMultiplier,
+        seasonalityBonus,
+      });
     }
-
-    const finalScore = baseScore * editorialMultiplier * seasonalityBonus;
-
-    scored.push({
-      query,
-      page: row.keys[1] ?? null,
-      impressions: row.impressions,
-      clicks: row.clicks,
-      position: row.position,
-      coverageStatus: gap.status,
-      gapMultiplier: gap.multiplier,
-      score: finalScore,
-      editorialMultiplier,
-      seasonalityBonus,
-    });
   }
-
-  scored.sort((a, b) => b.score - a.score);
   const top = scored.filter(o => o.score > 0).slice(0, 10);
 
   let pitches = '';

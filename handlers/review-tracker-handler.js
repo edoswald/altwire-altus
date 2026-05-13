@@ -419,6 +419,9 @@ export async function updateReviewNote({ note_id, note_text, category }) {
 }
 
 export async function listReviewNotes({ review_id, category } = {}) {
+  if (review_id === undefined || review_id === null) {
+    return { error: 'review_id is required' };
+  }
   const values = [review_id];
   let query = 'SELECT * FROM altus_review_notes WHERE review_id = $1';
 

@@ -1,6 +1,6 @@
 # AltWire AI Agent Platform
 ## Unified Specification — Altus MCP Server
-## May 5, 2026 — v1.1
+## May 8, 2026 — v1.4
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Component | Description | Status |
 |---|---|---|
-| Altus MCP Server | AltWire-dedicated MCP server on Railway — 91 tools | LIVE at altwire-altus-production.up.railway.app |
+| Altus MCP Server | AltWire-dedicated MCP server on Railway — 98 tools | LIVE at altwire-altus-production.up.railway.app |
 | PostgreSQL | Shared Railway instance — `altus_` table prefix | LIVE |
 | RAG Archive | Semantic search over AltWire's ~1,566 post archive | LIVE |
 | Analytics Layer | Matomo + GSC tools for editorial performance | LIVE |
@@ -21,7 +21,7 @@
 | Morning Digest | Aggregated daily briefing from 7 data sources | LIVE |
 | Better Stack Monitoring | Uptime and incident monitoring for altwire.net and WP Cron | LIVE |
 | Slack Integration | Hal-initiated Slack status posts with channel routing | LIVE |
-| Hal Agent Memory | Read/write/list/delete for Hal soul and editorial context | LIVE |
+| Hal Agent Memory | Read/write/list for Hal soul and editorial context | LIVE |
 | Chart Generation | Inline chart spec generator for Hal Chat UI | LIVE |
 
 ---
@@ -50,7 +50,100 @@ Hal connects to Altus the same way it connects to other services. From Derek's p
 
 | Repo | URL | Notes |
 |---|---|---|
-| altwire-altus | github.com/edoswald/altwire-altus | Altus MCP server — index.js, 57 tools |
+| altwire-altus | github.com/edoswald/altwire-altus | Altus MCP server — index.js, 98 tools |
+
+---
+
+## 1.2 Nimbus Dependencies & Integration Architecture
+
+Altus is operationally independent from Cirrusly Weather — its tools, database tables, and cron jobs live entirely in the `altwire-altus` repo. However, four integration points connect Altus to the Nimbus/Hal framework so that Hal can serve Derek on AltWire topics seamlessly, and so both systems share state through the common database.
+
+### Shared Database
+
+Altus connects to the **same shared Railway PostgreSQL instance** as Nimbus. All `altus_`-prefixed tables are Altus-owned. Three shared tables have no prefix and are written by both systems:
+
+| Table | Owner | Purpose |
+|---|---|---|
+| `agent_memory` | Shared (Nimbus schema) | Key/value store for soul blocks, onboarding state, editorial context, news alerts, story opportunities. Both Altus and Nimbus write here. |
+| `ai_usage` | Shared (Nimbus schema) | Per-tool AI cost tracking — Altus logs its own calls here. |
+| `hal_slack_posts` | Nimbus schema | Slack post history written by Altus's Slack handler, read by Nimbus for display in the Hal session context. |
+
+**Known Nimbus spec gaps (code is authoritative):** The Cirrusly Weather spec does not yet document the `/slack/altwire-events` endpoint, `handleAltwireInboundRequest()`, or the `claude → operational` SSE scope upgrade. This section reflects current codebase state.
+
+### 1.2.1 Hal Agent Memory — `nimbus` Agent Context
+
+Three memory tools are registered in Altus **exclusively for the `nimbus` agent context** — they are invisible to `altwire` and `weather` contexts:
+
+```
+hal_read_memory  →  ['nimbus']
+hal_write_memory →  ['nimbus']
+hal_list_memory  →  ['nimbus']
+```
+
+These tools use the shared `agent_memory` table. Keys written by Altus under the `nimbus` context (e.g., `hal:soul`, `hal:altwire:traffic_summary`, `hal:perch_agenda`) are visible to Hal in Nimbus sessions. This is the mechanism by which Altus maintains Hal's editorial soul and context across sessions.
+
+The shared memory scope router (`handlers/altus-memory-scope.js`) passes these keys untransformed:
+
+| Key prefix | Scope | Example |
+|---|---|---|
+| `hal:soul` | Shared | Hal's soul block |
+| `hal:perch_agenda` | Shared | Perch agenda |
+| `hal:altwire:*` | Shared | Traffic summaries, top articles, editorial context |
+| `altus:mem:{admin_id}:*` | Admin-scoped | Per-admin Altus notes |
+
+### 1.2.2 Slack — Bidirectional Routing
+
+Altus runs its own Slack app (`handlers/slack-altus.js`) using `@slack/bolt` with manual HTTP request processing. The Slack integration has two directions:
+
+**Outbound (Altus → Slack):** Altus posts status updates to Slack channels via `postStatusUpdate()` using `SLACK_BOT_TOKEN_ALTUS`. Channels are configured via env vars (`SLACK_CHANNEL_ALTWIRE`, `SLACK_CHANNEL_ADMIN_ANNOUNCEMENTS`, etc.).
+
+**Inbound (Altus → Nimbus → Hal):** When a Slack event arrives on the `#altwire` channel (or any channel with `agentContext: 'altwire'`), Altus **forwards it to Nimbus** via `routeToNimbus()`:
+
+```
+Altus (slack-altus.js)
+  → POST NIMBUS_SLACK_WEBHOOK_URL  (env var on altwire-altus)
+  → Nimbus (sse-server.js POST /slack/altwire-events)
+  → handleAltwireInboundRequest (slack-hal.js)
+  → Hal session via SSE/Retell
+```
+
+This routing allows Hal to respond to AltWire-channel Slack messages in the same voice and session flow as Cirrusly Weather interactions. No Slack signing verification is needed on the Nimbus side — the sender is trusted (altwire-altus).
+
+**Env var:** `NIMBUS_SLACK_WEBHOOK_URL` on altwire-altus points to Nimbus's `/slack/altwire-events` endpoint.
+
+> **Note:** The `/slack/altwire-events` endpoint and `handleAltwireInboundRequest()` handler are implemented in `sse-server.js` and `handlers/slack-hal.js` respectively, but are not yet documented in the Cirrusly Weather spec. This integration section reflects the current codebase state.
+
+### 1.2.3 hal-chat-ui — Independent SSE Streams
+
+`hal-chat-ui` connects to **both** Nimbus and Altus simultaneously as separate MCP clients. Each MCP server maintains its own independent SSE event bus:
+
+- **Nimbus SSE:** `GET /events/:sessionId` — streams `tool_start`, `tool_done`, `thinking_done` for Nimbus tools
+- **Altus SSE:** `GET /events/:sessionId` — streams the same event types for Altus tools
+
+The frontend subscribes to both streams in parallel using the same `sessionId`. Tool events from each MCP are rendered in the unified chat interface. There is no cross-server event aggregation — each MCP is independently stateless (`sessionIdGenerator: undefined`).
+
+**SSE client scopes (Nimbus):** Nimbus enforces three-tier scope per client. The `claude` client (hal-chat-ui) holds `operational` scope in Nimbus — it can call read/list tools and operational tools, but not destructive tools (refunds, bulk inventory, `send_workmail_email`, `reset_onboarding`, etc.). The Altus SSE stream uses the same OAuth token auth as Nimbus. Scope enforcement is handled entirely by Nimbus; Altus only enforces its own `TOOL_CONTEXTS` allowlists.
+
+### 1.2.4 Email — Outbound via SES; Inbound via Shared Nimbus SES Pipeline
+
+**Outbound (Altus → email):** Altus sends email via its own SES client (`lib/ses-client.js`). It does **not** have its own inbound email ingestion.
+
+- **From address:** `ALTUS_FROM_EMAIL` env var (default: `hal@cirruslyweather.com`)
+- **Client:** `@aws-sdk/client-ses` `SendEmailCommand` — simple plain/HTML email, no raw MIME
+- **Recipients:** `DEREK_EMAIL` env var (morning digest and weekly brief)
+- **Scheduled sends:**
+  - Morning digest email — `15 5 * * 1-5` ET — `handlers/altus-digest-mailer.js` → `sendMorningDigestEmail()` — HTML + plain text, aggregates 7 data sources
+  - Weekly brief email — `0 8 * * 0` ET — `handlers/altus-weekly-brief.js` → `sendAltusWeeklyBrief()` — AI-generated editorial brief with prior brief continuity
+
+**Inbound (Nimbus SES email pipeline — shared):** Altus has no inbound email ingestion. It relies on Nimbus's shared email pipeline (Cirrusly Weather spec §4). That pipeline has **two parallel SES receipt-rule paths**:
+
+| Inbox | Pipeline | WorkMail? |
+|---|---|---|
+| hal@cirruslyweather.com | SES → S3 → Lambda → /ingest-workmail → workmail_messages | No |
+
+`hal@` is fully WorkMail-free — the Lambda's `ALLOWED` array (index.mjs line 166) controls which addresses trigger ingest. If an email relevant to AltWire arrives at a Cirrusly Weather inbox, Hal can triage it and surface context to Altus through the shared `agent_memory` table or the Slack routing layer.
+
+**All new email inboxes must either be created in this manner, or with another provider. Amazon is discontinuing support for WorkMail after March 31, 2027.**
 
 ---
 
@@ -103,6 +196,7 @@ Altus exposes authenticated REST endpoints for the AI Writer UI under `/hal/writ
 | `/hal/search-feedback` | GET | None | Retrieve search feedback entries — supports `?rating=`, `?since=`, `?limit=` filters |
 | `/events/:sessionId` | GET | Session ID in URL | SSE event stream — streams tool_start/tool_done/thinking_done events to Chat UI |
 | `/altwire/digest` | GET | Bearer any HAL_KEY | Full morning digest — site uptime, incidents, news alerts, story opportunities, review deadlines, overdue loaners, yesterday's traffic |
+| `/altwire/digest/send` | GET | Bearer any HAL_KEY | Trigger the morning digest email to be sent immediately |
 | `/slack/events` | POST | Slack signature | Slack event callback endpoint — handles url_verification and event_callback payloads |
 
 ## 2.3 OAuth 2.0 Authorization Server
@@ -467,6 +561,112 @@ Created by `initOAuthSchema()` at startup. Persist OAuth 2.0 authorization state
 | scope | VARCHAR(255) | Token scope |
 | created_at | TIMESTAMPTZ | Default: NOW() |
 | expires_at | TIMESTAMPTZ | 30-day TTL (backfilled for existing rows) |
+
+---
+
+## 3.17 `altus_heartbeat_log`
+
+Altus autonomous heartbeat run log. Written by `runAltusHeartbeat()` on every cycle.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| run_at | TIMESTAMPTZ | When the run started |
+| duration_ms | INTEGER | Total run time |
+| items_evaluated | INTEGER | Due tasks picked up |
+| items_acted | INTEGER | Tasks acted on |
+| items_queued | INTEGER | Items queued for review |
+| items_skipped | INTEGER | Tasks that failed or were skipped |
+| alerts_sent | INTEGER | Deduplicated alerts sent |
+| condition_checks | TEXT | JSON snapshot of condition check counts |
+| error_message | TEXT | Error message if the run threw |
+
+## 3.18 `altus_scheduled_tasks`
+
+Task queue for the Altus heartbeat. Tasks are inserted by `scheduleAltusTask()` and picked up by `runAltusHeartbeat()` at their `due_at` time. Not exposed as MCP tools.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| task_type | VARCHAR(50) NOT NULL | Task type — e.g. `action_item` |
+| payload | JSONB | Task payload |
+| due_at | TIMESTAMPTZ NOT NULL | When the task becomes due |
+| status | VARCHAR(20) NOT NULL | CHECK: `pending` / `running` / `completed` / `failed` / `skipped` |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| started_at | TIMESTAMPTZ | When execution began |
+| completed_at | TIMESTAMPTZ | When execution finished |
+| error_message | TEXT | Error if failed |
+| metadata | JSONB | Additional metadata |
+
+**Indexes:** `altus_scheduled_tasks_due_at_idx` on `(due_at ASC)` where `status = 'pending'`
+
+## 3.19 `altus_action_items`
+
+Signal-driven action items surfaced by the Altus heartbeat. Items transition from `proposed` → `accepted` (auto-queued if stale) → `completed` / `dismissed`.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| title | VARCHAR(200) NOT NULL | Action item title |
+| description | TEXT NOT NULL | Details |
+| category | VARCHAR(20) NOT NULL | CHECK: `marketing` / `operations` / `pricing` / `quality` / `infrastructure` / `editorial` |
+| signal_source | VARCHAR(100) NOT NULL | What generated this item — e.g. `heartbeat_scheduled` |
+| signal_data | TEXT | JSON signal payload |
+| proposed_at | TIMESTAMPTZ | Default: NOW() |
+| status | VARCHAR(20) NOT NULL | CHECK: `proposed` / `accepted` / `completed` / `dismissed` |
+| accepted_at | TIMESTAMPTZ | When item was accepted |
+| completed_at | TIMESTAMPTZ | When item was completed |
+| dismissed_at | TIMESTAMPTZ | When item was dismissed |
+| dismiss_reason | TEXT | Why it was dismissed |
+| outcome_notes | TEXT | Notes on resolution |
+| reflection_date | DATE NOT NULL | Date of the reflection that generated this |
+
+**Indexes:** `idx_altus_action_items_status_proposed` on `(status, proposed_at)`, `idx_altus_action_items_category_status` on `(category, status)`
+
+## 3.20 `altus_climbs`
+
+Mountaineering climb registry. Created by `initMountaineeringSchema()` at startup.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| name | VARCHAR(100) UNIQUE NOT NULL | Kebab-case climb name — must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$` |
+| objective | TEXT NOT NULL | Plain-English goal |
+| metric_description | TEXT NOT NULL | How success is measured |
+| workspace_key | VARCHAR(255) NOT NULL | Key in `agent_memory` holding the value to optimize |
+| eval_snapshot | JSONB NOT NULL | Frozen evaluation criteria |
+| status | VARCHAR(20) NOT NULL | CHECK: `idle` / `running` / `paused` / `peaked` / `abandoned` |
+| current_score | NUMERIC | Most recent iteration score |
+| best_score | NUMERIC | Highest achieved score |
+| best_workspace_value | TEXT | Workspace value that achieved best_score |
+| iterations | INTEGER NOT NULL DEFAULT 0 | Total iterations run |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| updated_at | TIMESTAMPTZ | Default: NOW() |
+
+**Indexes:** `altus_climbs_name_idx` on `name`, `altus_climbs_status_idx` on `status`
+
+## 3.21 `altus_climb_iterations`
+
+Individual iterations within a climb. Created by `initMountaineeringSchema()` at startup.
+
+| Column | Type | Description |
+|---|---|---|
+| id | SERIAL PK | |
+| climb_id | INTEGER FK → altus_climbs(id) | |
+| iteration_number | INTEGER NOT NULL | |
+| proposed_change | TEXT NOT NULL | Proposed new workspace value |
+| previous_workspace_value | TEXT NOT NULL | Value before this iteration |
+| score | NUMERIC | 0.0–1.0 evaluation score |
+| batch_id | VARCHAR(100) | Anthropic Batch API job ID for scoring |
+| decision | VARCHAR(20) | CHECK: `keep` / `revert` / `plateau` |
+| evidence_summary | TEXT | Haiku's evidence summary for the score |
+| created_at | TIMESTAMPTZ | Default: NOW() |
+| scored_at | TIMESTAMPTZ | When score was collected |
+| decided_at | TIMESTAMPTZ | When supervisor decision was made |
+
+**Constraints:** `UNIQUE(climb_id, iteration_number)`
+
+**Indexes:** `altus_climb_iterations_climb_iter_idx` on `(climb_id, iteration_number)`, `altus_climb_iterations_batch_idx` on `batch_id` (partial, where batch_id IS NOT NULL)
 
 ---
 
@@ -1289,7 +1489,7 @@ Returns: `{ success: true, profile }`.
 
 Handler: `handlers/hal-memory.js`
 
-Memory read/write/list tools scoped to the Hal agent. Used to access `hal:soul:altwire`, `hal:altwire:editorial_context`, and other Hal memory keys. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be overwritten via `hal_write_memory`.
+Memory read/write/list tools scoped to the Hal agent. Used to access `hal:soul:altwire`, `hal:altwire:editorial_context`, and other Hal memory keys. Protected keys (`hal:soul*`, `hal:onboarding_state:*`) cannot be overwritten via the write tool.
 
 ### hal_read_memory
 
@@ -1380,6 +1580,93 @@ Handler: `handlers/altus-onboarding.js`. Five-phase calibration flow for new adm
 
 ---
 
+## 4.21 Mountaineering Tools
+
+Handler: `handlers/altus-mountaineering.js`
+
+Supervised hill-climbing optimization loop. Two pre-seeded climbs: `morning-digest-v1` (optimizes digest format) and `headline-v1` (optimizes headline guidelines). All climbs use `altus_climbs` and `altus_climb_iterations` tables.
+
+### altus_create_climb
+
+Create a new climb. The workspace_key must already exist in `agent_memory`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| name | string | required | Climb name — lowercase kebab-case (e.g. `morning-digest-v1`) |
+| objective | string | required | Plain-English goal for what this climb optimizes |
+| metric_description | string | required | How success is measured — what signals/data are used to score iterations |
+| workspace_key | string | required | Key in `agent_memory` holding the value to optimize (must already exist) |
+| eval_snapshot | object | required | Frozen evaluation criteria as a JSON object — cannot be empty |
+
+Returns: `{ success, climb_id, name, status: 'idle' }`.
+
+### altus_start_climb_iteration
+
+Start a new iteration for a climb. Reads the current workspace_key value, proposes a targeted change via Claude Haiku, writes the proposal to `agent_memory`, and records the iteration. Only allowed when climb status is `idle` or `running`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb to iterate on |
+
+Returns: `{ success, climb_name, iteration_number, proposed_change, rationale, previous_workspace_value }`.
+
+### altus_score_climb_iteration
+
+Submit a scoring batch request for a completed iteration. Reads `eval_snapshot` from the database and queues an Anthropic Batch API job. Results are collected automatically every 2 hours by the mountaineering batch cron.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb |
+| iteration_number | integer | required | Iteration number to score |
+
+Returns: `{ success, climb_name, iteration_number, batch_id, message }`.
+
+### altus_get_climb_status
+
+Get current status, score trend, and plateau detection for a climb. Returns `plateau_alert: true` when the last 3+ consecutive decisions are all "plateau".
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb |
+
+Returns: `{ success, name, objective, status, current_score, best_score, iterations, workspace_key, trend, recent_decisions[], plateau_alert?, plateau_streak?, suggestion? }`.
+
+### altus_supervisor_decision
+
+Record your decision on a scored iteration.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb |
+| iteration_number | integer | required | Iteration number to decide on |
+| decision | enum `keep\|revert\|plateau` | required | `keep` = accept the change; `revert` = reject and restore previous; `plateau` = reject and signal the climb is stalling |
+
+Returns: `{ success, climb_name, iteration_number, decision, workspace_restored }`.
+
+### altus_peak_climb
+
+Declare a climb peaked — the current best workspace value is the optimum. Sets status to `peaked` and records the best_workspace_value. Only allowed on `running` or `paused` climbs.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb to peak |
+
+Returns: `{ success, climb_name, status: 'peaked', best_score, best_workspace_value, iterations }`.
+
+### altus_get_climb_history
+
+Return paginated iteration history for a climb.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| climb_name | string | required | Name of the climb |
+| limit | integer | 50 | Max iterations to return (max 200) |
+| offset | integer | 0 | Pagination offset |
+
+Returns: `{ success, name, objective, status, best_score, iterations, history[] }`.
+
+---
+
 # 5. Tool Count Summary
 
 Counts below are derived from `scopedRegister(...)` calls in `index.js`.
@@ -1408,12 +1695,13 @@ Counts below are derived from `scopedRegister(...)` calls in `index.js`.
 | Event Log | LIVE | 2 |
 | AI Cost Tracking | LIVE | 1 |
 | Multi-Admin Onboarding | LIVE | 6 |
+| Mountaineering | LIVE | 7 |
 
 Note: the Slack outbound (2) and Slack extended (10) rows above sum to the 12 Slack tools in `handlers/slack-altus.js` — see §4.11 for the full list.
 
 | | | |
 |---|---|---|
-| **Total live** | | **91** |
+| **Total live** | | **93** |
 
 ---
 
@@ -1425,9 +1713,15 @@ All cron jobs are registered at startup in `index.js`, gated by `DATABASE_URL` p
 |---|---|---|---|
 | `0 3 * * *` | UTC | Daily content ingest | `lib/ingest-cron.js` → spawns `scripts/ingest.js` as child process |
 | `0 4 * * *` | America/New_York | AltWire Nightly Reflection | `handlers/altus-reflection.js` → `runAltwireReflection()` |
+| `0 */2 * * *` | America/New_York | Altus Heartbeat — autonomous action loop | `handlers/altus-heartbeat.js` → `runAltusHeartbeat()` |
+| `45 */2 * * *` | UTC | Altus Mountaineering Batch Collection — staggered 45 min from heartbeat | `handlers/altus-mountaineering.js` → `collectClimbScores()` |
+| `0 3 * * *` | America/New_York | Altus Event Log Retention — prune events older than 30 days | `altus-event-log.js` → `runRetentionCron()` |
+| `30 */2 * * *` | America/New_York | Altus Audit Batch Collection — every 2 hours, staggered 30 min from heartbeat | `altus-event-log.js` → `runAuditBatchCollection()` |
 | `15 5 * * 1-5` | America/New_York | AltWire Morning Digest Email | `handlers/altus-digest-mailer.js` → `sendMorningDigestEmail()` |
+| `0 8 * * 0` | America/New_York | AltWire Weekly Prose Brief Email | `handlers/altus-weekly-brief.js` → `sendAltusWeeklyBrief()` |
 | `0 6 * * *` | America/New_York | Performance snapshot collection | `handlers/altus-performance-tracker.js` → `runPerformanceSnapshotCron()` |
-| `0 9 * * *` | America/New_York | News monitor check | `handlers/altus-news-monitor.js` → `runNewsMonitorCron()` |
+| `30 4 * * *` | America/New_York | News monitor check | `handlers/altus-news-monitor.js` → `runNewsMonitorCron()` |
+| `0 5 * * 1-5` | America/New_York | Story opportunities check | `handlers/altus-topic-discovery.js` → `getStoryOpportunities()` |
 
 ## 6.1 Daily Content Ingest (03:00 UTC)
 
@@ -1441,13 +1735,29 @@ Iterates over all articles in `altus_article_assignments`. For each article, det
 
 **Snapshot eligibility logic:** An article is eligible for a snapshot type when `(effectiveDate - publishedAt) >= threshold_days` and that snapshot type hasn't been collected yet. Effective date = today minus 2 days (GSC data lag).
 
-## 6.3 News Monitor Check (09:00 ET)
+## 6.3 News Monitor Check (04:30 AM ET)
 
-Runs `getNewsOpportunities()` and stores the result in `agent_memory` under key `altus:news_alert:{today}`. Surfaces watch list matches for Derek's morning review. Never throws — errors are logged but don't crash the server.
+Runs `getNewsOpportunities()` and stores the result in `agent_memory` under key `altus:news_alert:{today}`. Surfaces watch list matches for Derek's morning review. Never throws — errors are logged but don't crash the server. Runs 30 minutes after the 4 AM reflection so fresh GSC data is available.
 
-## 6.4 AltWire Nightly Reflection (05:00 ET)
+## 6.4 Story Opportunities Check (05:00 AM ET weekdays)
 
-Lightweight nightly editorial context refresh. Writes to `hal:altwire:traffic_summary`, `hal:altwire:top_articles`, and `hal:altwire:site_search_keywords` in agent_memory. Monthly (every 30 days), triggers `scripts/seed-altwire-historical-analytics.js` to refresh 18-month analytics memory keys. Uses `Promise.allSettled` so individual failures don't crash the job.
+Runs `getStoryOpportunities({ days: 28 })` and writes results to the `altus:story_opportunities:{date}` cache. Runs 15 minutes before the morning digest email. Triggers archival context building for the day.
+
+## 6.5 Altus Heartbeat (Every 2 Hours)
+
+Runs `runAltusHeartbeat()` every 2 hours. Most runs do nothing — that is correct behavior. The heartbeat picks up due scheduled tasks, checks condition thresholds (upcoming review deadlines, overdue loaners, stale proposed action items), sends deduplicated alerts (6-hour window), and queues stale proposed items for human review. Writes results to `altus_heartbeat_log` and `altus:heartbeat:last_run` memory key. Scheduled tasks are managed via `scheduleAltusTask`, `listScheduledTasks`, and `cancelScheduledTask` (exported from `handlers/altus-heartbeat.js` — not exposed as MCP tools).
+
+## 6.6 Altus Event Log Retention (03:00 ET)
+
+Runs `runRetentionCron()` daily to prune `altus_events` rows older than 30 days.
+
+## 6.7 Altus Audit Batch Collection (Staggered every 2 hours)
+
+Runs `runAuditBatchCollection()` every 2 hours, staggered 30 minutes after the heartbeat. Queues batch audit synthesis jobs for time windows > 24 hours.
+
+## 6.8 Altus Mountaineering Batch Collection (Every 2 Hours, staggered 45 min from heartbeat)
+
+Runs `collectClimbScores()` every 2 hours at UTC offset +45 minutes. Collects pending Anthropic Batch API results for scored iterations, updates `altus_climb_iterations` with scores, and updates `altus_climbs` with current/best scores. Logs batch usage to `ai_usage`.
 
 ---
 
@@ -1518,11 +1828,17 @@ The Hal soul for AltWire (`hal:soul:altwire`) is seeded at first deployment via 
 
 ```
 altwire-altus/
-├── index.js                           # Tool registry — 91 tools, HTTP server, OAuth, cron registration
+├── index.js                           # Tool registry — 93 tools, HTTP server, OAuth, cron registration
 ├── logger.js                          # Structured JSON logger (stderr only)
 ├── hal-labels.js                      # AI Writer tool display labels for UI
 ├── hal-chart.js                       # Chart spec generator for Hal Chat UI
 ├── hal-harness.js                     # assembleSystemPrompt + getDerekAuthorProfile — AltWire context switching
+├── hal-signals.js                     # Laminar signal registration — 5 signals for monitoring
+├── hal-memory.js                       # Hal agent memory read/write/list — 3 tools (deprecated, see handlers/)
+├── tracing.js                         # Laminar @observe decorator wrapper with PII stripping
+├── altus-event-log.js                 # Unified event log — logAltusEvent, queryAltusEvents, synthesizeAudit, batch collection
+├── batch-client.js                    # Anthropic Batch API wrapper — submitBatch, collectBatch, logBatchUsage
+├── altus-event-bus.js                 # In-memory SSE event bus per sessionId
 │
 ├── handlers/
 │   ├── altus-search.js                # search_altwire_archive — semantic search with recency weighting
@@ -1536,14 +1852,19 @@ altwire-altus/
 │   ├── altus-performance-tracker.js   # get_article_performance, get_news_performance_patterns, cron
 │   ├── altus-monitoring.js            # Better Stack uptime and incident fetchers
 │   ├── altus-digest.js                # Morning digest aggregator — 7 data sources
-│   ├── altus-reflection.js            # Nightly AltWire reflection — 5 AM ET + monthly historical seed
+│   ├── altus-digest-mailer.js        # Morning digest HTML email sender
+│   ├── altus-weekly-brief.js          # Weekly editorial brief email sender
+│   ├── altus-reflection.js            # Nightly AltWire reflection — 4 AM ET + monthly historical seed
 │   ├── altus-editorial-tools.js       # Article tracking, content ideas — 4 tools
 │   ├── altus-link-evaluator.js        # evaluate_link_fitness — pre-publication editorial fitness
+│   ├── altus-incident-handler.js     # Better Stack incident comments + status page updates
 │   ├── altwire-matomo-client.js       # Matomo Reporting API — 4 analytics tools
 │   ├── altwire-gsc-client.js         # Google Search Console API — search, opportunities, sitemap
 │   ├── review-tracker-handler.js      # Review, loaner, note CRUD + editorial digest — 16 tools
 │   ├── altus-watch-list.js            # Watch list CRUD — 3 tools
 │   ├── altus-writer.js               # AI Writer pipeline — 11 tools (assignment → outline → draft → post)
+│   ├── altus-onboarding.js           # Multi-admin onboarding — 6 tools
+│   ├── altus-mountaineering.js        # Supervised hill-climbing optimization — 7 tools
 │   ├── slack-altus.js                 # Slack integration — outbound status posting, hal_slack_posts
 │   └── hal-memory.js                  # Hal agent memory read/write/list — 3 tools
 │
@@ -1723,9 +2044,7 @@ All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_A
 
 # 12. Test Suite
 
-
-
-22 test files covering unit tests, property-based tests, and integration tests.
+23 test files covering unit tests, property-based tests, and integration tests.
 
 | Test File | Type | What it covers |
 |---|---|---|
@@ -1751,6 +2070,7 @@ All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_A
 | `agent-memory-cache.property.test.js` | Property | Agent memory caching behavior |
 | `unique-constraint.property.test.js` | Property | Database unique constraint handling |
 | `zero-result-response.property.test.js` | Property | Empty result set handling |
+| `altus-mountaineering.unit.test.js` | Unit | Mountaineering climb management |
 
 ---
 
@@ -1773,14 +2093,14 @@ All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_A
 - **Rate Limiting:** Sliding-window global (200/15min per IP) and auth-specific (30/15min per IP) limiters with standard `RateLimit-*` response headers.
 - **SSE Event Bus:** Real-time tool event streaming via `GET /events/:sessionId` — streams `tool_start`, `tool_done`, `thinking_done` events to the Chat UI.
 - **Public AI Search (`search_altwire`):** MiniMax-2.7 synthesis over AltWire archive — full-text answer with cited sources. Reader feedback tracked in `altus_search_feedback` table.
-- **AltWire Reflection cron (5 AM ET):** Nightly refresh of `hal:altwire:traffic_summary`, `hal:altwire:top_articles`, `hal:altwire:site_search_keywords`. Monthly historical analytics re-seed.
+- **AltWire Reflection cron (4 AM ET):** Nightly refresh of `hal:altwire:traffic_summary`, `hal:altwire:top_articles`, `hal:altwire:site_search_keywords`. Monthly historical analytics re-seed.
 - **New Editorial Tools:** `track_article`, `list_tracked_articles`, `add_content_idea`, `get_content_ideas` — article tracking and content idea management in `agent_memory`.
 - **Link Evaluator:** `evaluate_link_fitness` — pre-publication editorial fitness scoring via MiniMax-2.7 against 18-month analytics, editorial context, and archive coverage.
 - **Author Profile Tools:** `get_author_profile`, `update_author_profile` — editorial voice profile stored at `hal:altwire:editorial_voice_profile` for AI Writer context injection.
 - **Writer Summary:** `get_writer_summary` — aggregated writer stats for prompt page context card.
-- **Hal Memory:** Removed `hal_delete_memory` (was not registered as a tool). Read/write/list remain.
-- **New DB Tables:** `altus_search_queries`, `altus_search_feedback`, `oauth_auth_codes`, `oauth_access_tokens`, `oauth_refresh_tokens`.
-- **Tool count:** 57 → 65 tools (subsequently grown to 91 — see §5 for the current breakdown).
+- **Hal Memory:** Added `hal_delete_memory` (soft-delete). Read/write/list remain.
+- **New DB Tables:** `altus_search_queries`, `altus_search_feedback`, `oauth_auth_codes`, `oauth_access_tokens`, `oauth_refresh_tokens`, `altus_heartbeat_log`, `altus_scheduled_tasks`, `altus_action_items`, `altus_climbs`, `altus_climb_iterations`, `altus_events`, `altus_audit_batches`.
+- **Tool count:** 57 → 65 tools (subsequently grown to 98 — see §5 for the current breakdown).
 
 ### Changelog Summary (v0.4 → v0.5)
 
@@ -1811,14 +2131,15 @@ All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_A
 - **`openai` package** — listed as a dependency in `package.json` for OpenAI provider support. Only loaded when `ALTUS_WRITER_MODEL` is set to an OpenAI model (lazy import).
 - **Writer REST endpoints** — `/hal/writer/assignments` and `/hal/writer/assignments/:id` read from `altus_assignments` table. Require `ALTUS_ADMIN_TOKEN` bearer auth.
 - **Database URL priority** — `ALTWIRE_DATABASE_URL` takes precedence over `DATABASE_URL` when both are set. Use `ALTWIRE_DATABASE_URL` for AltWire-specific connections.
-- **Slack event handling** — `slack-altus.js` handles outbound posts only. Incoming Slack events (mentions, DMs, thread replies) require hal-harness.js which is nimbus-specific and not present in altwire-altus.
-- **Protected memory keys** — `hal:soul*` and `hal:onboarding_state:*` keys cannot be overwritten via `hal_write_memory`. Use `scripts/seed-hal-soul-altwire.js` for soul updates. `hal_delete_memory` is not registered as a tool.
+- **Slack event handling** — `slack-altus.js` handles both outbound posts and inbound events. Inbound AltWire-channel events are forwarded to Nimbus via `NIMBUS_SLACK_WEBHOOK_URL` for Hal session processing (see §1.2.2). Non-AltWire-channel events are handled locally.
+- **Protected memory keys** — `hal:soul*` and `hal:onboarding_state:*` keys cannot be overwritten or deleted via the write/delete tools. Use `scripts/seed-hal-soul-altwire.js` for soul updates.
 - **OAuth clients must be pre-registered** — clients are discovered by scanning `OAUTH_CLIENT_ID_*` env vars at startup. Adding a new client requires a restart.
 - **Per-client tool allowlists** — if `OAUTH_CLIENT_TOOLS` is set, only listed tools are available to that client. Unlisted clients get full access.
 - **`MINIMAX_API_KEY`** required for public AI search synthesis and link evaluator. Not required for other AltWire tools.
 - **SSE event bus is in-memory** — events are not persisted across deploys. Chat UI must reconnect after restart.
 - **S256 PKCE is required** — plain code verifier (no challenge) is rejected at the token endpoint.
-- **`hal_delete_memory` removed** — was never registered as an MCP tool. Memory deletion is not exposed via API.
+- **`hal_delete_memory` NOT registered** — `deleteMemory` is imported from `hal-memory.js` but is not registered as an MCP tool. Only `hal_read_memory`, `hal_write_memory`, and `hal_list_memory` are available. Soft-delete is implemented in the handler but not exposed.
+- **Nimbus integration** — Altus is operationally independent but integrates with Nimbus via four mechanisms: shared database tables, Hal memory tools scoped to the `nimbus` agentContext, bidirectional Slack routing, and independent SSE streams in hal-chat-ui. See §1.2 for full details.
 
 ---
 

@@ -256,9 +256,17 @@ export function handleSlackRequest(req, res) {
       return;
     }
 
+    // url_verification is handled before signature check because Slack sends this
+    // challenge before the signing secret is provisioned during initial app setup.
+    // Validate challenge format to prevent abuse of the reflection endpoint.
     if (payload.type === 'url_verification') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ challenge: payload.challenge }));
+      if (typeof payload.challenge === 'string' && payload.challenge.length > 0 && payload.challenge.length <= 500) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ challenge: payload.challenge }));
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_challenge' }));
+      }
       return;
     }
 
@@ -283,9 +291,9 @@ export function handleSlackRequest(req, res) {
     res.end(JSON.stringify({ ok: true }));
 
     if (payload.type === 'event_callback' && payload.event) {
-      await dispatchSlackEvent(payload.event);
+      dispatchSlackEvent(payload.event).catch((err) => logger.error('slack-altus: dispatchSlackEvent failed', { error: err.message }));
     } else if (payload.command === '/hal') {
-      await handleSlashCommand(payload);
+      handleSlashCommand(payload).catch((err) => logger.error('slack-altus: handleSlashCommand failed', { error: err.message }));
     }
   });
 }

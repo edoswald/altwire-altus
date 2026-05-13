@@ -57,7 +57,7 @@ export async function getNewsOpportunities({ days = 7 } = {}) {
   const pageResult = await getNewsSearchPerformance(startStr, endStr, { dimensions: ['page'], rowLimit: 50 });
 
   const newsQueries = queryResult.rows || [];
-  const newsPages = (pageResult.rows || pageResult.error) ? (pageResult.rows || []) : [];
+  const newsPages = pageResult.error ? [] : (pageResult.rows || []);
 
   if (newsQueries.length === 0 && newsPages.length === 0) {
     return {

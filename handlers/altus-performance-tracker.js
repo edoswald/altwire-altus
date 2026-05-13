@@ -142,16 +142,28 @@ export async function getNewsPerformancePatterns({ days = 30 } = {}) {
   }
 
   // Cross-reference with altus_content for enrichment
+  // Batch all URL lookups into a single query to avoid N+1
+  const urls = gscResult.rows.map((row) => normalizeUrl(row.keys[0]));
+  const MAX_URLS = 200;
+  const normalizedUrls = urls.slice(0, MAX_URLS);
+
+  let contentMap = new Map();
+  if (normalizedUrls.length > 0) {
+    const placeholders = normalizedUrls.map((_, idx) => `$${idx + 1}`).join(',');
+    const contentResult = await pool.query(
+      `SELECT url, title, categories, tags, published_at FROM altus_content WHERE url IN (${placeholders})`,
+      normalizedUrls
+    );
+    for (const row of contentResult.rows) {
+      contentMap.set(row.url, row);
+    }
+  }
+
   const enriched = [];
-  try {
-    for (const row of gscResult.rows) {
-      const pageUrl = normalizeUrl(row.keys[0]);
-      const contentResult = await pool.query(
-        'SELECT title, categories, tags, published_at FROM altus_content WHERE url = $1 LIMIT 1',
-        [pageUrl]
-      );
-      const content = contentResult.rows[0] || null;
-      enriched.push({
+  for (const row of gscResult.rows) {
+    const pageUrl = normalizeUrl(row.keys[0]);
+    const content = contentMap.get(pageUrl) || null;
+    enriched.push({
         url: pageUrl,
         clicks: row.clicks,
         impressions: row.impressions,
@@ -162,9 +174,6 @@ export async function getNewsPerformancePatterns({ days = 30 } = {}) {
         tags: content?.tags ?? [],
         published_at: content?.published_at ?? null,
       });
-    }
-  } catch (err) {
-    logger.warn('News performance enrichment failed', { error: err.message });
   }
 
   // Group by category
@@ -250,23 +259,36 @@ export async function runPerformanceSnapshotCron() {
       'SELECT article_url, wp_post_id, assigned_at FROM altus_article_assignments'
     );
 
+    // Batch-load all existing snapshots so we don't query per article
+    let existingSnapshots = new Map(); // article_url → Set<snapshot_type>
+    if (assignments.rows.length > 0) {
+      const urls = assignments.rows.map((r) => r.article_url);
+      const placeholders = urls.map((_, i) => `$${i + 1}`).join(',');
+      const existingResult = await pool.query(
+        `SELECT article_url, snapshot_type FROM altus_article_performance WHERE article_url IN (${placeholders})`,
+        urls
+      );
+      for (const row of existingResult.rows) {
+        if (!existingSnapshots.has(row.article_url)) {
+          existingSnapshots.set(row.article_url, new Set());
+        }
+        existingSnapshots.get(row.article_url).add(row.snapshot_type);
+      }
+    }
+
     let snapshotsCollected = 0;
 
     for (const article of assignments.rows) {
-      // Get existing snapshots for this article
-      const existing = await pool.query(
-        'SELECT snapshot_type FROM altus_article_performance WHERE article_url = $1',
-        [article.article_url]
-      );
-      const existingTypes = existing.rows.map((r) => r.snapshot_type);
+      const existingTypes = existingSnapshots.get(article.article_url) || new Set();
 
       const eligible = getSnapshotEligibility(article.assigned_at, existingTypes, effectiveDate);
 
       for (const snapshotType of eligible) {
-        // Compute date range for GSC query
+        // Compute date range for GSC query — window varies by snapshot type
         const endStr = effectiveDate.toISOString().slice(0, 10);
         const snapStart = new Date(effectiveDate);
-        snapStart.setDate(snapStart.getDate() - 7); // 7-day window for all snapshot types
+        const windowDays = snapshotType === '72h' ? 3 : snapshotType === '7d' ? 7 : 30;
+        snapStart.setDate(snapStart.getDate() - windowDays);
         const startStr = snapStart.toISOString().slice(0, 10);
 
         const perf = await getPagePerformance(article.article_url, startStr, endStr);
