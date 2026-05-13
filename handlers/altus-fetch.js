@@ -40,13 +40,15 @@ export async function getContentByUrl({ url, slug }) {
     // Fallback: LIKE query on last path segment
     if (result.rows.length === 0) {
       const lastSegment = resolvedSlug.split('/').filter(Boolean).pop() ?? resolvedSlug;
+      // Escape LIKE/ILIKE metacharacters to prevent wildcard injection
+      const escapedSegment = lastSegment.replace(/[%_\\]/g, '\\$&');
       result = await pool.query(
         `SELECT id, wp_id, content_type, title, slug, url,
                 published_at, categories, tags, raw_text
          FROM altus_content
-         WHERE slug LIKE '%' || $1 || '%'
+         WHERE slug LIKE '%' || $1 || '%' ESCAPE '\'
          LIMIT 1`,
-        [lastSegment]
+        [escapedSegment]
       );
     }
 

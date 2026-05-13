@@ -91,9 +91,11 @@ export async function removeWatchSubject({ id, name } = {}) {
       [id],
     );
   } else {
+    // Escape LIKE/ILIKE metacharacters to prevent wildcard injection
+    const escapedName = name.replace(/[%_\\]/g, '\\$&');
     result = await pool.query(
-      `UPDATE altus_watch_list SET active = false WHERE name ILIKE $1 AND active = true RETURNING *`,
-      [name],
+      `UPDATE altus_watch_list SET active = false WHERE name ILIKE $1 ESCAPE '\\' AND active = true RETURNING *`,
+      [escapedName],
     );
   }
 

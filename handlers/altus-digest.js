@@ -65,7 +65,7 @@ export async function getAltwireMorningDigest() {
 
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-  // Fire all 7 fetches in parallel — failures are isolated per section
+  // Fire all 12 fetches in parallel — failures are isolated per section
   const [
     uptimeResult,
     incidentsResult,

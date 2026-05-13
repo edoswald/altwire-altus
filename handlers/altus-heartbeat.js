@@ -155,7 +155,12 @@ export async function cancelScheduledTask(taskId) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1 — condition checks (placeholder for editorial-specific checks)
+// Step 1 — condition checks
+// Captures operational and editorial health signals for the heartbeat log.
+// Currently tracks: review deadlines, overdue loaners, stale proposed items.
+// Extend here with editorial-specific signals (e.g., coverage gaps, content
+// freshness, writer workload) — new conditions should be counted and returned
+// as additional fields in the conditions object, stored in altus_heartbeat_log.condition_checks.
 // ---------------------------------------------------------------------------
 
 async function checkConditions() {
@@ -197,7 +202,14 @@ async function checkConditions() {
 async function shouldSendAlert(alertKey) {
   const memoryKey = `altus:heartbeat:alert_dedup`;
   const result = await readAgentMemory('altus', memoryKey);
-  const registry = result.success ? JSON.parse(result.value) : {};
+  let registry = {};
+  if (result.success) {
+    try {
+      registry = JSON.parse(result.value);
+    } catch {
+      registry = {}; // Corrupt JSON — reset
+    }
+  }
   const last = registry[alertKey];
   if (last && (Date.now() - new Date(last).getTime()) < 6 * 60 * 60 * 1000) {
     return false;
@@ -208,13 +220,21 @@ async function shouldSendAlert(alertKey) {
 async function recordAlertSent(alertKey) {
   const memoryKey = `altus:heartbeat:alert_dedup`;
   const result = await readAgentMemory('altus', memoryKey);
-  const registry = result.success ? JSON.parse(result.value) : {};
+  let registry = {};
+  if (result.success) {
+    try {
+      registry = JSON.parse(result.value);
+    } catch {
+      registry = {}; // Corrupt JSON — reset
+    }
+  }
   registry[alertKey] = new Date().toISOString();
   await writeAgentMemory('altus', memoryKey, JSON.stringify(registry));
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — queue stale proposed items
+// Step 3 — auto-accept stale proposed items
+// Per spec §3.19: items transition proposed → accepted (auto-queued if stale after 24h)
 // ---------------------------------------------------------------------------
 
 async function queueStaleProposedItems() {

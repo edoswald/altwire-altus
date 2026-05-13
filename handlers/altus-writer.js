@@ -80,8 +80,17 @@ async function fetchAssignment(id) {
   return rows[0] || null;
 }
 
+// Allowed columns for updateAssignment — prevents SQL injection if new call sites are added
+const ASSIGNMENT_ALLOWED_COLUMNS = new Set([
+  'topic', 'article_type', 'status', 'archive_research', 'web_research',
+  'research_status', 'review_notes_id', 'outline', 'outline_notes',
+  'draft_content', 'draft_word_count', 'fact_check_results',
+  'wp_post_id', 'wp_post_url',
+]);
+
 async function updateAssignment(id, fields) {
-  const keys = Object.keys(fields);
+  const keys = Object.keys(fields).filter((k) => ASSIGNMENT_ALLOWED_COLUMNS.has(k));
+  if (keys.length === 0) return null;
   const sets = keys.map((k, i) => `${k} = $${i + 2}`);
   sets.push('updated_at = NOW()');
   const values = keys.map((k) => fields[k]);
@@ -259,7 +268,30 @@ Return a JSON object with this exact structure:
       prompt: prompt + '\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY a valid JSON object.',
       jsonMode: true,
     });
-    outline = JSON.parse(retry);
+    try {
+      outline = JSON.parse(retry);
+    } catch (retryErr) {
+      logger.error('generateOutline: retry also returned malformed JSON', { assignment_id, response: retry.slice(0, 200) });
+      return { error: 'outline_parse_failed', assignment_id, message: 'AI returned invalid JSON after retry' };
+    }
+  }
+
+  // Basic structure validation
+  if (!outline || typeof outline !== 'object') {
+    logger.error('generateOutline: AI output is not an object', { assignment_id });
+    return { error: 'outline_invalid_structure', assignment_id, message: 'Outline must be a JSON object' };
+  }
+  if (!Array.isArray(outline.sections) || outline.sections.length === 0) {
+    logger.error('generateOutline: AI output missing or empty sections array', { assignment_id });
+    return { error: 'outline_invalid_structure', assignment_id, message: 'Outline must have a non-empty sections array' };
+  }
+  // Validate each section has at least a heading
+  for (let i = 0; i < outline.sections.length; i++) {
+    const section = outline.sections[i];
+    if (!section.heading && !section.title) {
+      logger.error('generateOutline: section missing heading or title', { assignment_id, sectionIndex: i });
+      return { error: 'outline_invalid_structure', assignment_id, message: `Section ${i + 1} missing heading or title` };
+    }
   }
 
   const updated = await updateAssignment(assignment_id, {
@@ -297,6 +329,8 @@ export async function approveOutline({ assignment_id, decision, feedback }) {
   } else if (decision === 'modified') {
     newStatus = 'outline_ready';
     if (feedback) updateFields.outline_notes = feedback;
+  } else {
+    return { error: 'invalid_decision', message: `decision must be one of approved/rejected/modified, got: ${decision}` };
   }
 
   updateFields.status = newStatus;
@@ -430,8 +464,10 @@ If no issues found, return { "passed": true, "issues": [] }`;
   let results;
   try {
     results = JSON.parse(checkResponse);
-  } catch {
-    results = { passed: true, issues: [] };
+    if (!results || typeof results !== 'object') throw new Error('Expected object');
+  } catch (parseErr) {
+    logger.error('factCheckDraft: AI returned malformed JSON', { assignment_id, error: parseErr.message, response: checkResponse.slice(0, 200) });
+    return { error: 'fact_check_parse_failed', assignment_id, message: 'AI returned invalid JSON' };
   }
 
   // If no issues, we're done

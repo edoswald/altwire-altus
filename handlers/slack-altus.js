@@ -220,19 +220,20 @@ export function shouldIgnoreEvent(event) {
 // ---------------------------------------------------------------------------
 
 export function handleSlackRequest(req, res) {
-  const MAX_BODY_BYTES = 262144;
+  let rawBody = '';
   let bodySize = 0;
   let bodySizeExceeded = false;
-  let rawBody = '';
+  const bodyChunks = [];
+  const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB hard limit
 
-  req.on('data', chunk => {
+  req.on('data', (chunk) => {
     bodySize += chunk.length;
     if (bodySize > MAX_BODY_BYTES) {
       bodySizeExceeded = true;
       req.destroy();
       return;
     }
-    rawBody += chunk;
+    bodyChunks.push(chunk);
   });
 
   req.on('end', async () => {
@@ -241,6 +242,8 @@ export function handleSlackRequest(req, res) {
       res.end(JSON.stringify({ error: 'Payload too large' }));
       return;
     }
+
+    rawBody = Buffer.concat(bodyChunks).toString('utf8');
 
     let payload;
     const contentType = req.headers['content-type'] || '';
@@ -253,12 +256,6 @@ export function handleSlackRequest(req, res) {
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Malformed payload' }));
-      return;
-    }
-
-    if (payload.type === 'url_verification') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ challenge: payload.challenge }));
       return;
     }
 
@@ -278,14 +275,25 @@ export function handleSlackRequest(req, res) {
       return;
     }
 
+    if (payload.type === 'url_verification') {
+      if (typeof payload.challenge === 'string' && payload.challenge.length > 0 && payload.challenge.length <= 500) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ challenge: payload.challenge }));
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_challenge' }));
+      }
+      return;
+    }
+
     // Acknowledge immediately — Slack requires 200 within 3 seconds
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
 
     if (payload.type === 'event_callback' && payload.event) {
-      await dispatchSlackEvent(payload.event);
+      dispatchSlackEvent(payload.event).catch((err) => logger.error('slack-altus: dispatchSlackEvent failed', { error: err.message }));
     } else if (payload.command === '/hal') {
-      await handleSlashCommand(payload);
+      handleSlashCommand(payload).catch((err) => logger.error('slack-altus: handleSlashCommand failed', { error: err.message }));
     }
   });
 }

@@ -7,6 +7,8 @@
  * Exports: generateChart
  */
 
+import { logger } from './logger.js';
+
 const VALID_TYPES = new Set(['line', 'bar', 'pie']);
 
 /**
@@ -37,7 +39,7 @@ export function generateChart({ chart_type, title, description, x_label, y_label
   }
 
   if (chart_type === 'pie' && data.length > 6) {
-    console.warn('hal-chart: pie chart has more than 6 segments — consider using bar chart instead');
+    logger.warn('hal-chart: pie chart has more than 6 segments — consider using bar chart instead');
   }
 
   if (series && series.length > 0) {
