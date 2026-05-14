@@ -2460,11 +2460,17 @@ const httpServer = createServer(async (req, res) => {
           res.end(JSON.stringify({ error: 'invalid_grant' }));
           return;
         }
+        if (refreshData.clientId && clientId !== refreshData.clientId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'client_id mismatch' }));
+          return;
+        }
+        const effectiveClientId = refreshData.clientId || clientId;
         await deleteRefreshToken(refreshToken);
         const accessToken = generateAccessToken();
         const newRefreshToken = generateAccessToken();
-        await storeAccessToken(accessToken, { clientId, scope: refreshData.scope || 'read' });
-        await storeRefreshToken(newRefreshToken, { clientId, scope: refreshData.scope });
+        await storeAccessToken(accessToken, { clientId: effectiveClientId, scope: refreshData.scope || 'read' });
+        await storeRefreshToken(newRefreshToken, { clientId: effectiveClientId, scope: refreshData.scope });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ access_token: accessToken, token_type: 'Bearer', expires_in: 3600, refresh_token: newRefreshToken }));
         return;
@@ -2642,7 +2648,18 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const FEEDBACK_ALLOWED_ORIGINS = new Set([
+      'https://claude.ai',
+      'https://app.claude.ai',
+      process.env.ALLOWED_ORIGIN,
+    ].filter(Boolean));
+    const feedbackOrigin = req.headers.origin;
+    if (feedbackOrigin && FEEDBACK_ALLOWED_ORIGINS.has(feedbackOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', feedbackOrigin);
+      res.setHeader('Vary', 'Origin');
+    } else if (!feedbackOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.setHeader('Content-Type', 'application/json');
 
     let body = '';
@@ -2709,7 +2726,18 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const FEEDBACK_GET_ALLOWED_ORIGINS = new Set([
+      'https://claude.ai',
+      'https://app.claude.ai',
+      process.env.ALLOWED_ORIGIN,
+    ].filter(Boolean));
+    const feedbackGetOrigin = req.headers.origin;
+    if (feedbackGetOrigin && FEEDBACK_GET_ALLOWED_ORIGINS.has(feedbackGetOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', feedbackGetOrigin);
+      res.setHeader('Vary', 'Origin');
+    } else if (!feedbackGetOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.setHeader('Content-Type', 'application/json');
 
     const ratingParam = url.searchParams.get('rating');
