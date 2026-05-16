@@ -161,8 +161,8 @@ The frontend subscribes to both streams in parallel using the same `sessionId`. 
 | AI model (writer) | Configurable via `ALTUS_WRITER_MODEL` — default `claude-sonnet-4-5` |
 | Transport | `StreamableHTTPServerTransport`, stateless (`sessionIdGenerator: undefined`) |
 | Auth | OAuth 2.0 + PKCE with SHA-256 challenge — per-client tool allowlists |
-| Node.js | ≥ 20.0.0 (Nixpacks `nodejs_22`) |
-| Build | Nixpacks via `nixpacks.toml` — `npm install --no-audit` |
+| Node.js | 22 (Railpack `packages.node = "22"`) |
+| Build | Railpack via `railpack.json` — `npm install --no-audit` |
 | Start command | `node --no-deprecation index.js` |
 | Restart policy | `on_failure`, max 3 retries |
 
@@ -1909,7 +1909,7 @@ altwire-altus/
 ├── .env.example                       # Reference for all required env vars
 ├── package.json                       # ESM, Node ≥ 20, vitest + fast-check + @slack/bolt
 ├── railway.toml                       # Railway deployment config
-└── nixpacks.toml                      # Build config — nodejs_22, npm-10_x
+└── railpack.json                      # Railpack build config — Node 22, npm install --no-audit
 ```
 
 ---
@@ -1936,7 +1936,7 @@ altwire-altus/
 | Rate limiting | Sliding-window per-IP limiters — global (200/15min) and auth (30/15min) |
 | Public search | MiniMax-2.7 synthesis via `minimax-search.js` — no Anthropic dependency |
 | Testing | Vitest + `fast-check` for property-based testing |
-| Deployment | Railway (Nixpacks builder, auto-deploy on main branch push) |
+| Deployment | Railway (Railpack builder, auto-deploy on main branch push) |
 
 ## 10.1 Key Conventions
 
