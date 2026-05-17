@@ -18,6 +18,7 @@
 | `package.json` | ESM, dependencies, vitest scripts |
 | `.env.example` | All env vars documented |
 | `railway.toml` | Railway build/deploy config |
+| `railpack.json` | Railpack build config |
 | `logger.js` | Structured JSON logger (stderr, same pattern as Nimbus) |
 | `lib/altus-db.js` | Pool singleton, `initSchema()`, `upsertContent()` |
 | `lib/voyage.js` | `embedDocuments(texts)`, `embedQuery(text)` wrappers |
@@ -86,11 +87,11 @@ TEST_MODE=false                # Set true to skip live API calls in tests
 LOG_LEVEL=info
 ```
 
-- [ ] **Step 3: Write `railway.toml`**
+- [ ] **Step 3: Write `railway.toml` and `railpack.json`**
 
 ```toml
 [build]
-builder = "nixpacks"
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "node --no-deprecation index.js"
@@ -99,6 +100,21 @@ restartPolicyMaxRetries = 3
 
 [[services]]
 name = "altwire-altus"
+```
+
+```json
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "packages": {
+    "node": "22"
+  },
+  "steps": {
+    "install": {
+      "commands": ["npm install --no-audit"]
+    }
+  }
+}
 ```
 
 - [ ] **Step 4: Write `logger.js`**
@@ -134,7 +150,7 @@ export const logger = {
 - [ ] **Step 5: Install dependencies**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npm install
 ```
 
@@ -143,11 +159,11 @@ Expected: `node_modules/` created, no errors.
 - [ ] **Step 6: Init git and commit scaffold**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 git init
 echo "node_modules/" > .gitignore
 echo ".env" >> .gitignore
-git add package.json .env.example railway.toml logger.js .gitignore
+git add package.json .env.example railway.toml railpack.json logger.js .gitignore
 git commit -m "feat: project scaffold — package.json, env template, railway config, logger"
 ```
 
@@ -214,7 +230,7 @@ describe('altus-db', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/altus-db.test.js
 ```
 
@@ -356,7 +372,7 @@ export default pool;
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 TEST_MODE=true npx vitest --run tests/altus-db.test.js
 ```
 
@@ -482,7 +498,7 @@ describe('voyage.js', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/voyage.test.js
 ```
 
@@ -594,7 +610,7 @@ export async function embedQuery(text) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/voyage.test.js
 ```
 
@@ -688,7 +704,7 @@ describe('synthesizer.js', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/synthesizer.test.js
 ```
 
@@ -773,7 +789,7 @@ function fallback(gallery) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/synthesizer.test.js
 ```
 
@@ -895,7 +911,7 @@ describe('wp-client.js', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/wp-client.test.js
 ```
 
@@ -1040,7 +1056,7 @@ export async function fetchGalleries() {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/wp-client.test.js
 ```
 
@@ -1100,7 +1116,7 @@ describe('safeToolHandler', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/safe-tool-handler.test.js
 ```
 
@@ -1152,7 +1168,7 @@ export function safeToolHandler(handler) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/safe-tool-handler.test.js
 ```
 
@@ -1282,7 +1298,7 @@ describe('altus-search.js', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/altus-search.test.js
 ```
 
@@ -1365,7 +1381,7 @@ export async function searchAltwareArchive({ query, limit, content_type }) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 npx vitest --run tests/altus-search.test.js
 ```
 
@@ -1491,7 +1507,7 @@ httpServer.listen(PORT, () => {
 - [ ] **Step 2: Smoke test the server starts**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 TEST_MODE=true node index.js &
 sleep 2
 curl -s http://localhost:3000/health
@@ -1652,7 +1668,7 @@ main().catch((err) => {
 - [ ] **Step 2: Verify script can be parsed (no syntax errors)**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 node --input-type=module --eval "import './scripts/ingest.js'" 2>&1 | head -5
 ```
 
@@ -1782,7 +1798,7 @@ Expected: JSON array of gallery objects with `id`, `title`, `image_count`, `imag
 - [ ] **Step 1: Run all tests**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 TEST_MODE=true npx vitest --run
 ```
 
@@ -1797,7 +1813,7 @@ Expected: All tests pass. You should see:
 - [ ] **Step 2: Verify server health endpoint**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 node index.js &
 sleep 2
 curl -s http://localhost:3000/health
@@ -1820,7 +1836,7 @@ git commit -m "chore: all tests passing, server smoke test verified"
 - [ ] **Step 1: Create GitHub repo and push**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 git remote add origin https://github.com/edoswald/altwire-altus.git
 git push -u origin main
 ```
@@ -1830,7 +1846,7 @@ git push -u origin main
 In Claude Code, call:
 
 ```
-mcp__railway__deploy({ workspacePath: '/Users/edoswald/Documents/Dev/altwire-altus' })
+mcp__railway__deploy({ workspacePath: '/Users/edoswald/Dev/altwire-altus' })
 ```
 
 - [ ] **Step 3: Set environment variables in Railway**
@@ -1859,7 +1875,7 @@ Expected: `{"status":"ok","service":"altus"}`
 - [ ] **Step 5: Run the ingestion script**
 
 ```bash
-cd /Users/edoswald/Documents/Dev/altwire-altus
+cd /Users/edoswald/Dev/altwire-altus
 DATABASE_URL=<...> ALTWIRE_WP_URL=https://altwire.net ALTWIRE_WP_USER=<...> \
   ALTWIRE_WP_APP_PASSWORD="<...>" VOYAGE_API_KEY=<...> ANTHROPIC_API_KEY=<...> \
   node scripts/ingest.js
