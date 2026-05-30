@@ -10,7 +10,7 @@
  *
  * Required env vars:
  *   ALTWIRE_DATABASE_URL  — PostgreSQL connection string
- *   OPENAI_API_KEY        — OpenAI API key
+ *   ANTHROPIC_API_KEY     — Anthropic API key
  *
  * Output:
  *   review-scores.json    — Written to project root; updated after every review
@@ -20,13 +20,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_FILE = path.join(__dirname, '..', 'review-scores.json');
-const MODEL = 'gpt-5.4-mini';
+const MODEL = 'claude-haiku-4-5-20251001';
 
 const DEFAULT_SUBCATEGORIES = ['Sound', 'Build', 'Workflow', 'Effects', 'Value'];
 const GENERIC_CATEGORIES = new Set(['Reviews', 'Featured', 'Uncategorized', 'Editor\'s Picks']);
@@ -40,12 +40,12 @@ if (!process.env.ALTWIRE_DATABASE_URL && !process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error('score-reviews: OPENAI_API_KEY not set — cannot call OpenAI.');
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('score-reviews: ANTHROPIC_API_KEY not set — cannot call Anthropic.');
   process.exit(1);
 }
 
-const openai = new OpenAI(); // reads OPENAI_API_KEY from env
+const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from env
 
 // ---------------------------------------------------------------------------
 // Database
@@ -129,16 +129,16 @@ Example output:
   "Plugin Reviews": ["Sound", "Interface", "Workflow", "Features", "Value"]
 }`;
 
-  const response = await openai.chat.completions.create({
+  const response = await anthropic.messages.create({
     model: MODEL,
+    max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
-    response_format: { type: 'json_object' },
-    temperature: 0.2,
   });
 
-  const raw = response.choices[0]?.message?.content ?? '{}';
+  const raw = response.content?.[0]?.text ?? '{}';
   try {
-    return JSON.parse(raw);
+    const match = raw.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : {};
   } catch {
     console.warn('Failed to parse subcategory mapping response — using defaults for all.');
     return {};
@@ -211,16 +211,16 @@ Return JSON only, no markdown, no explanation outside the JSON.`;
 async function scoreReview(review, subcategories) {
   const prompt = buildReviewPrompt(review, subcategories);
 
-  const response = await openai.chat.completions.create({
+  const response = await anthropic.messages.create({
     model: MODEL,
-    messages: [{ role: 'user', content: prompt }],
-    response_format: { type: 'json_object' },
-    temperature: 0.2,
     max_tokens: 1500,
+    messages: [{ role: 'user', content: prompt }],
   });
 
-  const raw = response.choices[0]?.message?.content ?? '{}';
-  return JSON.parse(raw);
+  const raw = response.content?.[0]?.text ?? '{}';
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('No JSON object found in response');
+  return JSON.parse(match[0]);
 }
 
 // ---------------------------------------------------------------------------
