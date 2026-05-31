@@ -6,7 +6,9 @@
  * Concert reviews are detected and skipped automatically.
  *
  * Usage:
- *   node scripts/score-reviews.js
+ *   node scripts/score-reviews.js                          # full run
+ *   node scripts/score-reviews.js --wp-ids 123,456,789    # targeted rerun
+ *   node scripts/score-reviews.js --force --wp-ids 123    # rerun even if already scored
  *
  * Required env vars:
  *   ALTWIRE_DATABASE_URL  — PostgreSQL connection string
@@ -42,6 +44,7 @@ const PRODUCT_TYPE_SUBCATEGORIES = {
   live:        ['Sound', 'Build', 'Reliability', 'Workflow', 'Value'],
   accessory:   ['Build', 'Compatibility', 'Durability', 'Design', 'Value'],
   service:     ['Features', 'Interface', 'Reliability', 'Support', 'Value'],
+  album:       ['Sound', 'Production', 'Songwriting', 'Cohesion', 'Value'],
   other:       ['Sound', 'Build', 'Workflow', 'Effects', 'Value'],
 };
 
@@ -62,6 +65,17 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 const anthropic = new Anthropic();
+
+// ---------------------------------------------------------------------------
+// CLI args
+// ---------------------------------------------------------------------------
+
+const args = process.argv.slice(2);
+const forceRerun = args.includes('--force');
+const wpIdsArg = args.find((a) => a.startsWith('--wp-ids'));
+const targetWpIds = wpIdsArg
+  ? new Set(wpIdsArg.split('=').pop().split(',').map(Number).filter(Boolean))
+  : null; // null means "all"
 
 // ---------------------------------------------------------------------------
 // Database
@@ -111,6 +125,7 @@ function buildReviewPrompt(review) {
     'live      — PA systems, live mixing consoles, IEMs, stage monitors, live sound equipment',
     'accessory — cables, cases, strings, picks, straps, stands, tuners, non-electronic accessories',
     'service   — music streaming services, lesson platforms, repair services, software subscriptions',
+    'album     — reviews of albums, EPs, singles, or other recorded music releases',
     'other     — anything that does not clearly fit the above',
   ].join('\n');
 
@@ -147,6 +162,7 @@ Use the subcategories that correspond to the product type you identified:
   live:        Sound, Build, Reliability, Workflow, Value
   accessory:   Build, Compatibility, Durability, Design, Value
   service:     Features, Interface, Reliability, Support, Value
+  album:       Sound, Production, Songwriting, Cohesion, Value
   other:       Sound, Build, Workflow, Effects, Value
 
 Rate each subcategory 1–10 based strictly on what the review text says:
@@ -223,19 +239,34 @@ async function main() {
   }
   console.log();
 
+  if (targetWpIds) {
+    console.log(`Targeted rerun mode — wp_ids: ${[...targetWpIds].join(', ')}`);
+    if (forceRerun) console.log('--force: will overwrite existing scores for these reviews.');
+    console.log();
+  }
+
   // Load existing output for idempotency
   const existing = await loadExistingOutput();
+
+  // In targeted mode with --force, remove those wp_ids from existing results
+  // so they get re-scored from scratch.
+  if (targetWpIds && forceRerun && existing) {
+    existing.reviews = (existing.reviews ?? []).filter((r) => !targetWpIds.has(r.wp_id));
+    existing.skipped = (existing.skipped ?? []).filter((r) => !targetWpIds.has(r.wp_id));
+    existing.errors  = (existing.errors  ?? []).filter((r) => !targetWpIds.has(r.wp_id));
+  }
+
   const alreadyProcessed = new Set([
     ...(existing?.reviews ?? []).map((r) => r.wp_id),
     ...(existing?.skipped ?? []).map((s) => s.wp_id),
-    ...(existing?.errors ?? []).map((e) => e.wp_id),
+    ...(existing?.errors  ?? []).map((e) => e.wp_id),
   ]);
 
-  if (alreadyProcessed.size > 0) {
+  if (!targetWpIds && alreadyProcessed.size > 0) {
     console.log(`Resuming — ${alreadyProcessed.size} reviews already processed, will skip.\n`);
   }
 
-  // Fetch all candidate reviews
+  // Fetch candidate reviews (all, or just the targeted subset)
   console.log('Fetching reviews from corpus...');
   const allReviews = await fetchReviews();
   console.log(`Found ${allReviews.length} total entries in Reviews category.\n`);
@@ -259,8 +290,20 @@ async function main() {
     categorization_issues: existing?.categorization_issues ?? [],
   };
 
-  const toProcess = allReviews.filter((r) => !alreadyProcessed.has(r.wp_id));
-  console.log(`Processing ${toProcess.length} new reviews (${allReviews.length - toProcess.length} already done).\n`);
+  // Filter to only targeted wp_ids if specified; then skip already-processed
+  const eligible = targetWpIds
+    ? allReviews.filter((r) => targetWpIds.has(r.wp_id))
+    : allReviews;
+
+  const toProcess = eligible.filter((r) => !alreadyProcessed.has(r.wp_id));
+
+  if (targetWpIds && toProcess.length === 0) {
+    console.log('All targeted reviews already scored. Use --force to overwrite.');
+    await pool.end();
+    return;
+  }
+
+  console.log(`Processing ${toProcess.length} reviews (${eligible.length - toProcess.length} already done).\n`);
 
   for (let i = 0; i < toProcess.length; i++) {
     const review = toProcess[i];
