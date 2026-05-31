@@ -73,10 +73,16 @@ const anthropic = new Anthropic();
 
 const args = process.argv.slice(2);
 const forceRerun = args.includes('--force');
-const wpIdsArg = args.find((a) => a.startsWith('--wp-ids'));
-const targetWpIds = wpIdsArg
-  ? new Set(wpIdsArg.split('=').pop().split(',').map(Number).filter(Boolean))
-  : null; // null means "all"
+
+// --wp-ids accepts both forms: --wp-ids=1,2,3 and --wp-ids 1,2,3
+const wpIdsIdx = args.findIndex((a) => a === '--wp-ids' || a.startsWith('--wp-ids='));
+let targetWpIds = null;
+if (wpIdsIdx !== -1) {
+  const arg = args[wpIdsIdx];
+  const idStr = arg.includes('=') ? arg.split('=').slice(1).join('=') : args[wpIdsIdx + 1];
+  const ids = (idStr ?? '').split(',').map(Number).filter(Boolean);
+  targetWpIds = ids.length > 0 ? new Set(ids) : null;
+}
 
 // ---------------------------------------------------------------------------
 // Database
