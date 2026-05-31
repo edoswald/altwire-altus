@@ -27,9 +27,25 @@ import { logger } from '../logger.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_FILE = path.join(__dirname, '..', 'review-scores.json');
 const MODEL = 'claude-haiku-4-5-20251001';
+const MAX_PROS_CONS = 5;
 
-const DEFAULT_SUBCATEGORIES = ['Sound', 'Build', 'Workflow', 'Effects', 'Value'];
-const GENERIC_CATEGORIES = new Set(['Reviews', 'Featured', 'Uncategorized', 'Editor\'s Picks']);
+// ---------------------------------------------------------------------------
+// Explicit product-type → subcategory map
+// The LLM classifies each review's product type from the content itself;
+// subcategories are never guessed — they come from this table.
+// ---------------------------------------------------------------------------
+
+const PRODUCT_TYPE_SUBCATEGORIES = {
+  hardware:    ['Sound', 'Build', 'Workflow', 'Effects', 'Value'],
+  software:    ['Sound', 'Interface', 'Workflow', 'Features', 'Value'],
+  recording:   ['Sound', 'Build', 'Workflow', 'Features', 'Value'],
+  live:        ['Sound', 'Build', 'Reliability', 'Workflow', 'Value'],
+  accessory:   ['Build', 'Compatibility', 'Durability', 'Design', 'Value'],
+  service:     ['Features', 'Interface', 'Reliability', 'Support', 'Value'],
+  other:       ['Sound', 'Build', 'Workflow', 'Effects', 'Value'],
+};
+
+const PRODUCT_TYPES = Object.keys(PRODUCT_TYPE_SUBCATEGORIES);
 
 // ---------------------------------------------------------------------------
 // Env guard
@@ -45,7 +61,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+const anthropic = new Anthropic();
 
 // ---------------------------------------------------------------------------
 // Database
@@ -80,136 +96,102 @@ async function saveOutput(output) {
 }
 
 // ---------------------------------------------------------------------------
-// Subcategory mapping (Phase 2)
+// Per-review scoring
 // ---------------------------------------------------------------------------
 
-function extractSubcategory(categories) {
-  return (categories ?? []).find((c) => !GENERIC_CATEGORIES.has(c)) ?? null;
-}
-
-async function determineSubcategoryMappings(reviews) {
-  // Collect unique subcategories with a representative title each
-  const subcatMap = new Map(); // subcategory -> first review title seen
-  for (const review of reviews) {
-    const sub = extractSubcategory(review.categories);
-    if (sub && !subcatMap.has(sub)) {
-      subcatMap.set(sub, review.title);
-    }
-  }
-
-  if (subcatMap.size === 0) {
-    console.log('No subcategories found — using defaults for all reviews.');
-    return {};
-  }
-
-  const subcategoryList = [...subcatMap.entries()]
-    .map(([name, title]) => `- "${name}" (example: "${title}")`)
-    .join('\n');
-
-  console.log(`Determining subcategory mappings for: ${[...subcatMap.keys()].join(', ')}`);
-
-  const prompt = `You are helping map AltWire review categories to a 5-point rating rubric.
-
-Default subcategories: Sound, Build, Workflow, Effects, Value
-These are designed for music hardware gear reviews (guitars, amps, pedals, etc.)
-
-For each review subcategory below, decide whether the default set fits reasonably well.
-If the default set does NOT fit (e.g. a software plugin review doesn't have a physical "Build"),
-provide 5 replacement subcategory names that make better sense for that content type.
-
-Return JSON only — an object where each key is the subcategory name and each value is an array of exactly 5 strings.
-Use the default set when it fits. Only replace when the defaults genuinely don't apply.
-
-Review subcategories to evaluate:
-${subcategoryList}
-
-Example output:
-{
-  "Gear Reviews": ["Sound", "Build", "Workflow", "Effects", "Value"],
-  "Plugin Reviews": ["Sound", "Interface", "Workflow", "Features", "Value"]
-}`;
-
-  const response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const raw = response.content?.[0]?.text ?? '{}';
-  try {
-    const match = raw.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : {};
-  } catch {
-    console.warn('Failed to parse subcategory mapping response — using defaults for all.');
-    return {};
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Per-review scoring (Phase 3)
-// ---------------------------------------------------------------------------
-
-function buildReviewPrompt(review, subcategories) {
-  const subList = subcategories.join(', ');
-  // Truncate very long reviews to keep token cost reasonable; 4000 chars is ~1000 tokens
+function buildReviewPrompt(review) {
   const bodyText = review.raw_text.length > 6000
     ? review.raw_text.slice(0, 6000) + '\n\n[...truncated for analysis...]'
     : review.raw_text;
 
-  return `You are analyzing an AltWire music publication review article.
+  const typeDescriptions = [
+    'hardware  — physical music gear: instruments, amps, pedals, synths, drum machines, hardware samplers, etc.',
+    'software  — DAWs, plugins, virtual instruments, mobile apps, desktop music software',
+    'recording — audio interfaces, studio monitors, microphones, preamps, studio outboard gear',
+    'live      — PA systems, live mixing consoles, IEMs, stage monitors, live sound equipment',
+    'accessory — cables, cases, strings, picks, straps, stands, tuners, non-electronic accessories',
+    'service   — music streaming services, lesson platforms, repair services, software subscriptions',
+    'other     — anything that does not clearly fit the above',
+  ].join('\n');
+
+  return `You are analyzing an AltWire music publication review article. Read the full text carefully before responding.
 
 TITLE: ${review.title}
-CATEGORIES: ${(review.categories ?? []).join(', ')}
+WP CATEGORIES: ${(review.categories ?? []).join(', ')}
 
 REVIEW TEXT:
 ${bodyText}
 
 ---
 
-TASK:
+INSTRUCTIONS:
 
-Step 1 — Classify: Is this a product/service review (gear, software, hardware, services) OR a concert/live performance review?
-If it is a concert/live performance review, return ONLY: {"type": "concert"}
+Step 1 — Content classification
+Is this a product/service review OR a concert/live performance review?
+If it is a concert or live performance review, return ONLY: {"type": "concert"}
 
-Step 2 — If product/service review, analyze and return JSON with this exact structure:
+Step 2 — Product type (product/service reviews only)
+Classify the reviewed item as exactly one of these product types based on the review content — NOT the WP categories:
+
+${typeDescriptions}
+
+Step 3 — Categorization check
+If the product type you detected does NOT match what the WP categories suggest, note it briefly.
+If the WP categories seem correct or there is no subcategory listed, set categorization_issue to null.
+
+Step 4 — Ratings
+Use the subcategories that correspond to the product type you identified:
+  hardware:    Sound, Build, Workflow, Effects, Value
+  software:    Sound, Interface, Workflow, Features, Value
+  recording:   Sound, Build, Workflow, Features, Value
+  live:        Sound, Build, Reliability, Workflow, Value
+  accessory:   Build, Compatibility, Durability, Design, Value
+  service:     Features, Interface, Reliability, Support, Value
+  other:       Sound, Build, Workflow, Effects, Value
+
+Rate each subcategory 1–10 based strictly on what the review text says:
+  1–5: Poor to mediocre | 6–7: Average to good | 8–9: Great | 10: Exceptional
+
+Step 5 — Pros and cons
+Extract pros and cons ONLY from points explicitly made in the review text. Do not invent.
+HARD LIMIT: maximum ${MAX_PROS_CONS} pros and maximum ${MAX_PROS_CONS} cons.
+Fewer is better for short reviews — do not pad. Aim for quality, not quantity.
+Balance the count to reflect the overall tone:
+  avg ≥ 8.0 → more pros than cons
+  avg 6.0–7.9 → roughly balanced (within 1)
+  avg ≤ 5.9 → more cons than pros
+
+Step 6 — Copy issues
+Note any clear spelling errors, grammatical mistakes, or formatting problems. Be brief and specific.
+Return an empty array if none found.
+
+---
+
+Return ONLY a valid JSON object, no markdown fences, no explanation outside the JSON:
 
 {
   "type": "product",
-  "pros": ["string", ...],
-  "cons": ["string", ...],
+  "product_type": "<one of: hardware|software|recording|live|accessory|service|other>",
+  "categorization_issue": "<string describing mismatch, or null>",
+  "pros": ["...", ...],
+  "cons": ["...", ...],
   "ratings": {
-    "${subcategories[0]}": <integer 1-10>,
-    "${subcategories[1]}": <integer 1-10>,
-    "${subcategories[2]}": <integer 1-10>,
-    "${subcategories[3]}": <integer 1-10>,
-    "${subcategories[4]}": <integer 1-10>
+    "<subcategory1>": <1-10>,
+    "<subcategory2>": <1-10>,
+    "<subcategory3>": <1-10>,
+    "<subcategory4>": <1-10>,
+    "<subcategory5>": <1-10>
   },
-  "copy_issues": ["string", ...]
+  "copy_issues": ["...", ...]
+}`;
 }
 
-RATING GUIDELINES:
-- Rating subcategories to use: ${subList}
-- 1-5: Poor to mediocre | 6-7: Average to good | 8-9: Great | 10: Exceptional
-- Base ratings strictly on what the review text says, not external knowledge
-
-PROS/CONS GUIDELINES:
-- Extract pros and cons ONLY from what is mentioned in the review text
-- Quantity should reflect the overall sentiment:
-  - Overall avg ≥ 8.0: significantly more pros than cons (at least 2:1)
-  - Overall avg 6.0–7.9: roughly balanced (within 1 of each other)
-  - Overall avg ≤ 5.9: more cons than pros
-- If the review is short or thin, fewer items is fine — don't pad
-
-COPY ISSUES GUIDELINES:
-- Note any clear spelling errors, grammatical mistakes, or formatting problems you notice
-- Be brief and specific (e.g. "Possible misspelling: 'distrotion'")
-- Return an empty array if no issues found
-
-Return JSON only, no markdown, no explanation outside the JSON.`;
+function capArray(arr, max) {
+  return Array.isArray(arr) ? arr.slice(0, max) : [];
 }
 
-async function scoreReview(review, subcategories) {
-  const prompt = buildReviewPrompt(review, subcategories);
+async function scoreReview(review) {
+  const prompt = buildReviewPrompt(review);
 
   const response = await anthropic.messages.create({
     model: MODEL,
@@ -220,7 +202,13 @@ async function scoreReview(review, subcategories) {
   const raw = response.content?.[0]?.text ?? '{}';
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON object found in response');
-  return JSON.parse(match[0]);
+  const result = JSON.parse(match[0]);
+
+  // Enforce hard cap on pros/cons regardless of what the model returned
+  if (result.pros) result.pros = capArray(result.pros, MAX_PROS_CONS);
+  if (result.cons) result.cons = capArray(result.cons, MAX_PROS_CONS);
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,14 +217,19 @@ async function scoreReview(review, subcategories) {
 
 async function main() {
   console.log('score-reviews: Starting...\n');
+  console.log('Product type → subcategory mappings (explicit):');
+  for (const [type, cats] of Object.entries(PRODUCT_TYPE_SUBCATEGORIES)) {
+    console.log(`  ${type.padEnd(10)} → ${cats.join(', ')}`);
+  }
+  console.log();
 
   // Load existing output for idempotency
   const existing = await loadExistingOutput();
-  const alreadyProcessed = new Set(
-    (existing?.reviews ?? []).map((r) => r.wp_id)
-      .concat((existing?.skipped ?? []).map((s) => s.wp_id))
-      .concat((existing?.errors ?? []).map((e) => e.wp_id))
-  );
+  const alreadyProcessed = new Set([
+    ...(existing?.reviews ?? []).map((r) => r.wp_id),
+    ...(existing?.skipped ?? []).map((s) => s.wp_id),
+    ...(existing?.errors ?? []).map((e) => e.wp_id),
+  ]);
 
   if (alreadyProcessed.size > 0) {
     console.log(`Resuming — ${alreadyProcessed.size} reviews already processed, will skip.\n`);
@@ -253,24 +246,17 @@ async function main() {
     return;
   }
 
-  // Determine subcategory mappings (always recalculate — cheap)
-  const subcategoryMappings = await determineSubcategoryMappings(allReviews);
-  console.log('\nSubcategory mappings determined:');
-  for (const [sub, cats] of Object.entries(subcategoryMappings)) {
-    console.log(`  ${sub}: ${cats.join(', ')}`);
-  }
-  console.log();
-
   // Initialize output structure (merge with existing if resuming)
   const output = {
     generated_at: new Date().toISOString(),
     total_processed: existing?.reviews?.length ?? 0,
     total_skipped_concert: existing?.skipped?.length ?? 0,
-    subcategory_mappings: subcategoryMappings,
+    subcategory_mappings: PRODUCT_TYPE_SUBCATEGORIES,
     reviews: existing?.reviews ?? [],
     skipped: existing?.skipped ?? [],
     errors: existing?.errors ?? [],
     copy_issues: existing?.copy_issues ?? [],
+    categorization_issues: existing?.categorization_issues ?? [],
   };
 
   const toProcess = allReviews.filter((r) => !alreadyProcessed.has(r.wp_id));
@@ -280,18 +266,11 @@ async function main() {
     const review = toProcess[i];
     const idx = `[${i + 1}/${toProcess.length}]`;
 
-    // Determine subcategories for this review
-    const subcategory = extractSubcategory(review.categories);
-    const subcategories = (subcategory && subcategoryMappings[subcategory])
-      ? subcategoryMappings[subcategory]
-      : DEFAULT_SUBCATEGORIES;
-
-    console.log(`${idx} Processing: "${review.title}" (wp_id=${review.wp_id})`);
-    console.log(`     Categories: ${(review.categories ?? []).join(', ')}`);
-    console.log(`     Subcategories: ${subcategories.join(', ')}`);
+    console.log(`${idx} "${review.title}" (wp_id=${review.wp_id})`);
+    console.log(`     WP categories: ${(review.categories ?? []).join(', ')}`);
 
     try {
-      const result = await scoreReview(review, subcategories);
+      const result = await scoreReview(review);
 
       if (result.type === 'concert') {
         console.log(`     → Skipped (concert review)\n`);
@@ -303,20 +282,28 @@ async function main() {
         });
         output.total_skipped_concert++;
       } else if (result.type === 'product') {
+        const productType = PRODUCT_TYPES.includes(result.product_type) ? result.product_type : 'other';
+        const subcategories = PRODUCT_TYPE_SUBCATEGORIES[productType];
+
         // Calculate overall rating
         const ratingValues = Object.values(result.ratings ?? {}).filter(Number.isFinite);
         const overall = ratingValues.length > 0
           ? Math.round((ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length) * 10) / 10
           : null;
 
-        console.log(`     → Overall: ${overall} | Pros: ${result.pros?.length ?? 0} | Cons: ${result.cons?.length ?? 0}\n`);
+        console.log(`     → Type: ${productType} | Overall: ${overall} | Pros: ${result.pros?.length ?? 0} | Cons: ${result.cons?.length ?? 0}`);
+        if (result.categorization_issue) {
+          console.log(`     ⚠ Categorization: ${result.categorization_issue}`);
+        }
+        console.log();
 
         output.reviews.push({
           wp_id: review.wp_id,
           title: review.title,
           url: review.url,
           published_at: review.published_at,
-          categories: review.categories,
+          wp_categories: review.categories,
+          product_type: productType,
           subcategories,
           ratings: result.ratings,
           overall,
@@ -326,7 +313,6 @@ async function main() {
 
         output.total_processed++;
 
-        // Record any copy issues separately
         if (result.copy_issues?.length > 0) {
           output.copy_issues.push({
             wp_id: review.wp_id,
@@ -334,10 +320,19 @@ async function main() {
             url: review.url,
             issues: result.copy_issues,
           });
-          console.log(`     Copy issues noted: ${result.copy_issues.length}`);
+        }
+
+        if (result.categorization_issue) {
+          output.categorization_issues.push({
+            wp_id: review.wp_id,
+            title: review.title,
+            url: review.url,
+            wp_categories: review.categories,
+            detected_type: productType,
+            issue: result.categorization_issue,
+          });
         }
       } else {
-        // Unexpected response shape
         console.warn(`     → Unexpected response type: "${result.type}" — recording as error\n`);
         output.errors.push({
           wp_id: review.wp_id,
@@ -355,19 +350,19 @@ async function main() {
       });
     }
 
-    // Write after every review — crash-safe
     output.generated_at = new Date().toISOString();
     await saveOutput(output);
   }
 
   // Final summary
   console.log('─────────────────────────────────────────────');
-  console.log(`Done!`);
-  console.log(`  Reviews scored:      ${output.total_processed}`);
-  console.log(`  Concert reviews:     ${output.total_skipped_concert}`);
-  console.log(`  Errors:              ${output.errors.length}`);
-  console.log(`  Copy issues found:   ${output.copy_issues.length}`);
-  console.log(`  Output:              ${OUTPUT_FILE}`);
+  console.log('Done!');
+  console.log(`  Reviews scored:          ${output.total_processed}`);
+  console.log(`  Concert reviews skipped: ${output.total_skipped_concert}`);
+  console.log(`  Categorization issues:   ${output.categorization_issues.length}`);
+  console.log(`  Copy issues found:       ${output.copy_issues.length}`);
+  console.log(`  Errors:                  ${output.errors.length}`);
+  console.log(`  Output:                  ${OUTPUT_FILE}`);
 
   await pool.end();
   process.exit(0);
