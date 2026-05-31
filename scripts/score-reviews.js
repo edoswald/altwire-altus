@@ -45,6 +45,7 @@ const PRODUCT_TYPE_SUBCATEGORIES = {
   accessory:   ['Build', 'Compatibility', 'Durability', 'Design', 'Value'],
   service:     ['Features', 'Interface', 'Reliability', 'Support', 'Value'],
   album:       ['Sound', 'Production', 'Songwriting', 'Cohesion', 'Value'],
+  single:      ['Sound', 'Production', 'Songwriting', 'Impact', 'Value'],
   other:       ['Sound', 'Build', 'Workflow', 'Effects', 'Value'],
 };
 
@@ -125,7 +126,8 @@ function buildReviewPrompt(review) {
     'live      — PA systems, live mixing consoles, IEMs, stage monitors, live sound equipment',
     'accessory — cables, cases, strings, picks, straps, stands, tuners, non-electronic accessories',
     'service   — music streaming services, lesson platforms, repair services, software subscriptions',
-    'album     — reviews of albums, EPs, singles, or other recorded music releases',
+    'album     — reviews of full-length albums or EPs (multiple tracks evaluated as a body of work)',
+    'single    — reviews of a single song or track release',
     'other     — anything that does not clearly fit the above',
   ].join('\n');
 
@@ -163,6 +165,7 @@ Use the subcategories that correspond to the product type you identified:
   accessory:   Build, Compatibility, Durability, Design, Value
   service:     Features, Interface, Reliability, Support, Value
   album:       Sound, Production, Songwriting, Cohesion, Value
+  single:      Sound, Production, Songwriting, Impact, Value
   other:       Sound, Build, Workflow, Effects, Value
 
 Rate each subcategory 1–10 based strictly on what the review text says:
@@ -187,7 +190,7 @@ Return ONLY a valid JSON object, no markdown fences, no explanation outside the 
 
 {
   "type": "product",
-  "product_type": "<one of: hardware|software|recording|live|accessory|service|other>",
+  "product_type": "<one of: hardware|software|recording|live|accessory|service|album|single|other>",
   "categorization_issue": "<string describing mismatch, or null>",
   "pros": ["...", ...],
   "cons": ["...", ...],
