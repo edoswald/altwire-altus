@@ -24,6 +24,21 @@ const ANALYTICS_KEYS = {
   seasonality:         'hal:altwire:analytics:seasonality',
 };
 
+export function isPrivateUrl(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0') {
+      return true;
+    }
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function readAgentMemoryDirect(agent, key) {
   const { rows } = await pool.query(
     'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 AND deleted_at IS NULL',
@@ -92,6 +107,9 @@ function decodeHTMLEntities(str) {
 }
 
 async function fetchPageContent(url) {
+  if (isPrivateUrl(url)) {
+    return { error: 'private_url_blocked' };
+  }
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);

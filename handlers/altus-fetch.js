@@ -47,13 +47,26 @@ export async function getContentByUrl({ url, slug }) {
                 published_at, categories, tags, raw_text
          FROM altus_content
          WHERE slug LIKE '%' || $1 || '%' ESCAPE '\'
-         LIMIT 1`,
+         ORDER BY published_at DESC NULLS LAST, id DESC
+         LIMIT 5`,
         [escapedSegment]
       );
     }
 
     if (result.rows.length === 0) {
       return { found: false, content: null };
+    }
+
+    if (result.rows.length > 1) {
+      return {
+        found: false,
+        error: 'ambiguous_slug_match',
+        matches: result.rows.map((row) => ({
+          title: row.title,
+          slug: row.slug,
+          url: row.url,
+        })),
+      };
     }
 
     const row = result.rows[0];

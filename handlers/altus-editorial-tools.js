@@ -51,13 +51,19 @@ export async function trackArticle({ url, title, category, notes = null }) {
  * @returns {Promise<{ success: boolean, articles: Array, total: number }>}
  */
 export async function listTrackedArticles({ limit = 50 } = {}) {
-  const { rows } = await pool.query(
-    `SELECT key, value, updated_at FROM agent_memory
+  const [{ rows }, { rows: totalRows }] = await Promise.all([
+    pool.query(
+      `SELECT key, value, updated_at FROM agent_memory
      WHERE agent = 'hal' AND key LIKE 'altwire:article:%'
      ORDER BY (value::jsonb->>'tracked_at') DESC
      LIMIT $1`,
-    [limit]
-  );
+      [limit]
+    ),
+    pool.query(
+      `SELECT COUNT(*) AS count FROM agent_memory
+       WHERE agent = 'hal' AND key LIKE 'altwire:article:%'`
+    ),
+  ]);
   const articles = rows.map((r) => {
     try {
       return { key: r.key, ...JSON.parse(r.value) };
@@ -65,7 +71,7 @@ export async function listTrackedArticles({ limit = 50 } = {}) {
       return { key: r.key, raw: r.value };
     }
   });
-  return { success: true, articles, total: rows.length };
+  return { success: true, articles, total: parseInt(totalRows[0]?.count ?? '0', 10) };
 }
 
 /**
@@ -97,16 +103,24 @@ export async function getContentIdeas({ status = null, limit = 50 } = {}) {
   let query = `SELECT key, value FROM agent_memory
     WHERE agent = 'hal' AND key LIKE 'altwire:idea:%'`;
   const params = [];
+  let countQuery = `SELECT COUNT(*) AS count FROM agent_memory
+    WHERE agent = 'hal' AND key LIKE 'altwire:idea:%'`;
+  const countParams = [];
 
   if (status) {
     query += ` AND (value::jsonb->>'status') = $1`;
     params.push(status);
+    countQuery += ` AND (value::jsonb->>'status') = $1`;
+    countParams.push(status);
   }
 
   query += ` ORDER BY (value::jsonb->>'created_at') DESC LIMIT $${params.length + 1}`;
   params.push(limit);
 
-  const { rows } = await pool.query(query, params);
+  const [{ rows }, { rows: totalRows }] = await Promise.all([
+    pool.query(query, params),
+    pool.query(countQuery, countParams),
+  ]);
   const ideas = rows.map((r) => {
     try {
       return { key: r.key, ...JSON.parse(r.value) };
@@ -114,5 +128,5 @@ export async function getContentIdeas({ status = null, limit = 50 } = {}) {
       return { key: r.key, raw: r.value };
     }
   });
-  return { success: true, ideas, total: rows.length };
+  return { success: true, ideas, total: parseInt(totalRows[0]?.count ?? '0', 10) };
 }

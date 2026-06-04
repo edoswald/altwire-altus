@@ -74,6 +74,7 @@ import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRe
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
+import { identifyCompatibleHalClient, isAllowedAltusRestToken } from './lib/altus-auth-compat.js';
 import {
   initReviewTrackerSchema,
   createReview, updateReview, getReview, listReviews, getUpcomingReviewDeadlines,
@@ -359,15 +360,28 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
     // Heartbeat schema (non-blocking)
     import('./handlers/altus-heartbeat.js')
-      .then(({ initHeartbeatSchema, initActionItemsSchema }) => {
+      .then(({ initHeartbeatSchema }) => {
         initHeartbeatSchema().catch(err => {
           logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
         });
+      })
+      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+
+    import('./handlers/altus-action-items.js')
+      .then(({ initActionItemsSchema }) => {
         initActionItemsSchema().catch(err => {
           logger.error('Altus action items schema init failed', { error: err.message, code: err.code });
         });
       })
-      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+      .catch(err => logger.error('altus-action-items: import failed', { error: err.message }));
+
+    import('./handlers/altus-skill-library.js')
+      .then(({ initSkillLibrarySchema }) => {
+        initSkillLibrarySchema().catch(err => {
+          logger.error('Altus skill library schema init failed', { error: err.message, code: err.code });
+        });
+      })
+      .catch(err => logger.error('altus-skill-library: import failed', { error: err.message }));
 
     // Slack schema init (non-blocking)
     import('./handlers/slack-altus.js')
@@ -1494,6 +1508,11 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
   const { getAltwireIncidentComments, createAltwireIncidentComment, getAltwireStatusUpdates, createAltwireStatusUpdate } = await import('./handlers/altus-incident-handler.js');
   const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
+  const { listActionItems, manageActionItem, getActionItemStats } = await import('./handlers/altus-action-items.js');
+  const { querySessionTraces } = await import('./handlers/altus-session-traces.js');
+  const { altusWebResearch } = await import('./handlers/altus-web-research.js');
+  const { synthesizeTopic } = await import('./handlers/altus-topic-synthesis.js');
+  const { searchSkills } = await import('./handlers/altus-skill-library.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1627,6 +1646,110 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getAltwireMorningDigest();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_action_items',
+    {
+      description: 'List Altus action items for admin follow-through and heartbeat review.',
+      inputSchema: {
+        status: z.enum(['proposed', 'accepted', 'completed', 'dismissed']).optional().describe('Filter by action-item status'),
+        category: z.enum(['marketing', 'operations', 'pricing', 'quality', 'infrastructure', 'editorial']).optional().describe('Filter by action-item category'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum action items to return'),
+      },
+    },
+    async ({ status, category, limit }) => {
+      const result = await listActionItems({ status, category, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_manage_action_item',
+    {
+      description: 'Accept, complete, or dismiss an Altus action item.',
+      inputSchema: {
+        item_id: z.number().int().describe('Action-item ID'),
+        action: z.enum(['accept', 'complete', 'dismiss']).describe('Lifecycle action to perform'),
+        reason: z.string().optional().describe('Dismissal or transition reason'),
+        outcome_notes: z.string().optional().describe('Optional notes about the result or follow-through'),
+      },
+    },
+    async ({ item_id, action, reason, outcome_notes }) => {
+      const result = await manageActionItem({ item_id, action, reason, outcome_notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_action_item_stats',
+    {
+      description: 'Get summary counts for Altus action items by status.',
+    },
+    async () => {
+      const result = await getActionItemStats();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_session_trace',
+    {
+      description: 'Inspect Altus session traces derived from the event log.',
+      inputSchema: {
+        session_id: z.number().int().optional().describe('Return the full event stream for a specific session'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum session summaries to return when session_id is omitted'),
+      },
+    },
+    async ({ session_id, limit }) => {
+      const result = await querySessionTraces({ session_id, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_web_research',
+    {
+      description: 'Perform shared Hal-style web research for AltWire admin questions.',
+      inputSchema: {
+        query: z.string().describe('Question or topic to research'),
+        limit: z.number().int().min(1).max(10).optional().describe('Maximum number of search results to synthesize'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await altusWebResearch({ query, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_topic_synthesis',
+    {
+      description: 'Synthesize research findings into an AltWire editorial briefing.',
+      inputSchema: {
+        topic: z.string().describe('Topic to synthesize'),
+        findings: z.array(z.string()).describe('Findings or signals to combine into a briefing'),
+      },
+    },
+    async ({ topic, findings }) => {
+      const result = await synthesizeTopic({ topic, findings });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_search_skills',
+    {
+      description: 'Search Altus shared skills for reusable admin workflows.',
+      inputSchema: {
+        query: z.string().optional().describe('Skill name or keyword query'),
+        limit: z.number().int().min(1).max(50).optional().describe('Maximum skills to return'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await searchSkills({ query, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -2036,54 +2159,16 @@ async ({ status, limit }) => {
     },
     async () => {
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
-      const { rows: activeRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
-      );
-      const { rows: actionRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status IN ('outline_ready', 'draft_ready')`
-      );
-      const { rows: readyRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status = 'ready_to_post'`
-      );
       const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
       const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
       const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
-      let digest = null;
-      try { digest = await getAltwireMorningDigest(); } catch { /* non-blocking */ }
-      let analytics = { pageviews_today: 0, top_article: null };
-      try {
-        const matomoData = await getTrafficSummary('day', 'today');
-        analytics = {
-          pageviews_today: matomoData?.pageviews ?? 0,
-          top_article: matomoData?.top_article_title ?? null,
-        };
-      } catch { /* non-blocking */ }
-      let opportunities = { high: 0, medium: 0, low: 0 };
-      try {
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const oppData = await getSearchOpportunities(thirtyDaysAgo, new Date().toISOString().slice(0, 10));
-        if (oppData?.opportunities) {
-          for (const o of oppData.opportunities) {
-            if (o.position >= 5 && o.position <= 10) opportunities.high++;
-            else if (o.position >= 11 && o.position <= 20) opportunities.medium++;
-            else opportunities.low++;
-          }
-        }
-      } catch { /* non-blocking */ }
-      return { content: [{ type: 'text', text: JSON.stringify({
-        success: true,
-        writer: {
-          active: parseInt(activeRows[0]?.count || 0),
-          action_needed: parseInt(actionRows[0]?.count || 0),
-          ready_to_post: parseInt(readyRows[0]?.count || 0),
-        },
-        digest: {
-          last_updated: digest?.generated_at || null,
-          warning_count: digest?.warnings?.length || 0,
-        },
-        opportunities,
-        analytics,
-      }) }] };
+      const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
+      const summary = await buildWriterSummary({
+        getTrafficSummary,
+        getSearchOpportunities,
+        getAltwireMorningDigest,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(summary) }] };
     }
   );
 
@@ -2341,7 +2426,7 @@ async function identifyClient(req) {
       }
     } catch { /* timingSafeEqual threw — lengths mismatch */ }
   }
-  return null;
+  return identifyCompatibleHalClient(token);
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -2581,7 +2666,7 @@ const httpServer = createServer(async (req, res) => {
 
     // Auth check
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.ALTUS_ADMIN_TOKEN) {
+    if (!isAllowedAltusRestToken(authToken, { allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2813,7 +2898,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2833,7 +2918,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest/send — trigger morning digest email (auth via Authorization header)
   if (url.pathname === '/altwire/digest/send' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2847,6 +2932,25 @@ const httpServer = createServer(async (req, res) => {
       logger.error('AltWire digest send endpoint failed', { error: err.message });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'send_failed', message: err.message }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const result = await getStoryOpportunities();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      logger.error('AltWire opportunities endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
     }
     return;
   }
