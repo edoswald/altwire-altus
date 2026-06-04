@@ -178,7 +178,7 @@ You are active in the following Slack channel:
  * Assemble the system prompt for an AltWire session.
  *
  * @param {'interactive'|'task'|'autonomous'} sessionType
- * @param {{ name: string, interface: string }} caller
+ * @param {{ name: string, interface: string, scope?: string }} caller
  * @param {{ agentContext?: string, slackContext?: object }} context
  *   - agentContext: 'altwire' | null
  *   - slackContext: { channelId, threadContext } | null
@@ -189,6 +189,7 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
   const parts = [];
   const agentContext = context?.agentContext ?? null;
   const isAltwire = agentContext === 'altwire';
+  const isGuest = caller?.scope === 'guest';
 
   // Identity block — switch by context
   const soul = await loadSoul(agentContext);
@@ -266,6 +267,15 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
         parts.push(`## AltWire Historical Analytics\n${trafficLines.join('\n')}`);
       }
     }
+  }
+
+  // Guest / test-account notice — keep beta testing data isolated
+  if (isGuest) {
+    parts.push(`## Test Account Notice
+You are operating under a guest test account (${caller.name}). This is a beta session, not Derek's primary account.
+- Do not create real writer assignments, watch list entries, or review tracker items unless explicitly asked and the user confirms this is intentional.
+- If asked to remember something, prefix any memory key with "private:${caller.name.toLowerCase()}:" so it stays isolated from the primary admin's namespace.
+- You may read shared editorial context and analytics freely — those are read-only reference data.`);
   }
 
   // Slack context
