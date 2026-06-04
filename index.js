@@ -100,6 +100,7 @@ import {
   getAssignment,
   listAssignments,
 } from './handlers/altus-writer.js';
+import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
 import crypto from 'crypto';
@@ -209,6 +210,8 @@ const TOOL_CONTEXTS = {
   get_altwire_site_search:     [],
   get_altwire_search_performance:   [],
   get_altwire_search_opportunities: [],
+  get_altwire_seo_state:      [],
+  update_altwire_seo_fields:  [],
   get_altwire_sitemap_health:  [],
   get_altwire_news_search_performance: [],
   get_altwire_opportunity_zone_queries: [],
@@ -741,6 +744,50 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ start_date, end_date }) => {
       const result = await getSearchOpportunities(start_date, end_date);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_altwire_seo_state',
+    {
+      description: 'Read current SEO state for an AltWire WordPress object through the cirrusly-seo plugin. Use this before changing titles, meta descriptions, canonicals, social fields, or indexation.',
+      inputSchema: {
+        object_type: z.enum(['post', 'page', 'term']).describe('SEO object type. Use post for articles and podcast episodes.'),
+        object_id: z.number().int().positive().describe('WordPress object ID'),
+      },
+    },
+    async ({ object_type, object_id }) => {
+      const result = await getSeoState({ objectType: object_type, objectId: object_id });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'update_altwire_seo_fields',
+    {
+      description: 'Update allowlisted content-level SEO fields for an AltWire WordPress object through the cirrusly-seo plugin. Use after reviewing current SEO state and identifying a clear editorial or search-performance improvement.',
+      inputSchema: {
+        object_type: z.enum(['post', 'page', 'term']).describe('SEO object type. Use post for articles and podcast episodes.'),
+        object_id: z.number().int().positive().describe('WordPress object ID'),
+        fields: z.object({
+          seo_title: z.string().optional(),
+          meta_description: z.string().optional(),
+          canonical: z.string().optional(),
+          focus_keyword: z.string().optional(),
+          noindex: z.union([z.boolean(), z.number().int().min(0).max(1)]).optional(),
+          nofollow: z.union([z.boolean(), z.number().int().min(0).max(1)]).optional(),
+          social_title: z.string().optional(),
+          social_description: z.string().optional(),
+          social_image_id: z.number().int().positive().optional(),
+        }).refine((value) => Object.keys(value).length > 0, {
+          message: 'At least one SEO field must be provided.',
+        }).describe('Allowlisted content-level SEO patch'),
+        reason: z.string().optional().describe('Why Hal is making this SEO change. Required if the WordPress plugin enforces write reasons.'),
+      },
+    },
+    async ({ object_type, object_id, fields, reason }) => {
+      const result = await updateSeoFields({ objectType: object_type, objectId: object_id, fields, reason });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

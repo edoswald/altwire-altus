@@ -17,6 +17,22 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_APP_PASSWORD;
   });
 
+  it('buildAgentTokenHeader prefers scoped tokens and falls back to generic token', async () => {
+    process.env.ALTWIRE_WP_AGENT_TOKEN = 'generic-token';
+    process.env.ALTWIRE_WP_AGENT_READ_TOKEN = 'read-token';
+    process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN = 'write-token';
+    const { buildAgentTokenHeader } = await import('../lib/wp-client.js');
+    expect(buildAgentTokenHeader('read')).toBe('read-token');
+    expect(buildAgentTokenHeader('write')).toBe('write-token');
+
+    delete process.env.ALTWIRE_WP_AGENT_READ_TOKEN;
+    delete process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN;
+    expect(buildAgentTokenHeader('read')).toBe('generic-token');
+    expect(buildAgentTokenHeader('write')).toBe('generic-token');
+
+    delete process.env.ALTWIRE_WP_AGENT_TOKEN;
+  });
+
   it('stripHtml removes all HTML tags from a string', async () => {
     const { stripHtml } = await import('../lib/wp-client.js');
     expect(stripHtml('<p>Hello <strong>world</strong></p>')).toBe('Hello world');
@@ -46,7 +62,11 @@ describe('wp-client.js', () => {
             content: { rendered: '<p>Content</p>' }, excerpt: { rendered: '<p>Excerpt</p>' },
             categories: [], tags: [],
           }));
-      return Promise.resolve({ ok: true, json: async () => items });
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => '1' },
+        json: async () => items,
+      });
     });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -77,7 +97,11 @@ describe('wp-client.js', () => {
             id: i + 51, title: `Gallery ${i+50}`, description: '', slug: `gallery-${i+50}`,
             url: '', image_count: 2, images: [],
           }));
-      return Promise.resolve({ ok: true, json: async () => items });
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => '1' },
+        json: async () => items,
+      });
     });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -89,5 +113,109 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_URL;
     delete process.env.ALTWIRE_WP_USER;
     delete process.env.ALTWIRE_WP_APP_PASSWORD;
+  });
+
+  it('getSeoState calls the cirrusly-seo endpoint with X-Agent-Token auth', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_AGENT_READ_TOKEN = 'read-token';
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ object: { type: 'post', id: 99 }, score: { mode: 'editorial', score: 88 } }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { getSeoState } = await import('../lib/wp-client.js');
+    const result = await getSeoState({ objectType: 'post', objectId: 99 });
+
+    expect(result.object.id).toBe(99);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://altwire.net/wp-json/cirrusly/v1/seo/state?object_type=post&object_id=99',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Agent-Token': 'read-token',
+        }),
+      })
+    );
+
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_AGENT_READ_TOKEN;
+  });
+
+  it('updateSeoFields posts fields to the cirrusly-seo endpoint with write token auth', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN = 'write-token';
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ changed_fields: ['seo_title'] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { updateSeoFields } = await import('../lib/wp-client.js');
+    const result = await updateSeoFields({
+      objectType: 'post',
+      objectId: 55,
+      fields: { seo_title: 'Updated Title' },
+      reason: 'Improve CTR for a high-impression query',
+    });
+
+    expect(result.changed_fields).toEqual(['seo_title']);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://altwire.net/wp-json/cirrusly/v1/seo/update-fields',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'X-Agent-Token': 'write-token',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          object_type: 'post',
+          object_id: 55,
+          fields: { seo_title: 'Updated Title' },
+          reason: 'Improve CTR for a high-impression query',
+        }),
+      })
+    );
+
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN;
+  });
+
+  it('pluginFetch preserves plugin-style error payloads for SEO actions', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN = 'write-token';
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        code: 'cirrusly_seo_hal_disabled',
+        message: 'Hal integration is not enabled for this site.',
+        data: { status: 403 },
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { updateSeoFields } = await import('../lib/wp-client.js');
+
+    await expect(updateSeoFields({
+      objectType: 'post',
+      objectId: 55,
+      fields: { seo_title: 'Updated Title' },
+      reason: 'Test',
+    })).rejects.toMatchObject({
+      message: 'WP plugin fetch failed: 403 Hal integration is not enabled for this site.',
+      status: 403,
+      code: 'cirrusly_seo_hal_disabled',
+      details: { status: 403 },
+    });
+
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN;
   });
 });
