@@ -19,5 +19,8 @@ describe('Altus shared Hal registry parity', () => {
     expect(names.has('altus_check_onboarding_status')).toBe(true);
     expect(names.has('altus_get_onboarding_preferences')).toBe(true);
     expect(names.has('altus_get_perch_agenda')).toBe(true);
+    expect(names.has('altus_list_action_items')).toBe(true);
+    expect(names.has('altus_manage_action_item')).toBe(true);
+    expect(names.has('altus_get_action_item_stats')).toBe(true);
   });
 });

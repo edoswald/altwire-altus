@@ -26,6 +26,7 @@ import { logger } from '../logger.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logAltusEvent } from '../altus-event-log.js';
 import { observe } from '../tracing.js';
+import { acceptStaleProposedItems, createActionItemFromScheduledTask } from './altus-action-items.js';
 
 const HEARTBEAT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -238,24 +239,7 @@ async function recordAlertSent(alertKey) {
 // ---------------------------------------------------------------------------
 
 async function queueStaleProposedItems() {
-  const staleResult = await pool.query(
-    `SELECT id, title, category FROM altus_action_items
-      WHERE status = 'proposed'
-        AND proposed_at < NOW() - INTERVAL '24 hours'
-      ORDER BY proposed_at ASC
-      LIMIT 10`,
-  );
-
-  let queued = 0;
-  for (const item of staleResult.rows) {
-    await pool.query(
-      `UPDATE altus_action_items SET status = 'accepted' WHERE id = $1 AND status = 'proposed'`,
-      [item.id],
-    );
-    queued++;
-  }
-
-  return queued;
+  return acceptStaleProposedItems(10);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +270,7 @@ export async function runAltusHeartbeat() {
         );
 
         if (task.task_type === 'action_item') {
-          await pool.query(
-            `INSERT INTO altus_action_items (title, description, category, signal_source, signal_data, reflection_date)
-              VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)`,
-            [task.payload.title ?? 'Scheduled action', task.payload.description ?? '', task.payload.category ?? 'operations', 'heartbeat_scheduled', JSON.stringify(task.payload)],
-          );
+          await createActionItemFromScheduledTask(task);
           counters.items_acted++;
         }
 
@@ -366,48 +346,4 @@ export async function runAltusHeartbeat() {
     return counters;
   }
   });
-}
-
-// ---------------------------------------------------------------------------
-// Action items schema init (called from altus-action-items.js)
-// ---------------------------------------------------------------------------
-
-export async function initActionItemsSchema() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS altus_action_items (
-        id              SERIAL PRIMARY KEY,
-        title           VARCHAR(200)  NOT NULL,
-        description     TEXT          NOT NULL,
-        category        VARCHAR(20)   NOT NULL
-                        CHECK (category IN ('marketing', 'operations', 'pricing', 'quality', 'infrastructure', 'editorial')),
-        signal_source   VARCHAR(100)  NOT NULL,
-        signal_data     TEXT,
-        proposed_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-        status          VARCHAR(20)   NOT NULL DEFAULT 'proposed'
-                        CHECK (status IN ('proposed', 'accepted', 'completed', 'dismissed')),
-        accepted_at     TIMESTAMPTZ,
-        completed_at    TIMESTAMPTZ,
-        dismissed_at    TIMESTAMPTZ,
-        dismiss_reason  TEXT,
-        outcome_notes   TEXT,
-        reflection_date DATE          NOT NULL
-      )
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_altus_action_items_status_proposed
-        ON altus_action_items (status, proposed_at)
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_altus_action_items_category_status
-        ON altus_action_items (category, status)
-    `);
-
-    logger.info('initActionItemsSchema: altus_action_items table ready');
-  } finally {
-    client.release();
-  }
 }

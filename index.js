@@ -359,15 +359,20 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
     // Heartbeat schema (non-blocking)
     import('./handlers/altus-heartbeat.js')
-      .then(({ initHeartbeatSchema, initActionItemsSchema }) => {
+      .then(({ initHeartbeatSchema }) => {
         initHeartbeatSchema().catch(err => {
           logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
         });
+      })
+      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+
+    import('./handlers/altus-action-items.js')
+      .then(({ initActionItemsSchema }) => {
         initActionItemsSchema().catch(err => {
           logger.error('Altus action items schema init failed', { error: err.message, code: err.code });
         });
       })
-      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+      .catch(err => logger.error('altus-action-items: import failed', { error: err.message }));
 
     // Slack schema init (non-blocking)
     import('./handlers/slack-altus.js')
@@ -1494,6 +1499,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
   const { getAltwireIncidentComments, createAltwireIncidentComment, getAltwireStatusUpdates, createAltwireStatusUpdate } = await import('./handlers/altus-incident-handler.js');
   const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
+  const { listActionItems, manageActionItem, getActionItemStats } = await import('./handlers/altus-action-items.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1627,6 +1633,50 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getAltwireMorningDigest();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_action_items',
+    {
+      description: 'List Altus action items for admin follow-through and heartbeat review.',
+      inputSchema: {
+        status: z.enum(['proposed', 'accepted', 'completed', 'dismissed']).optional().describe('Filter by action-item status'),
+        category: z.enum(['marketing', 'operations', 'pricing', 'quality', 'infrastructure', 'editorial']).optional().describe('Filter by action-item category'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum action items to return'),
+      },
+    },
+    async ({ status, category, limit }) => {
+      const result = await listActionItems({ status, category, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_manage_action_item',
+    {
+      description: 'Accept, complete, or dismiss an Altus action item.',
+      inputSchema: {
+        item_id: z.number().int().describe('Action-item ID'),
+        action: z.enum(['accept', 'complete', 'dismiss']).describe('Lifecycle action to perform'),
+        reason: z.string().optional().describe('Dismissal or transition reason'),
+        outcome_notes: z.string().optional().describe('Optional notes about the result or follow-through'),
+      },
+    },
+    async ({ item_id, action, reason, outcome_notes }) => {
+      const result = await manageActionItem({ item_id, action, reason, outcome_notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_action_item_stats',
+    {
+      description: 'Get summary counts for Altus action items by status.',
+    },
+    async () => {
+      const result = await getActionItemStats();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
