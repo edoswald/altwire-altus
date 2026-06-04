@@ -1501,6 +1501,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
   const { listActionItems, manageActionItem, getActionItemStats } = await import('./handlers/altus-action-items.js');
   const { querySessionTraces } = await import('./handlers/altus-session-traces.js');
+  const { altusWebResearch } = await import('./handlers/altus-web-research.js');
+  const { synthesizeTopic } = await import('./handlers/altus-topic-synthesis.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1693,6 +1695,36 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ session_id, limit }) => {
       const result = await querySessionTraces({ session_id, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_web_research',
+    {
+      description: 'Perform shared Hal-style web research for AltWire admin questions.',
+      inputSchema: {
+        query: z.string().describe('Question or topic to research'),
+        limit: z.number().int().min(1).max(10).optional().describe('Maximum number of search results to synthesize'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await altusWebResearch({ query, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_topic_synthesis',
+    {
+      description: 'Synthesize research findings into an AltWire editorial briefing.',
+      inputSchema: {
+        topic: z.string().describe('Topic to synthesize'),
+        findings: z.array(z.string()).describe('Findings or signals to combine into a briefing'),
+      },
+    },
+    async ({ topic, findings }) => {
+      const result = await synthesizeTopic({ topic, findings });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
