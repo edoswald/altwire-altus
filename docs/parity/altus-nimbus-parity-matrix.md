@@ -59,3 +59,24 @@
 ## Current Recommendation
 
 Proceed immediately on the `must-port` items above. Keep `hal-document`, `hal-documents`, `hal-chat-history`, `hal-chat-presence`, and `hal-autonomy-policy` in the review bucket until the first parity slice lands and AltWire admin usage clarifies whether they are worth the extra surface area.
+
+## `hal-chat-ui` Rollout Readiness
+
+| Surface | Current State | Risk | Status | Notes |
+| --- | --- | --- | --- | --- |
+| Shared login flow | Nimbus `POST /hal/auth` remains the single admin sign-in path | medium | compatible | Altus now accepts Hal web API keys and Nimbus session tokens for the mixed-mode pilot instead of requiring a separate UI auth story first. |
+| Altus chat streaming | `useAltwireChat` now relies on authenticated `/mcp` SSE only | high | fixed | Removed the separate unauthenticated browser `EventSource(/events/:sessionId)` dependency because tool events already arrive over the authenticated response stream. |
+| Altus prompt shell REST access | Prompt shell expects `/altwire/digest` and `/altwire/opportunities` | medium | compatible | Altus digest access now accepts compatible UI tokens, and `/altwire/opportunities` is exposed as a compatibility alias for the current prompt shell. |
+| Mode naming | UI had mixed `altus` and `altwire` storage/selector semantics | medium | partial | Canonical persisted mode is now `altwire`, with legacy `altus` values normalized on load so existing local state does not strand admins. |
+| Admin pilot usability | Shared shell, shared settings, and Altus writer surfaces already exist | medium | ready for pilot | Remaining work is polish and broader rollout confidence, not missing foundational UI surfaces. |
+
+## Altus-Only Coverage Inventory
+
+| Tool Family | Handler | Focused Tests Present | Gaps |
+| --- | --- | --- | --- |
+| Link evaluator | `handlers/altus-link-evaluator.js` | `tests/altus-link-evaluator.unit.test.js` | No end-to-end fetch parsing coverage yet; current test covers the private URL safety regression. |
+| Reingest | `handlers/altus-reingest.js` | `tests/altus-reingest.unit.test.js` | Recent-mode gallery filtering is covered; dry-run and embed/upsert failure paths still deserve expansion later. |
+| Content fetch | `handlers/altus-fetch.js` | `tests/altus-fetch.unit.test.js` | Ambiguous fuzzy fallback is covered; exact-match happy path and DB error shaping could use one additional unit test later. |
+| Editorial memory tools | `handlers/altus-editorial-tools.js` | `tests/altus-editorial-tools.unit.test.js` | Total-count semantics are covered; create/update behavior is still relying on broader suite confidence. |
+| Writer summary | `handlers/altus-writer-summary.js` | `tests/get-writer-summary.unit.test.js` | Degraded upstream reporting is covered; success-path aggregation could use one direct happy-path unit later. |
+| Auth compatibility for pilot UI | `lib/altus-auth-compat.js` | `tests/altus-auth-compat.unit.test.js` | Current tests cover Hal web key/session compatibility; route-level HTTP assertions would be the next hardening step if pilot traffic surfaces issues. |

@@ -74,6 +74,7 @@ import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRe
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
+import { identifyCompatibleHalClient, isAllowedAltusRestToken } from './lib/altus-auth-compat.js';
 import {
   initReviewTrackerSchema,
   createReview, updateReview, getReview, listReviews, getUpcomingReviewDeadlines,
@@ -2158,54 +2159,16 @@ async ({ status, limit }) => {
     },
     async () => {
       if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
-      const { rows: activeRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
-      );
-      const { rows: actionRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status IN ('outline_ready', 'draft_ready')`
-      );
-      const { rows: readyRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status = 'ready_to_post'`
-      );
       const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
       const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
       const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
-      let digest = null;
-      try { digest = await getAltwireMorningDigest(); } catch { /* non-blocking */ }
-      let analytics = { pageviews_today: 0, top_article: null };
-      try {
-        const matomoData = await getTrafficSummary('day', 'today');
-        analytics = {
-          pageviews_today: matomoData?.pageviews ?? 0,
-          top_article: matomoData?.top_article_title ?? null,
-        };
-      } catch { /* non-blocking */ }
-      let opportunities = { high: 0, medium: 0, low: 0 };
-      try {
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const oppData = await getSearchOpportunities(thirtyDaysAgo, new Date().toISOString().slice(0, 10));
-        if (oppData?.opportunities) {
-          for (const o of oppData.opportunities) {
-            if (o.position >= 5 && o.position <= 10) opportunities.high++;
-            else if (o.position >= 11 && o.position <= 20) opportunities.medium++;
-            else opportunities.low++;
-          }
-        }
-      } catch { /* non-blocking */ }
-      return { content: [{ type: 'text', text: JSON.stringify({
-        success: true,
-        writer: {
-          active: parseInt(activeRows[0]?.count || 0),
-          action_needed: parseInt(actionRows[0]?.count || 0),
-          ready_to_post: parseInt(readyRows[0]?.count || 0),
-        },
-        digest: {
-          last_updated: digest?.generated_at || null,
-          warning_count: digest?.warnings?.length || 0,
-        },
-        opportunities,
-        analytics,
-      }) }] };
+      const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
+      const summary = await buildWriterSummary({
+        getTrafficSummary,
+        getSearchOpportunities,
+        getAltwireMorningDigest,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(summary) }] };
     }
   );
 
@@ -2463,7 +2426,7 @@ async function identifyClient(req) {
       }
     } catch { /* timingSafeEqual threw — lengths mismatch */ }
   }
-  return null;
+  return identifyCompatibleHalClient(token);
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -2703,7 +2666,7 @@ const httpServer = createServer(async (req, res) => {
 
     // Auth check
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.ALTUS_ADMIN_TOKEN) {
+    if (!isAllowedAltusRestToken(authToken, { allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2935,7 +2898,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2955,7 +2918,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest/send — trigger morning digest email (auth via Authorization header)
   if (url.pathname === '/altwire/digest/send' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -2969,6 +2932,25 @@ const httpServer = createServer(async (req, res) => {
       logger.error('AltWire digest send endpoint failed', { error: err.message });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'send_failed', message: err.message }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const result = await getStoryOpportunities();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      logger.error('AltWire opportunities endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
     }
     return;
   }
