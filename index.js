@@ -74,7 +74,10 @@ import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRe
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
-import { identifyCompatibleHalClient, isAllowedAltusRestToken } from './lib/altus-auth-compat.js';
+import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
+import { assembleSystemPrompt } from './hal-harness.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {
   initReviewTrackerSchema,
   createReview, updateReview, getReview, listReviews, getUpcomingReviewDeadlines,
@@ -2429,8 +2432,40 @@ async function identifyClient(req) {
   return identifyCompatibleHalClient(token);
 }
 
+// ---------------------------------------------------------------------------
+// Allowed UI origins for /hal/auth, /hal/chat, and /events/* (CORS).
+// Set HAL_UI_ALLOWED_ORIGINS as a comma-separated list of origins in Railway.
+// Falls back to wildcard when unset so local dev works out of the box.
+// ---------------------------------------------------------------------------
+const HAL_UI_ALLOWED_ORIGINS = process.env.HAL_UI_ALLOWED_ORIGINS
+  ? new Set(process.env.HAL_UI_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean))
+  : null; // null = allow all
+
+function setChatCors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return; // server-to-server — no CORS needed
+  if (!HAL_UI_ALLOWED_ORIGINS || HAL_UI_ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Agent-Context, Accept');
+}
+
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // Handle CORS preflight for Hal UI endpoints
+  if (req.method === 'OPTIONS' && (
+    url.pathname === '/hal/auth' ||
+    url.pathname === '/hal/chat' ||
+    url.pathname.startsWith('/events/')
+  )) {
+    setChatCors(req, res);
+    res.writeHead(204);
+    res.end();
+    return;
+  }
 
   if (!globalLimiter.check(req, res)) return;
 
@@ -2618,6 +2653,50 @@ const httpServer = createServer(async (req, res) => {
   if (url.pathname === '/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'altus' }));
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auth — POST /hal/auth
+  // Issues a signed session token for web API keys (HAL_KEY_*_WEB env vars).
+  // Used by the Hal Chat UI when in altwire mode so admins don't need nimbus.
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/auth' && req.method === 'POST') {
+    if (!authLimiter.check(req, res)) return;
+    setChatCors(req, res);
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let apiKey;
+      try {
+        apiKey = JSON.parse(body).apiKey;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_request' }));
+        return;
+      }
+      if (!apiKey) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'apiKey required' }));
+        return;
+      }
+      const identity = authenticateHalWebToken(apiKey);
+      if (!identity || identity.interface !== 'web') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid access key' }));
+        return;
+      }
+      try {
+        const token = signHalWebSessionToken(identity);
+        const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ token, expiresAt, adminName: identity.name }));
+      } catch (err) {
+        logger.error('Auth token signing failed', { error: err.message });
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'auth_unavailable' }));
+      }
+    });
     return;
   }
 
@@ -2963,6 +3042,173 @@ const httpServer = createServer(async (req, res) => {
   }
 
   // ---------------------------------------------------------------------------
+  // Hal Chat — POST /hal/chat
+  // Streaming agentic chat endpoint for the Hal Chat UI (altwire mode).
+  // Receives { message, history, session_id }, runs an Anthropic agentic loop
+  // with all registered altus tools via in-process MCP, and streams SSE events.
+  // Auth: same Bearer token accepted by the MCP endpoint.
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/chat' && req.method === 'POST') {
+    if (!authLimiter.check(req, res)) return;
+    setChatCors(req, res);
+
+    const clientId = await identifyClient(req);
+    if (!clientId) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    // Resolve full identity for system prompt and onboarding
+    const bearerToken = (req.headers['authorization'] || '').replace(/^Bearer /, '').trim();
+    const identity = authenticateHalWebToken(bearerToken) ?? { name: clientId, interface: 'web' };
+
+    const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId) ?? null;
+
+    let parsedBody = {};
+    await new Promise((resolve) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        try { parsedBody = JSON.parse(raw); } catch { /* use empty */ }
+        resolve();
+      });
+    });
+
+    const { message, history = [], session_id } = parsedBody;
+    if (!message) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'message required' }));
+      return;
+    }
+
+    // Register session so /events/:sessionId can authenticate the subscriber
+    if (session_id) registerSession(session_id, clientId);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const send = (data) => { res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+    try {
+      const systemPrompt = await assembleSystemPrompt(
+        'interactive',
+        identity,
+        { agentContext: 'altwire' },
+        null,
+      );
+
+      // Spin up an in-process MCP client connected to the tool server
+      const mcpServer = await createMcpServer({ agentContext: 'altwire', allowedTools, clientId });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await mcpServer.connect(serverTransport);
+      const mcpClient = new Client({ name: 'hal-chat', version: '1.0' }, { capabilities: {} });
+      await mcpClient.connect(clientTransport);
+
+      const { tools: mcpTools } = await mcpClient.listTools();
+      const anthropicTools = mcpTools.map((t) => ({
+        name: t.name,
+        description: t.description ?? '',
+        input_schema: t.inputSchema ?? { type: 'object', properties: {} },
+      }));
+
+      // Build conversation history
+      let messages = [
+        ...history.map((h) => ({ role: h.role, content: String(h.content) })),
+        { role: 'user', content: message },
+      ];
+
+      const { default: Anthropic } = await import('@anthropic-ai/sdk');
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const model = process.env.ALTUS_CHAT_MODEL ?? 'claude-sonnet-4-5';
+
+      // Agentic loop — max 15 iterations to prevent runaway tool chains
+      for (let iteration = 0; iteration < 15; iteration++) {
+        const responseStream = anthropic.messages.stream({
+          model,
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages,
+          tools: anthropicTools,
+        });
+
+        const currentContent = [];
+        let stopReason = null;
+
+        for await (const event of responseStream) {
+          if (event.type === 'content_block_start') {
+            if (event.content_block.type === 'text') {
+              currentContent[event.index] = { type: 'text', text: '' };
+            } else if (event.content_block.type === 'tool_use') {
+              currentContent[event.index] = {
+                type: 'tool_use',
+                id: event.content_block.id,
+                name: event.content_block.name,
+                input: {},
+                _inputJson: '',
+              };
+              send({ event: 'tool_start', tool: event.content_block.name, label: `Using ${event.content_block.name}…`, iteration: iteration + 1 });
+            }
+          }
+          if (event.type === 'content_block_delta') {
+            const block = currentContent[event.index];
+            if (event.delta.type === 'text_delta' && block?.type === 'text') {
+              block.text += event.delta.text;
+              send({ token: event.delta.text });
+            } else if (event.delta.type === 'input_json_delta' && block?.type === 'tool_use') {
+              block._inputJson += event.delta.partial_json;
+            }
+          }
+          if (event.type === 'content_block_stop') {
+            const block = currentContent[event.index];
+            if (block?.type === 'tool_use') {
+              try { block.input = JSON.parse(block._inputJson || '{}'); } catch { block.input = {}; }
+            }
+          }
+          if (event.type === 'message_delta') stopReason = event.delta.stop_reason;
+        }
+
+        // Push assistant turn into history
+        messages.push({ role: 'assistant', content: currentContent.filter(Boolean).map(({ _inputJson: _, ...b }) => b) });
+
+        if (stopReason !== 'tool_use') break;
+
+        // Execute tool calls and push results
+        const toolResults = [];
+        for (const block of currentContent.filter(Boolean)) {
+          if (block.type !== 'tool_use') continue;
+          let toolContent = [{ type: 'text', text: 'Error: tool call failed' }];
+          let success = false;
+          try {
+            const result = await mcpClient.callTool({ name: block.name, arguments: block.input });
+            toolContent = result.content ?? [{ type: 'text', text: '' }];
+            success = true;
+          } catch (err) {
+            toolContent = [{ type: 'text', text: `Tool error: ${err.message}` }];
+          }
+          const summary = toolContent.filter((c) => c.type === 'text').map((c) => c.text).join('').slice(0, 200);
+          send({ event: 'tool_done', tool: block.name, label: block.name, success, summary });
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: toolContent });
+        }
+        messages.push({ role: 'user', content: toolResults });
+      }
+
+      send({ done: true, session_id: 0 });
+    } catch (err) {
+      logger.error('hal/chat error', { error: err.message, stack: err.stack });
+      send({ token: '\n\nSorry, something went wrong. Please try again.' });
+      send({ done: true, session_id: 0 });
+    }
+
+    res.end();
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
   // SSE Event Stream — GET /events/:sessionId
   // Streams tool_start/tool_done/thinking_done events to the Chat UI.
   // Client subscribes via EventSource, receives events from the in-memory bus.
@@ -2971,16 +3217,22 @@ const httpServer = createServer(async (req, res) => {
   const eventsMatch = url.pathname.match(/^\/events\/(.+)$/);
   if (eventsMatch && req.method === 'GET') {
     const sessionId = eventsMatch[1];
+    setChatCors(req, res);
 
-    // Authenticate the SSE subscriber
+    // Authenticate the SSE subscriber.
+    // EventSource can't set Authorization headers, so accept ?token= as fallback.
     const authHeader = req.headers['authorization'] || '';
-    if (!authHeader.startsWith('Bearer ')) {
+    const queryToken = url.searchParams.get('token');
+    if (!authHeader.startsWith('Bearer ') && !queryToken) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }
-    const token = authHeader.slice(7).trim();
-    const clientId = await identifyClient(req);
+    // Build a req-like object with the token injected so identifyClient works regardless of source
+    const eventsReq = authHeader.startsWith('Bearer ')
+      ? req
+      : { ...req, headers: { ...req.headers, authorization: `Bearer ${queryToken}` } };
+    const clientId = await identifyClient(eventsReq);
     if (!clientId || !isSessionRegistered(sessionId, clientId)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'session_not_found_or_not_owned' }));
