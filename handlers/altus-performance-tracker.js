@@ -281,7 +281,7 @@ export async function runPerformanceSnapshotCron() {
     for (const article of assignments.rows) {
       const existingTypes = existingSnapshots.get(article.article_url) || new Set();
 
-      const eligible = getSnapshotEligibility(article.assigned_at, existingTypes, effectiveDate);
+      const eligible = getSnapshotEligibility(article.assigned_at, [...existingTypes], effectiveDate);
 
       for (const snapshotType of eligible) {
         // Compute date range for GSC query — window varies by snapshot type
