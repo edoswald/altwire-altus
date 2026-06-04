@@ -374,6 +374,14 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       })
       .catch(err => logger.error('altus-action-items: import failed', { error: err.message }));
 
+    import('./handlers/altus-skill-library.js')
+      .then(({ initSkillLibrarySchema }) => {
+        initSkillLibrarySchema().catch(err => {
+          logger.error('Altus skill library schema init failed', { error: err.message, code: err.code });
+        });
+      })
+      .catch(err => logger.error('altus-skill-library: import failed', { error: err.message }));
+
     // Slack schema init (non-blocking)
     import('./handlers/slack-altus.js')
       .then(({ initSlackAltusSchema, initSlackAltus }) => {
@@ -1503,6 +1511,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { querySessionTraces } = await import('./handlers/altus-session-traces.js');
   const { altusWebResearch } = await import('./handlers/altus-web-research.js');
   const { synthesizeTopic } = await import('./handlers/altus-topic-synthesis.js');
+  const { searchSkills } = await import('./handlers/altus-skill-library.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1725,6 +1734,21 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ topic, findings }) => {
       const result = await synthesizeTopic({ topic, findings });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_search_skills',
+    {
+      description: 'Search Altus shared skills for reusable admin workflows.',
+      inputSchema: {
+        query: z.string().optional().describe('Skill name or keyword query'),
+        limit: z.number().int().min(1).max(50).optional().describe('Maximum skills to return'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await searchSkills({ query, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

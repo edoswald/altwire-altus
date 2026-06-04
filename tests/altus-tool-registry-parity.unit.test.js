@@ -25,5 +25,6 @@ describe('Altus shared Hal registry parity', () => {
     expect(names.has('altus_get_session_trace')).toBe(true);
     expect(names.has('altus_web_research')).toBe(true);
     expect(names.has('altus_topic_synthesis')).toBe(true);
+    expect(names.has('altus_search_skills')).toBe(true);
   });
 });
