@@ -3,10 +3,5 @@
   "provider": "node",
   "packages": {
     "node": "22"
-  },
-  "steps": {
-    "install": {
-      "commands": ["npm install --no-audit"]
-    }
   }
 }
