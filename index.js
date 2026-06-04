@@ -11,24 +11,12 @@
  * Health: GET /health
  */
 
+import { initializeLaminar } from './lib/laminar-integration.js';
+
 // ---------------------------------------------------------------------------
 // Laminar initialization — must run before any other imports
 // ---------------------------------------------------------------------------
-if (process.env.LMNR_PROJECT_API_KEY) {
-  try {
-    const { Laminar } = await import('@lmnr-ai/lmnr');
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    Laminar.initialize({
-      projectApiKey: process.env.LMNR_PROJECT_API_KEY,
-      metadata: { service: 'altus' },
-      instrumentModules: { anthropic: Anthropic },
-    });
-    Laminar.patch({ anthropic: Anthropic });
-    logger.info('Laminar initialized — shared project, service: altus');
-  } catch (err) {
-    logger.warn('Laminar initialization failed', { error: err.message });
-  }
-}
+await initializeLaminar();
 
 import { sessionIdStorage } from './lib/safe-tool-handler.js';
 import { observe } from './tracing.js';
