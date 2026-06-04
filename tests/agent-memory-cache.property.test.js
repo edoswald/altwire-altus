@@ -105,7 +105,8 @@ describe('Agent memory cache — Property 5: round-trip', () => {
         expect(result.rows).toHaveLength(1);
 
         const parsed = JSON.parse(result.rows[0].value);
-        expect(parsed).toEqual(value);
+        // Compare against JSON-normalized value: JSON.stringify loses -0, Infinity, etc.
+        expect(parsed).toEqual(JSON.parse(JSON.stringify(value)));
       }),
       { numRuns: 100 }
     );

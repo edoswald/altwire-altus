@@ -3,7 +3,7 @@ import { safeToolHandler } from '../lib/safe-tool-handler.js';
 
 describe('safeToolHandler', () => {
   it('returns handler result on success', async () => {
-    const handler = safeToolHandler(async () => ({
+    const handler = safeToolHandler('test_tool', async () => ({
       content: [{ type: 'text', text: '{"ok":true}' }],
     }));
     const result = await handler({});
@@ -11,7 +11,7 @@ describe('safeToolHandler', () => {
   });
 
   it('catches thrown error and returns structured exit_reason tool_error', async () => {
-    const handler = safeToolHandler(async () => {
+    const handler = safeToolHandler('test_tool', async () => {
       throw new Error('database exploded');
     });
     const result = await handler({});
@@ -21,7 +21,7 @@ describe('safeToolHandler', () => {
   });
 
   it('passes params through to the handler', async () => {
-    const handler = safeToolHandler(async ({ query }) => ({
+    const handler = safeToolHandler('test_tool', async ({ query }) => ({
       content: [{ type: 'text', text: query }],
     }));
     const result = await handler({ query: 'hello' });
