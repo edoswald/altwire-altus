@@ -22,5 +22,6 @@ describe('Altus shared Hal registry parity', () => {
     expect(names.has('altus_list_action_items')).toBe(true);
     expect(names.has('altus_manage_action_item')).toBe(true);
     expect(names.has('altus_get_action_item_stats')).toBe(true);
+    expect(names.has('altus_get_session_trace')).toBe(true);
   });
 });

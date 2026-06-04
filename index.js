@@ -1500,6 +1500,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { getAltwireIncidentComments, createAltwireIncidentComment, getAltwireStatusUpdates, createAltwireStatusUpdate } = await import('./handlers/altus-incident-handler.js');
   const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
   const { listActionItems, manageActionItem, getActionItemStats } = await import('./handlers/altus-action-items.js');
+  const { querySessionTraces } = await import('./handlers/altus-session-traces.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1677,6 +1678,21 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getActionItemStats();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_session_trace',
+    {
+      description: 'Inspect Altus session traces derived from the event log.',
+      inputSchema: {
+        session_id: z.number().int().optional().describe('Return the full event stream for a specific session'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum session summaries to return when session_id is omitted'),
+      },
+    },
+    async ({ session_id, limit }) => {
+      const result = await querySessionTraces({ session_id, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
