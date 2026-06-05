@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockQuery = vi.fn();
 vi.mock('../lib/altus-db.js', () => ({
   default: { query: mockQuery },
+  hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
 }));
 
 // Mock logger
@@ -52,6 +53,7 @@ describe('altus-performance-tracker', () => {
     // Requirement 8.7: Missing DATABASE_URL returns error
     it('returns error when DATABASE_URL is not set', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { getArticlePerformance } = await import('../handlers/altus-performance-tracker.js');
 
       const result = await getArticlePerformance();
@@ -129,6 +131,7 @@ describe('altus-performance-tracker', () => {
     // Requirement 9.6: Missing DATABASE_URL returns error
     it('returns error when DATABASE_URL is not set', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { getNewsPerformancePatterns } = await import('../handlers/altus-performance-tracker.js');
 
       const result = await getNewsPerformancePatterns();
@@ -156,6 +159,7 @@ describe('altus-performance-tracker', () => {
     // Requirement 12.3: Missing DATABASE_URL returns error
     it('returns error when DATABASE_URL is not set', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { registerArticleForTracking } = await import('../handlers/altus-performance-tracker.js');
 
       const result = await registerArticleForTracking({

@@ -4,7 +4,7 @@
  * regenerates embeddings, and upserts to the archive.
  */
 
-import { upsertContent, logIngestRun } from '../lib/altus-db.js';
+import { upsertContent, logIngestRun, hasDbConfig } from '../lib/altus-db.js';
 import { fetchAllPosts, fetchAllGalleries } from '../lib/wp-client.js';
 import { embedDocuments } from '../lib/voyage.js';
 import { synthesizeGallery } from '../lib/synthesizer.js';
@@ -119,7 +119,7 @@ async function embedAndUpsertGalleries(galleries) {
  * @returns {Promise<object>}
  */
 export async function reIngestHandler({ mode, dry_run }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { success: false, error: 'Database not configured' };
   }
 

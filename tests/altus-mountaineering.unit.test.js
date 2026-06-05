@@ -71,6 +71,70 @@ describe('altus-mountaineering — scoreClimbIteration (TEST_MODE)', () => {
   });
 });
 
+describe('altus-mountaineering — scoreClimbIteration evidence', () => {
+  it('reads altus_events payload as scoring evidence', async () => {
+    vi.resetModules();
+    process.env.TEST_MODE = 'false';
+    process.env.ALTWIRE_DATABASE_URL = 'postgres://test';
+
+    const mockQuery = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 1,
+          name: 'morning-digest-v1',
+          eval_snapshot: { scoring_criteria: ['Use recent tool outcomes'] },
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 9,
+          climb_id: 1,
+          iteration_number: 1,
+          proposed_change: 'Add stronger story opportunities section',
+          score: null,
+          created_at: '2026-06-04T12:00:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          event_type: 'tool_call',
+          payload: { tool_name: 'get_story_opportunities', success: true },
+          created_at: '2026-06-04T12:05:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    vi.doMock('../lib/altus-db.js', () => ({
+      default: { query: mockQuery },
+    }));
+    vi.doMock('../batch-client.js', () => ({
+      submitBatch: vi.fn().mockResolvedValue('batch-123'),
+      collectBatch: vi.fn(),
+      logBatchUsage: vi.fn(),
+    }));
+    vi.doMock('../lib/ai-cost-tracker.js', () => ({
+      logAiUsage: vi.fn(),
+    }));
+    vi.doMock('../logger.js', () => ({
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    }));
+
+    const { scoreClimbIteration } = await import('../handlers/altus-mountaineering.js');
+    await scoreClimbIteration({ climb_name: 'morning-digest-v1', iteration_number: 1 });
+
+    const evidenceQuery = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('FROM altus_events'),
+    );
+    expect(evidenceQuery[0]).toContain('payload');
+    expect(evidenceQuery[0]).not.toContain('details');
+  });
+});
+
 describe('altus-mountaineering — supervisorDecision (TEST_MODE)', () => {
   it('returns test_mode result for keep', async () => {
     process.env.TEST_MODE = 'true';

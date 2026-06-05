@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockQuery = vi.fn();
 vi.mock('../lib/altus-db.js', () => ({
   default: { query: mockQuery },
+  hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
 }));
 
 // Mock logger
@@ -74,9 +75,10 @@ describe('altus-topic-discovery', () => {
       expect(mockSynthesizePitches).not.toHaveBeenCalled();
     });
 
-    // Requirement 6.10: Missing DATABASE_URL returns error
-    it('returns error when DATABASE_URL is not set', async () => {
+    // Requirement 6.10: Missing database URL returns error
+    it('returns error when no Altus database env is set', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { getStoryOpportunities } = await import('../handlers/altus-topic-discovery.js');
 
       const result = await getStoryOpportunities();
@@ -86,15 +88,14 @@ describe('altus-topic-discovery', () => {
 
     // Requirement 6.7: Cache hit returns cached result
     it('returns cached result without calling GSC when cache hit', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       const cachedData = {
         opportunities: [{ query: 'cached query', score: 100 }],
         pitches: 'Cached pitches',
         cached: false,
       };
-      // readAgentMemoryDirect('hal', SEASONALITY_KEY) fires before the cache lookup
+      // Seasonality reads once before the cache lookup
       mockQuery.mockResolvedValueOnce({ rows: [] });
-      // Cache hit for altus:story_opportunities:<today>
       mockQuery.mockResolvedValueOnce({
         rows: [{ value: JSON.stringify(cachedData) }],
       });
@@ -111,7 +112,7 @@ describe('altus-topic-discovery', () => {
 
     // Requirement 6.8: Zero GSC rows returns empty opportunities with note
     it('returns empty opportunities with note when GSC returns zero rows', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       // Cache miss
       mockQuery.mockResolvedValueOnce({ rows: [] });
       // GSC returns zero rows
@@ -131,7 +132,7 @@ describe('altus-topic-discovery', () => {
 
     // Haiku failure still returns opportunities
     it('returns opportunities without pitches when synthesizePitches throws', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       // Cache miss
       mockQuery.mockResolvedValueOnce({ rows: [] });
       // GSC returns one row
@@ -157,6 +158,19 @@ describe('altus-topic-discovery', () => {
       expect(result.opportunities[0].query).toBe('weather station review');
       expect(result.pitches).toBe('');
       expect(mockLogAiUsage).not.toHaveBeenCalled();
+    });
+
+    it('accepts ALTWIRE_DATABASE_URL as sufficient database config', async () => {
+      vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockGetOpportunityZoneQueries.mockResolvedValueOnce({ rows: [] });
+
+      const { getStoryOpportunities } = await import('../handlers/altus-topic-discovery.js');
+      const result = await getStoryOpportunities();
+
+      expect(result.error).toBeUndefined();
+      expect(mockGetOpportunityZoneQueries).toHaveBeenCalled();
     });
   });
 });

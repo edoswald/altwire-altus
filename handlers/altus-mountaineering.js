@@ -400,7 +400,7 @@ export async function scoreClimbIteration({ climb_name, iteration_number }) {
   let evidenceJson = 'No evidence available';
   try {
     const evResult = await pool.query(
-      `SELECT event_type, details, created_at FROM altus_events
+      `SELECT event_type, tool_name, payload, error_message, duration_ms, created_at FROM altus_events
        WHERE created_at >= $1 ORDER BY created_at DESC LIMIT 50`,
       [iteration.created_at]
     );

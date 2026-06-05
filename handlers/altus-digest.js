@@ -41,6 +41,30 @@ async function loadAnalyticsContext() {
   } catch { return null; }
 }
 
+function normalizeWatchListMatches(matches) {
+  if (!Array.isArray(matches)) return [];
+
+  return matches.flatMap((match) => {
+    if (Array.isArray(match.matched_items)) {
+      return match.matched_items.map((name) => ({
+        name,
+        query: match.query,
+        source: 'google_news',
+      }));
+    }
+
+    if (match.name && match.query) {
+      return [{
+        name: match.name,
+        query: match.query,
+        source: match.source ?? 'google_news',
+      }];
+    }
+
+    return [];
+  });
+}
+
 /**
  * Build the daily morning digest from all available data sources.
  * @returns {Promise<object>} Aggregate digest with date, generated_at, and 7 sections.
@@ -149,7 +173,11 @@ export async function getAltwireMorningDigest() {
     const rows = newsAlertsResult.value.rows;
     if (rows && rows.length > 0) {
       try {
-        news_alerts = JSON.parse(rows[0].value);
+        const parsed = JSON.parse(rows[0].value);
+        news_alerts = {
+          ...parsed,
+          watch_list_matches: normalizeWatchListMatches(parsed.watch_list_matches),
+        };
       } catch (e) {
         warnings.push({ section: 'news_alerts', message: `Failed to parse news alerts JSON: ${e.message}` });
       }
