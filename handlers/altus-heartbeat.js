@@ -158,15 +158,12 @@ export async function cancelScheduledTask(taskId) {
 // ---------------------------------------------------------------------------
 // Step 1 — condition checks
 // Captures operational and editorial health signals for the heartbeat log.
-// Currently tracks: review deadlines, overdue loaners, stale proposed items.
-// Extend here with editorial-specific signals (e.g., coverage gaps, content
-// freshness, writer workload) — new conditions should be counted and returned
-// as additional fields in the conditions object, stored in altus_heartbeat_log.condition_checks.
+// Tracks: review deadlines, overdue loaners, stale proposed items,
+//         news monitor watch list matches, reflection freshness.
 // ---------------------------------------------------------------------------
 
 async function checkConditions() {
   const conditions = {};
-  const now = new Date();
 
   // Check: upcoming review deadlines (within 7 days)
   const upcomingResult = await pool.query(
@@ -192,6 +189,37 @@ async function checkConditions() {
         AND proposed_at < NOW() - INTERVAL '48 hours'`,
   );
   conditions.stale_proposed_items = parseInt(staleResult.rows[0].count, 10);
+
+  // Check: today's news monitor watch list matches
+  const today = new Date().toISOString().slice(0, 10);
+  const newsResult = await readAgentMemory('altus', `altus:news_alert:${today}`);
+  if (newsResult.success) {
+    try {
+      const newsAlert = JSON.parse(newsResult.value);
+      conditions.news_watch_list_matches = newsAlert.watch_list_matches?.length ?? 0;
+    } catch {
+      conditions.news_watch_list_matches = 0;
+    }
+  } else {
+    conditions.news_watch_list_matches = 0;
+  }
+
+  // Check: reflection freshness — warn if nightly reflection hasn't run in 30h
+  const reflResult = await readAgentMemory('hal', 'hal:altwire:combined_synthesis');
+  if (reflResult.success) {
+    try {
+      const refl = JSON.parse(reflResult.value);
+      const age = refl.generated_at
+        ? Math.round((Date.now() - new Date(refl.generated_at).getTime()) / 3_600_000)
+        : null;
+      conditions.reflection_age_hours = age;
+      conditions.reflection_stale = age != null && age > 30;
+    } catch {
+      conditions.reflection_stale = true;
+    }
+  } else {
+    conditions.reflection_stale = true;
+  }
 
   return conditions;
 }
@@ -272,6 +300,31 @@ export async function runAltusHeartbeat() {
         if (task.task_type === 'action_item') {
           await createActionItemFromScheduledTask(task);
           counters.items_acted++;
+        } else if (task.task_type === 'chat_task' || task.task_type === 'report' || task.task_type === 'custom') {
+          // Enqueue for the next Hal session to pick up
+          await writeAgentMemory(
+            'altus',
+            `altus:queued_task:${task.id}`,
+            JSON.stringify({ task_type: task.task_type, payload: task.payload, queued_at: new Date().toISOString() }),
+          );
+          counters.items_acted++;
+        } else if (task.task_type === 'alert') {
+          // Write to a pending alerts key and mark as dedup-eligible
+          const alertKey = `task_alert_${task.id}`;
+          if (await shouldSendAlert(alertKey)) {
+            await writeAgentMemory(
+              'altus',
+              `altus:pending_alert:${task.id}`,
+              JSON.stringify({ message: task.payload?.message ?? 'Scheduled alert', payload: task.payload, triggered_at: new Date().toISOString() }),
+            );
+            await recordAlertSent(alertKey);
+            counters.alerts_sent++;
+            counters.items_acted++;
+            logger.info('runAltusHeartbeat: alert task triggered', { task_id: task.id, message: task.payload?.message });
+          }
+        } else {
+          logger.warn('runAltusHeartbeat: unrecognized task_type — skipping', { task_id: task.id, task_type: task.task_type });
+          counters.items_skipped++;
         }
 
         await pool.query(
@@ -300,6 +353,12 @@ export async function runAltusHeartbeat() {
     }
     if (conditions.stale_proposed_items > 0) {
       breached.push({ key: 'stale_proposed_items', count: conditions.stale_proposed_items });
+    }
+    if (conditions.news_watch_list_matches > 0) {
+      breached.push({ key: 'news_watch_list_matches', count: conditions.news_watch_list_matches });
+    }
+    if (conditions.reflection_stale) {
+      breached.push({ key: 'reflection_stale', count: 1 });
     }
 
     for (const alert of breached) {

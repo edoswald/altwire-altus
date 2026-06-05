@@ -1,6 +1,7 @@
 import { getAltwireMorningDigest } from './altus-digest.js';
 import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
+import { writeAgentMemory } from '../lib/altus-db.js';
 
 export async function sendMorningDigestEmail() {
   if (!process.env.DEREK_EMAIL) {
@@ -8,15 +9,29 @@ export async function sendMorningDigestEmail() {
     return;
   }
 
+  // ALTUS_CC_EMAILS: comma-separated list of addresses to CC on every digest.
+  // Set this to your own address during testing so you don't need Derek to forward.
+  const ccAddresses = process.env.ALTUS_CC_EMAILS
+    ? process.env.ALTUS_CC_EMAILS.split(',').map(e => e.trim()).filter(Boolean)
+    : [];
+
   try {
     const digest = await getAltwireMorningDigest();
     const subject = `AltWire Morning Digest — ${digest.date}`;
     const html = buildDigestHtml(digest);
     const text = buildDigestText(digest);
 
-    const result = await sendEmail({ to: process.env.DEREK_EMAIL, subject, html, text });
+    const result = await sendEmail({ to: process.env.DEREK_EMAIL, cc: ccAddresses, subject, html, text });
     if (result.success) {
-      logger.info(`[altus-digest-mailer] Sent morning digest to Derek — ${digest.date}`);
+      const ccNote = ccAddresses.length ? ` (CC: ${ccAddresses.join(', ')})` : '';
+      logger.info(`[altus-digest-mailer] Sent morning digest to Derek${ccNote} — ${digest.date}`);
+      // Archive the rendered HTML so it can be retrieved via /altwire/digest/archive
+      await writeAgentMemory('altus', `altus:digest_archive:${digest.date}`, JSON.stringify({
+        date: digest.date,
+        subject,
+        html,
+        sent_at: new Date().toISOString(),
+      })).catch(err => logger.warn('[altus-digest-mailer] Failed to archive digest HTML', { error: err.message }));
     } else {
       logger.error(`[altus-digest-mailer] Failed to send morning digest to Derek — ${result.error}`);
     }
@@ -25,7 +40,7 @@ export async function sendMorningDigestEmail() {
   }
 }
 
-function buildDigestHtml(digest) {
+export function buildDigestHtml(digest) {
   const sections = [];
   const H = (label) => `<strong style="color:#0066cc;">${label}</strong>`;
   const row = (header, body) => `
@@ -88,13 +103,54 @@ function buildDigestHtml(digest) {
     sections.push(row(H('EDITORIAL PULSE'), top5));
   }
 
-  // --- Editorial Synthesis ---
+  // --- Editorial Synthesis (expanded) ---
   const synth = digest.editorial_synthesis?.synthesis;
   if (synth?.headline) {
-    const rec = synth.editorial_recommendation
-      ? `<br><span style="color:#555;">${synth.editorial_recommendation}</span>`
-      : '';
-    sections.push(row(H('EDITORIAL SYNTHESIS'), `<strong>${synth.headline}</strong>${rec}`));
+    const lines = [`<strong>${synth.headline}</strong>`];
+
+    if (synth.search_traffic_share_pct != null) {
+      lines.push(`<span style="color:#555;">Search-driven traffic: ~${synth.search_traffic_share_pct}% of visits</span>`);
+    }
+
+    if (synth.editorial_recommendation) {
+      lines.push(`<br><em>${synth.editorial_recommendation}</em>`);
+    }
+
+    if (synth.top_dual_winners?.length > 0) {
+      const winners = synth.top_dual_winners.slice(0, 2)
+        .map(a => `&nbsp;&nbsp;★ ${a.title} — <span style="color:#555;">${a.why}</span>`)
+        .join('<br>');
+      lines.push(`<br><span style="color:#0066cc;font-size:12px;">STRONG IN BOTH TRAFFIC &amp; SEARCH</span><br>${winners}`);
+    }
+
+    if (synth.underperforming_in_search?.length > 0) {
+      const under = synth.underperforming_in_search.slice(0, 2)
+        .map(a => `&nbsp;&nbsp;↓ ${a.title} — <span style="color:#555;">${a.why}</span>`)
+        .join('<br>');
+      lines.push(`<br><span style="color:#0066cc;font-size:12px;">POPULAR BUT WEAK IN SEARCH</span><br>${under}`);
+    }
+
+    if (synth.content_gaps?.length > 0) {
+      const gaps = synth.content_gaps.slice(0, 3)
+        .map(g => `&nbsp;&nbsp;• <strong>${g.query}</strong>${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`)
+        .join('<br>');
+      lines.push(`<br><span style="color:#0066cc;font-size:12px;">CONTENT GAPS</span><br>${gaps}`);
+    }
+
+    sections.push(row(H('EDITORIAL SYNTHESIS'), lines.join('\n')));
+  }
+
+  // --- Site Search Keywords ---
+  const siteSearchKws = digest.site_search_keywords?.keywords;
+  if (Array.isArray(siteSearchKws) && siteSearchKws.length > 0) {
+    const kwList = siteSearchKws.slice(0, 7)
+      .map(k => {
+        const label = k.label ?? k.keyword ?? String(k);
+        const nb = k.nb_searches ?? k.count ?? null;
+        return nb ? `${label} <span style="color:#888;">(${nb})</span>` : label;
+      })
+      .join(' &nbsp;&middot;&nbsp; ');
+    sections.push(row(H('READERS SEARCHING'), kwList));
   }
 
   // --- Rising Topics ---
@@ -113,6 +169,18 @@ function buildDigestHtml(digest) {
   {
     const oppHtml = formatStoryOpportunities(digest.story_opportunities);
     sections.push(row(H('STORY OPPORTUNITIES'), oppHtml));
+  }
+
+  // --- Open Action Items (proposed from reflection) ---
+  if (digest.open_action_items?.count > 0) {
+    const items = digest.open_action_items.items.slice(0, 5).map(item => {
+      const age = item.proposed_at
+        ? Math.round((Date.now() - new Date(item.proposed_at).getTime()) / 3_600_000)
+        : null;
+      const ageStr = age != null ? ` <span style="color:#888;">(${age}h ago)</span>` : '';
+      return `• ${item.title}${ageStr}`;
+    }).join('<br>');
+    sections.push(row(H('OPEN ITEMS'), items));
   }
 
   // --- Review Deadlines ---
@@ -256,7 +324,22 @@ function buildDigestText(digest) {
   if (synth?.headline) {
     lines.push('EDITORIAL SYNTHESIS');
     lines.push(synth.headline);
+    if (synth.search_traffic_share_pct != null) lines.push(`Search-driven traffic: ~${synth.search_traffic_share_pct}%`);
     if (synth.editorial_recommendation) lines.push(synth.editorial_recommendation);
+    if (synth.top_dual_winners?.length > 0) {
+      lines.push('Strong in traffic + search:');
+      synth.top_dual_winners.slice(0, 2).forEach(a => lines.push(`  ★ ${a.title}`));
+    }
+    if (synth.content_gaps?.length > 0) {
+      lines.push('Content gaps:');
+      synth.content_gaps.slice(0, 3).forEach(g => lines.push(`  • ${g.query}${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`));
+    }
+  }
+
+  const siteSearchKws = digest.site_search_keywords?.keywords;
+  if (Array.isArray(siteSearchKws) && siteSearchKws.length > 0) {
+    const kwStr = siteSearchKws.slice(0, 7).map(k => k.label ?? k.keyword ?? String(k)).join(' · ');
+    lines.push(`READERS SEARCHING: ${kwStr}`);
   }
 
   if (digest.historical?.rising_topics?.length > 0) {
@@ -268,6 +351,11 @@ function buildDigestText(digest) {
 
   lines.push('STORY OPPORTUNITIES');
   lines.push(formatStoryOpportunities(digest.story_opportunities).replace(/<[^>]+>/g, '').trim() || 'None');
+
+  if (digest.open_action_items?.count > 0) {
+    lines.push(`OPEN ITEMS (${digest.open_action_items.count} proposed)`);
+    digest.open_action_items.items.slice(0, 3).forEach(item => lines.push(`• ${item.title}`));
+  }
 
   if (digest.review_deadlines?.count > 0) {
     lines.push(`EDITORIAL PIPELINE: ${digest.review_deadlines.count} review deadline(s) in next 7 days`);

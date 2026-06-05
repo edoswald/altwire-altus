@@ -59,6 +59,14 @@ const ANALYTICS_KEYS = {
   last_refreshed:      'hal:altwire:analytics:last_refreshed',
 };
 
+const FRESH_REFLECTION_KEYS = [
+  'hal:altwire:combined_synthesis',
+  'hal:altwire:traffic_summary',
+  'hal:altwire:top_articles',
+  'hal:altwire:site_search_keywords',
+  'hal:altwire:gsc:fresh_opportunities',
+];
+
 /**
  * Load the appropriate soul block for the given agent context.
  * @param {string|null} agentContext
@@ -133,6 +141,55 @@ async function loadOnboardingState(adminId) {
     // fall through
   }
   return null;
+}
+
+/**
+ * Load fresh nightly reflection data for AltWire sessions.
+ * Reads the keys written by altus-reflection.js (combined_synthesis, traffic, articles, etc.)
+ * and today's news monitor alert. Returns null if reflection hasn't run yet.
+ * @returns {Promise<object|null>}
+ */
+async function loadFreshReflectionData() {
+  try {
+    const [halResult, newsResult] = await Promise.all([
+      pool.query(
+        `SELECT key, value FROM agent_memory
+         WHERE agent = 'hal' AND key = ANY($1) AND deleted_at IS NULL`,
+        [FRESH_REFLECTION_KEYS],
+      ),
+      pool.query(
+        `SELECT value FROM agent_memory
+         WHERE agent = 'altus' AND key = $1 AND deleted_at IS NULL LIMIT 1`,
+        [`altus:news_alert:${new Date().toISOString().slice(0, 10)}`],
+      ),
+    ]);
+
+    if (halResult.rows.length === 0) return null;
+
+    const parsed = {};
+    for (const row of halResult.rows) {
+      try { parsed[row.key] = JSON.parse(row.value); }
+      catch { parsed[row.key] = row.value; }
+    }
+
+    const out = {
+      combined_synthesis: parsed['hal:altwire:combined_synthesis'] ?? null,
+      traffic_summary:    parsed['hal:altwire:traffic_summary'] ?? null,
+      top_articles:       parsed['hal:altwire:top_articles'] ?? null,
+      site_search_keywords: parsed['hal:altwire:site_search_keywords'] ?? null,
+      gsc_opportunities:  parsed['hal:altwire:gsc:fresh_opportunities'] ?? null,
+      news_monitor:       null,
+    };
+
+    if (newsResult.rows[0]?.value) {
+      try { out.news_monitor = JSON.parse(newsResult.rows[0].value); }
+      catch { /* ignore */ }
+    }
+
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -265,6 +322,75 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
       }
       if (trafficLines.length > 0) {
         parts.push(`## AltWire Historical Analytics\n${trafficLines.join('\n')}`);
+      }
+    }
+
+    // Fresh nightly reflection data (written by 4 AM reflection cron)
+    const fresh = await loadFreshReflectionData();
+    if (fresh) {
+      const freshLines = [];
+
+      // Synthesis headline + editorial recommendation
+      const synth = fresh.combined_synthesis?.synthesis;
+      if (synth?.headline) {
+        freshLines.push(`Summary: ${synth.headline}`);
+      }
+
+      // 7-day traffic
+      const t7 = fresh.traffic_summary?.period_7d;
+      if (t7?.nb_pageviews != null) {
+        freshLines.push(`7-day traffic: ${t7.nb_pageviews.toLocaleString()} pageviews, ${(t7.nb_visits ?? 0).toLocaleString()} visits`);
+      }
+
+      // Top articles (7d)
+      const articles = fresh.top_articles?.articles;
+      if (Array.isArray(articles) && articles.length > 0) {
+        const top3 = articles.slice(0, 3)
+          .map((a, i) => `  ${i + 1}. ${a.title ?? a.label ?? a.url} (${(a.pageviews ?? a.nb_hits ?? 0).toLocaleString()} pv)`)
+          .join('\n');
+        freshLines.push(`Top articles (7d):\n${top3}`);
+      }
+
+      // Site search keywords (7d)
+      const kwRaw = fresh.site_search_keywords?.keywords;
+      if (Array.isArray(kwRaw) && kwRaw.length > 0) {
+        const kws = kwRaw.slice(0, 5).map(k => k.label ?? k.keyword ?? String(k)).join(', ');
+        freshLines.push(`Reader site searches (7d): ${kws}`);
+      }
+
+      // GSC content gaps + opportunities
+      if (synth?.content_gaps?.length > 0) {
+        const gaps = synth.content_gaps.slice(0, 3).map(g => g.query).join('; ');
+        freshLines.push(`Content gaps: ${gaps}`);
+      }
+      if (synth?.opportunity_alignments?.length > 0) {
+        const opps = synth.opportunity_alignments.slice(0, 3).map(o => o.query).join('; ');
+        freshLines.push(`SEO opportunities: ${opps}`);
+      }
+
+      // Editorial recommendation
+      if (synth?.editorial_recommendation) {
+        freshLines.push(`Editorial recommendation: ${synth.editorial_recommendation}`);
+      }
+
+      // Watch list news matches
+      const newsMatches = fresh.news_monitor?.watch_list_matches;
+      if (Array.isArray(newsMatches) && newsMatches.length > 0) {
+        const matchStr = newsMatches.slice(0, 3)
+          .map(m => `${m.matched_items?.join(', ')} — "${m.query}"`)
+          .join('; ');
+        freshLines.push(`Watch list news matches today: ${matchStr}`);
+      }
+
+      // Age stamp
+      const generatedAt = fresh.combined_synthesis?.generated_at ?? fresh.traffic_summary?.generated_at;
+      if (generatedAt) {
+        const ageH = Math.round((Date.now() - new Date(generatedAt).getTime()) / 3_600_000);
+        if (ageH < 48) freshLines.push(`(Data from ${ageH}h ago)`);
+      }
+
+      if (freshLines.length > 0) {
+        parts.push(`## AltWire Fresh Analytics\n${freshLines.join('\n')}`);
       }
     }
   }

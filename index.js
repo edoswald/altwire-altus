@@ -3003,6 +3003,75 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // GET /altwire/digest/preview — render live digest as HTML in browser (no email sent)
+  if (url.pathname === '/altwire/digest/preview' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end('Unauthorized');
+      return;
+    }
+    try {
+      const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+      const { buildDigestHtml } = await import('./handlers/altus-digest-mailer.js');
+      const digest = await getAltwireMorningDigest();
+      const html = buildDigestHtml(digest);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } catch (err) {
+      logger.error('AltWire digest preview endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Error: ${err.message}`);
+    }
+    return;
+  }
+
+  // GET /altwire/digest/archive — list or retrieve archived sent digests
+  // Without ?date: returns JSON list of available dates (last 30 days)
+  // With ?date=YYYY-MM-DD: returns the archived HTML for that date
+  if (url.pathname === '/altwire/digest/archive' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    const dateParam = url.searchParams.get('date');
+    try {
+      if (dateParam) {
+        const row = await pool.query(
+          `SELECT value FROM agent_memory WHERE agent = 'altus' AND key = $1 AND deleted_at IS NULL LIMIT 1`,
+          [`altus:digest_archive:${dateParam}`],
+        );
+        if (!row.rows.length) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end(`No archived digest found for ${dateParam}`);
+          return;
+        }
+        const archived = JSON.parse(row.rows[0].value);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(archived.html);
+      } else {
+        const rows = await pool.query(
+          `SELECT key, updated_at FROM agent_memory
+           WHERE agent = 'altus' AND key LIKE 'altus:digest_archive:%' AND deleted_at IS NULL
+           ORDER BY updated_at DESC LIMIT 30`,
+        );
+        const dates = rows.rows.map(r => ({
+          date: r.key.replace('altus:digest_archive:', ''),
+          sent_at: r.updated_at,
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ archives: dates, count: dates.length }));
+      }
+    } catch (err) {
+      logger.error('AltWire digest archive endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'archive_failed', message: err.message }));
+    }
+    return;
+  }
+
   if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
