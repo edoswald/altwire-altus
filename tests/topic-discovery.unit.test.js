@@ -41,6 +41,13 @@ vi.mock('../lib/ai-cost-tracker.js', () => ({
   logAiUsage: mockLogAiUsage,
 }));
 
+// Mock editorial helpers — prevents pool.query calls before the cache lookup
+vi.mock('../lib/editorial-helpers.js', () => ({
+  loadEditorialContext: vi.fn().mockResolvedValue(null),
+  loadTopicTrends: vi.fn().mockResolvedValue(null),
+  scoreEditorialAffinity: vi.fn().mockReturnValue({ affinity: 1.0 }),
+}));
+
 describe('altus-topic-discovery', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -87,8 +94,7 @@ describe('altus-topic-discovery', () => {
         pitches: 'Cached pitches',
         cached: false,
       };
-      mockQuery.mockResolvedValueOnce({ rows: [] });
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // Seasonality reads once before the cache lookup
       mockQuery.mockResolvedValueOnce({ rows: [] });
       mockQuery.mockResolvedValueOnce({
         rows: [{ value: JSON.stringify(cachedData) }],

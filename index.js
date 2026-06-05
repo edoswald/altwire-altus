@@ -11,24 +11,12 @@
  * Health: GET /health
  */
 
+import { initializeLaminar } from './lib/laminar-integration.js';
+
 // ---------------------------------------------------------------------------
 // Laminar initialization — must run before any other imports
 // ---------------------------------------------------------------------------
-if (process.env.LMNR_PROJECT_API_KEY) {
-  try {
-    const { Laminar } = await import('@lmnr-ai/lmnr');
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    Laminar.initialize({
-      projectApiKey: process.env.LMNR_PROJECT_API_KEY,
-      metadata: { service: 'altus' },
-      instrumentModules: { anthropic: Anthropic },
-    });
-    Laminar.patch({ anthropic: Anthropic });
-    logger.info('Laminar initialized — shared project, service: altus');
-  } catch (err) {
-    logger.warn('Laminar initialization failed', { error: err.message });
-  }
-}
+await initializeLaminar();
 
 import { sessionIdStorage } from './lib/safe-tool-handler.js';
 import { observe } from './tracing.js';
@@ -75,6 +63,10 @@ import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRe
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
+import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
+import { assembleSystemPrompt } from './hal-harness.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {
   initReviewTrackerSchema,
   createReview, updateReview, getReview, listReviews, getUpcomingReviewDeadlines,
@@ -407,15 +399,28 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
 
     // Heartbeat schema (non-blocking)
     import('./handlers/altus-heartbeat.js')
-      .then(({ initHeartbeatSchema, initActionItemsSchema }) => {
+      .then(({ initHeartbeatSchema }) => {
         initHeartbeatSchema().catch(err => {
           logger.error('Altus heartbeat schema init failed', { error: err.message, code: err.code });
         });
+      })
+      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+
+    import('./handlers/altus-action-items.js')
+      .then(({ initActionItemsSchema }) => {
         initActionItemsSchema().catch(err => {
           logger.error('Altus action items schema init failed', { error: err.message, code: err.code });
         });
       })
-      .catch(err => logger.error('altus-heartbeat: import failed', { error: err.message }));
+      .catch(err => logger.error('altus-action-items: import failed', { error: err.message }));
+
+    import('./handlers/altus-skill-library.js')
+      .then(({ initSkillLibrarySchema }) => {
+        initSkillLibrarySchema().catch(err => {
+          logger.error('Altus skill library schema init failed', { error: err.message, code: err.code });
+        });
+      })
+      .catch(err => logger.error('altus-skill-library: import failed', { error: err.message }));
 
     // Slack schema init (non-blocking)
     import('./handlers/slack-altus.js')
@@ -1587,6 +1592,11 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
   const { getAltwireIncidentComments, createAltwireIncidentComment, getAltwireStatusUpdates, createAltwireStatusUpdate } = await import('./handlers/altus-incident-handler.js');
   const { queryAltusEvents, synthesizeAudit } = await import('./altus-event-log.js');
+  const { listActionItems, manageActionItem, getActionItemStats } = await import('./handlers/altus-action-items.js');
+  const { querySessionTraces } = await import('./handlers/altus-session-traces.js');
+  const { altusWebResearch } = await import('./handlers/altus-web-research.js');
+  const { synthesizeTopic } = await import('./handlers/altus-topic-synthesis.js');
+  const { searchSkills } = await import('./handlers/altus-skill-library.js');
 
   scopedRegister(
     'get_altwire_uptime',
@@ -1720,6 +1730,110 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getAltwireMorningDigest();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_action_items',
+    {
+      description: 'List Altus action items for admin follow-through and heartbeat review.',
+      inputSchema: {
+        status: z.enum(['proposed', 'accepted', 'completed', 'dismissed']).optional().describe('Filter by action-item status'),
+        category: z.enum(['marketing', 'operations', 'pricing', 'quality', 'infrastructure', 'editorial']).optional().describe('Filter by action-item category'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum action items to return'),
+      },
+    },
+    async ({ status, category, limit }) => {
+      const result = await listActionItems({ status, category, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_manage_action_item',
+    {
+      description: 'Accept, complete, or dismiss an Altus action item.',
+      inputSchema: {
+        item_id: z.number().int().describe('Action-item ID'),
+        action: z.enum(['accept', 'complete', 'dismiss']).describe('Lifecycle action to perform'),
+        reason: z.string().optional().describe('Dismissal or transition reason'),
+        outcome_notes: z.string().optional().describe('Optional notes about the result or follow-through'),
+      },
+    },
+    async ({ item_id, action, reason, outcome_notes }) => {
+      const result = await manageActionItem({ item_id, action, reason, outcome_notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_action_item_stats',
+    {
+      description: 'Get summary counts for Altus action items by status.',
+    },
+    async () => {
+      const result = await getActionItemStats();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_session_trace',
+    {
+      description: 'Inspect Altus session traces derived from the event log.',
+      inputSchema: {
+        session_id: z.number().int().optional().describe('Return the full event stream for a specific session'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum session summaries to return when session_id is omitted'),
+      },
+    },
+    async ({ session_id, limit }) => {
+      const result = await querySessionTraces({ session_id, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_web_research',
+    {
+      description: 'Perform shared Hal-style web research for AltWire admin questions.',
+      inputSchema: {
+        query: z.string().describe('Question or topic to research'),
+        limit: z.number().int().min(1).max(10).optional().describe('Maximum number of search results to synthesize'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await altusWebResearch({ query, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_topic_synthesis',
+    {
+      description: 'Synthesize research findings into an AltWire editorial briefing.',
+      inputSchema: {
+        topic: z.string().describe('Topic to synthesize'),
+        findings: z.array(z.string()).describe('Findings or signals to combine into a briefing'),
+      },
+    },
+    async ({ topic, findings }) => {
+      const result = await synthesizeTopic({ topic, findings });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_search_skills',
+    {
+      description: 'Search Altus shared skills for reusable admin workflows.',
+      inputSchema: {
+        query: z.string().optional().describe('Skill name or keyword query'),
+        limit: z.number().int().min(1).max(50).optional().describe('Maximum skills to return'),
+      },
+    },
+    async ({ query, limit }) => {
+      const result = await searchSkills({ query, limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -2129,54 +2243,16 @@ async ({ status, limit }) => {
     },
     async () => {
       if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
-      const { rows: activeRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
-      );
-      const { rows: actionRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status IN ('outline_ready', 'draft_ready')`
-      );
-      const { rows: readyRows } = await pool.query(
-        `SELECT COUNT(*) AS count FROM altus_assignments WHERE status = 'ready_to_post'`
-      );
       const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
       const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
       const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
-      let digest = null;
-      try { digest = await getAltwireMorningDigest(); } catch { /* non-blocking */ }
-      let analytics = { pageviews_today: 0, top_article: null };
-      try {
-        const matomoData = await getTrafficSummary('day', 'today');
-        analytics = {
-          pageviews_today: matomoData?.pageviews ?? 0,
-          top_article: matomoData?.top_article_title ?? null,
-        };
-      } catch { /* non-blocking */ }
-      let opportunities = { high: 0, medium: 0, low: 0 };
-      try {
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const oppData = await getSearchOpportunities(thirtyDaysAgo, new Date().toISOString().slice(0, 10));
-        if (oppData?.opportunities) {
-          for (const o of oppData.opportunities) {
-            if (o.position >= 5 && o.position <= 10) opportunities.high++;
-            else if (o.position >= 11 && o.position <= 20) opportunities.medium++;
-            else opportunities.low++;
-          }
-        }
-      } catch { /* non-blocking */ }
-      return { content: [{ type: 'text', text: JSON.stringify({
-        success: true,
-        writer: {
-          active: parseInt(activeRows[0]?.count || 0),
-          action_needed: parseInt(actionRows[0]?.count || 0),
-          ready_to_post: parseInt(readyRows[0]?.count || 0),
-        },
-        digest: {
-          last_updated: digest?.generated_at || null,
-          warning_count: digest?.warnings?.length || 0,
-        },
-        opportunities,
-        analytics,
-      }) }] };
+      const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
+      const summary = await buildWriterSummary({
+        getTrafficSummary,
+        getSearchOpportunities,
+        getAltwireMorningDigest,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(summary) }] };
     }
   );
 
@@ -2626,7 +2702,27 @@ async function identifyClient(req) {
       }
     } catch { /* timingSafeEqual threw — lengths mismatch */ }
   }
-  return null;
+  return identifyCompatibleHalClient(token);
+}
+
+// ---------------------------------------------------------------------------
+// Allowed UI origins for /hal/auth, /hal/chat, and /events/* (CORS).
+// Set HAL_UI_ALLOWED_ORIGINS as a comma-separated list of origins in Railway.
+// Falls back to wildcard when unset so local dev works out of the box.
+// ---------------------------------------------------------------------------
+const HAL_UI_ALLOWED_ORIGINS = process.env.HAL_UI_ALLOWED_ORIGINS
+  ? new Set(process.env.HAL_UI_ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean))
+  : null; // null = allow all
+
+function setChatCors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return; // server-to-server — no CORS needed
+  if (!HAL_UI_ALLOWED_ORIGINS || HAL_UI_ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Agent-Context, Accept');
 }
 
 async function trackChatPresence(req, clientId) {
@@ -2648,6 +2744,18 @@ async function trackChatPresence(req, clientId) {
 
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // Handle CORS preflight for Hal UI endpoints
+  if (req.method === 'OPTIONS' && (
+    url.pathname === '/hal/auth' ||
+    url.pathname === '/hal/chat' ||
+    url.pathname.startsWith('/events/')
+  )) {
+    setChatCors(req, res);
+    res.writeHead(204);
+    res.end();
+    return;
+  }
 
   if (!globalLimiter.check(req, res)) return;
 
@@ -2838,6 +2946,50 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // ---------------------------------------------------------------------------
+  // Auth — POST /hal/auth
+  // Issues a signed session token for web API keys (HAL_KEY_*_WEB env vars).
+  // Used by the Hal Chat UI when in altwire mode so admins don't need nimbus.
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/auth' && req.method === 'POST') {
+    if (!authLimiter.check(req, res)) return;
+    setChatCors(req, res);
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let apiKey;
+      try {
+        apiKey = JSON.parse(body).apiKey;
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_request' }));
+        return;
+      }
+      if (!apiKey) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'apiKey required' }));
+        return;
+      }
+      const identity = authenticateHalWebToken(apiKey);
+      if (!identity || identity.interface !== 'web') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid access key' }));
+        return;
+      }
+      try {
+        const token = signHalWebSessionToken(identity);
+        const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ token, expiresAt, adminName: identity.name }));
+      } catch (err) {
+        logger.error('Auth token signing failed', { error: err.message });
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'auth_unavailable' }));
+      }
+    });
+    return;
+  }
+
   // Slack events — signature verification handled by slack-altus.js
   if (url.pathname === '/slack/events' && req.method === 'POST') {
     await observe({ name: 'slack_webhook', spanType: 'DEFAULT' }, async () => {
@@ -2883,7 +3035,7 @@ const httpServer = createServer(async (req, res) => {
 
     // Auth check
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.ALTUS_ADMIN_TOKEN) {
+    if (!isAllowedAltusRestToken(authToken, { allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3177,7 +3329,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3197,7 +3349,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/digest/send — trigger morning digest email (auth via Authorization header)
   if (url.pathname === '/altwire/digest/send' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3215,10 +3367,265 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // GET /altwire/digest/preview — render live digest as HTML in browser (no email sent)
+  if (url.pathname === '/altwire/digest/preview' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end('Unauthorized');
+      return;
+    }
+    try {
+      const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+      const { buildDigestHtml } = await import('./handlers/altus-digest-mailer.js');
+      const digest = await getAltwireMorningDigest();
+      const html = buildDigestHtml(digest);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } catch (err) {
+      logger.error('AltWire digest preview endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Error: ${err.message}`);
+    }
+    return;
+  }
+
+  // GET /altwire/digest/archive — list or retrieve archived sent digests
+  // Without ?date: returns JSON list of available dates (last 30 days)
+  // With ?date=YYYY-MM-DD: returns the archived HTML for that date
+  if (url.pathname === '/altwire/digest/archive' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    const dateParam = url.searchParams.get('date');
+    try {
+      if (dateParam) {
+        const row = await pool.query(
+          `SELECT value FROM agent_memory WHERE agent = 'altus' AND key = $1 AND deleted_at IS NULL LIMIT 1`,
+          [`altus:digest_archive:${dateParam}`],
+        );
+        if (!row.rows.length) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end(`No archived digest found for ${dateParam}`);
+          return;
+        }
+        const archived = JSON.parse(row.rows[0].value);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(archived.html);
+      } else {
+        const rows = await pool.query(
+          `SELECT key, updated_at FROM agent_memory
+           WHERE agent = 'altus' AND key LIKE 'altus:digest_archive:%' AND deleted_at IS NULL
+           ORDER BY updated_at DESC LIMIT 30`,
+        );
+        const dates = rows.rows.map(r => ({
+          date: r.key.replace('altus:digest_archive:', ''),
+          sent_at: r.updated_at,
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ archives: dates, count: dates.length }));
+      }
+    } catch (err) {
+      logger.error('AltWire digest archive endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'archive_failed', message: err.message }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const result = await getStoryOpportunities();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      logger.error('AltWire opportunities endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+    }
+    return;
+  }
+
   // Health check — Railway liveness/readiness probe
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hal Chat — POST /hal/chat
+  // Streaming agentic chat endpoint for the Hal Chat UI (altwire mode).
+  // Receives { message, history, session_id }, runs an Anthropic agentic loop
+  // with all registered altus tools via in-process MCP, and streams SSE events.
+  // Auth: same Bearer token accepted by the MCP endpoint.
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/chat' && req.method === 'POST') {
+    if (!authLimiter.check(req, res)) return;
+    setChatCors(req, res);
+
+    const clientId = await identifyClient(req);
+    if (!clientId) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
+    // Resolve full identity for system prompt and onboarding
+    const bearerToken = (req.headers['authorization'] || '').replace(/^Bearer /, '').trim();
+    const identity = authenticateHalWebToken(bearerToken) ?? { name: clientId, interface: 'web' };
+
+    const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId) ?? null;
+
+    let parsedBody = {};
+    await new Promise((resolve) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        try { parsedBody = JSON.parse(raw); } catch { /* use empty */ }
+        resolve();
+      });
+    });
+
+    const { message, history = [], session_id } = parsedBody;
+    if (!message) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'message required' }));
+      return;
+    }
+
+    // Register session so /events/:sessionId can authenticate the subscriber
+    if (session_id) registerSession(session_id, clientId);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const send = (data) => { res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+    try {
+      const systemPrompt = await assembleSystemPrompt(
+        'interactive',
+        identity,
+        { agentContext: 'altwire' },
+        null,
+      );
+
+      // Spin up an in-process MCP client connected to the tool server
+      const mcpServer = await createMcpServer({ agentContext: 'altwire', allowedTools, clientId });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await mcpServer.connect(serverTransport);
+      const mcpClient = new Client({ name: 'hal-chat', version: '1.0' }, { capabilities: {} });
+      await mcpClient.connect(clientTransport);
+
+      const { tools: mcpTools } = await mcpClient.listTools();
+      const anthropicTools = mcpTools.map((t) => ({
+        name: t.name,
+        description: t.description ?? '',
+        input_schema: t.inputSchema ?? { type: 'object', properties: {} },
+      }));
+
+      // Build conversation history
+      let messages = [
+        ...history.map((h) => ({ role: h.role, content: String(h.content) })),
+        { role: 'user', content: message },
+      ];
+
+      const { default: Anthropic } = await import('@anthropic-ai/sdk');
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const model = process.env.ALTUS_CHAT_MODEL ?? 'claude-sonnet-4-5';
+
+      // Agentic loop — max 15 iterations to prevent runaway tool chains
+      for (let iteration = 0; iteration < 15; iteration++) {
+        const responseStream = anthropic.messages.stream({
+          model,
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages,
+          tools: anthropicTools,
+        });
+
+        const currentContent = [];
+        let stopReason = null;
+
+        for await (const event of responseStream) {
+          if (event.type === 'content_block_start') {
+            if (event.content_block.type === 'text') {
+              currentContent[event.index] = { type: 'text', text: '' };
+            } else if (event.content_block.type === 'tool_use') {
+              currentContent[event.index] = {
+                type: 'tool_use',
+                id: event.content_block.id,
+                name: event.content_block.name,
+                input: {},
+                _inputJson: '',
+              };
+              send({ event: 'tool_start', tool: event.content_block.name, label: `Using ${event.content_block.name}…`, iteration: iteration + 1 });
+            }
+          }
+          if (event.type === 'content_block_delta') {
+            const block = currentContent[event.index];
+            if (event.delta.type === 'text_delta' && block?.type === 'text') {
+              block.text += event.delta.text;
+              send({ token: event.delta.text });
+            } else if (event.delta.type === 'input_json_delta' && block?.type === 'tool_use') {
+              block._inputJson += event.delta.partial_json;
+            }
+          }
+          if (event.type === 'content_block_stop') {
+            const block = currentContent[event.index];
+            if (block?.type === 'tool_use') {
+              try { block.input = JSON.parse(block._inputJson || '{}'); } catch { block.input = {}; }
+            }
+          }
+          if (event.type === 'message_delta') stopReason = event.delta.stop_reason;
+        }
+
+        // Push assistant turn into history
+        messages.push({ role: 'assistant', content: currentContent.filter(Boolean).map(({ _inputJson: _, ...b }) => b) });
+
+        if (stopReason !== 'tool_use') break;
+
+        // Execute tool calls and push results
+        const toolResults = [];
+        for (const block of currentContent.filter(Boolean)) {
+          if (block.type !== 'tool_use') continue;
+          let toolContent = [{ type: 'text', text: 'Error: tool call failed' }];
+          let success = false;
+          try {
+            const result = await mcpClient.callTool({ name: block.name, arguments: block.input });
+            toolContent = result.content ?? [{ type: 'text', text: '' }];
+            success = true;
+          } catch (err) {
+            toolContent = [{ type: 'text', text: `Tool error: ${err.message}` }];
+          }
+          const summary = toolContent.filter((c) => c.type === 'text').map((c) => c.text).join('').slice(0, 200);
+          send({ event: 'tool_done', tool: block.name, label: block.name, success, summary });
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: toolContent });
+        }
+        messages.push({ role: 'user', content: toolResults });
+      }
+
+      send({ done: true, session_id: 0 });
+    } catch (err) {
+      logger.error('hal/chat error', { error: err.message, stack: err.stack });
+      send({ token: '\n\nSorry, something went wrong. Please try again.' });
+      send({ done: true, session_id: 0 });
+    }
+
+    res.end();
     return;
   }
 
@@ -3231,16 +3638,22 @@ const httpServer = createServer(async (req, res) => {
   const eventsMatch = url.pathname.match(/^\/events\/(.+)$/);
   if (eventsMatch && req.method === 'GET') {
     const sessionId = eventsMatch[1];
+    setChatCors(req, res);
 
-    // Authenticate the SSE subscriber
+    // Authenticate the SSE subscriber.
+    // EventSource can't set Authorization headers, so accept ?token= as fallback.
     const authHeader = req.headers['authorization'] || '';
-    if (!authHeader.startsWith('Bearer ')) {
+    const queryToken = url.searchParams.get('token');
+    if (!authHeader.startsWith('Bearer ') && !queryToken) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }
-    const token = authHeader.slice(7).trim();
-    const clientId = await identifyClient(req);
+    // Build a req-like object with the token injected so identifyClient works regardless of source
+    const eventsReq = authHeader.startsWith('Bearer ')
+      ? req
+      : { ...req, headers: { ...req.headers, authorization: `Bearer ${queryToken}` } };
+    const clientId = await identifyClient(eventsReq);
     if (!clientId || !isSessionRegistered(sessionId, clientId)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'session_not_found_or_not_owned' }));
