@@ -8,11 +8,14 @@ describe('altus-search.js', () => {
 
   it('returns structured error when DATABASE_URL is not set', async () => {
     const saved = process.env.DATABASE_URL;
+    const savedAltwire = process.env.ALTWIRE_DATABASE_URL;
     delete process.env.DATABASE_URL;
+    delete process.env.ALTWIRE_DATABASE_URL;
     const { searchAltwireArchive } = await import('../handlers/altus-search.js');
     const result = await searchAltwireArchive({ query: 'test', limit: 5, content_type: 'all' });
     expect(result.error).toBe('Database not configured');
     if (saved !== undefined) process.env.DATABASE_URL = saved;
+    if (savedAltwire !== undefined) process.env.ALTWIRE_DATABASE_URL = savedAltwire;
   });
 
   it('returns structured error when Voyage embedding fails', async () => {
@@ -43,6 +46,7 @@ describe('altus-search.js', () => {
     });
     vi.doMock('../lib/altus-db.js', () => ({
       default: { query: mockQuery },
+      hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
     }));
     const { searchAltwireArchive } = await import('../handlers/altus-search.js');
     await searchAltwireArchive({ query: 'live show', limit: 5, content_type: 'post' });
@@ -59,6 +63,7 @@ describe('altus-search.js', () => {
     const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
     vi.doMock('../lib/altus-db.js', () => ({
       default: { query: mockQuery },
+      hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
     }));
     const { searchAltwireArchive } = await import('../handlers/altus-search.js');
     await searchAltwireArchive({ query: 'artist', limit: 5, content_type: 'all' });
@@ -73,6 +78,7 @@ describe('altus-search.js', () => {
       embedQuery: async () => mockEmbedding,
     }));
     vi.doMock('../lib/altus-db.js', () => ({
+      hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
       default: {
         query: vi.fn()
           .mockResolvedValueOnce({

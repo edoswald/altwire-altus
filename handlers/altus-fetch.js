@@ -3,7 +3,7 @@
  * Retrieves a specific piece of content from the archive by URL or slug.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 
 function extractSlug(url) {
@@ -20,7 +20,7 @@ function extractSlug(url) {
  * @returns {Promise<object>}
  */
 export async function getContentByUrl({ url, slug }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 

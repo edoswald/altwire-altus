@@ -32,12 +32,13 @@ if (process.env.LMNR_PROJECT_API_KEY) {
 
 import { sessionIdStorage } from './lib/safe-tool-handler.js';
 import { observe } from './tracing.js';
+import { logAltusEvent } from './altus-event-log.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from 'http';
 import { z } from 'zod';
 import { logger } from './logger.js';
-import pool, { initSchema, initMountaineeringSchema } from './lib/altus-db.js';
+import pool, { initSchema, initMountaineeringSchema, hasDbConfig } from './lib/altus-db.js';
 import {
   seedMountaineeringClimbs,
   collectClimbScores,
@@ -88,6 +89,27 @@ import {
   listWatchSubjects,
 } from './handlers/altus-watch-list.js';
 import {
+  initChatPresenceSchema,
+  listChatPresence,
+  upsertChatPresence,
+  cleanupChatPresence,
+} from './handlers/altus-chat-presence.js';
+import {
+  initCommitmentsSchema,
+  recordCommitment,
+  listCommitments,
+  updateCommitment,
+  recordWatchItem,
+  listWatchItems,
+  updateWatchItem,
+  recordAutonomyNote,
+} from './handlers/altus-commitments.js';
+import {
+  listDocuments,
+  getDocument,
+  saveDocument,
+} from './handlers/altus-documents.js';
+import {
   initWriterSchema,
   createAssignment,
   generateOutline,
@@ -100,6 +122,12 @@ import {
   getAssignment,
   listAssignments,
 } from './handlers/altus-writer.js';
+import {
+  initOpportunityQueueSchema,
+  upsertStoryOpportunityQueue,
+  listStoryOpportunityQueue,
+  assignStoryOpportunity,
+} from './handlers/altus-opportunity-queue.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
@@ -249,6 +277,18 @@ const TOOL_CONTEXTS = {
   altus_add_watch_subject:     [],
   altus_remove_watch_subject:  [],
   altus_list_watch_subjects:   [],
+  // Shared Hal parity surfaces
+  altus_list_chat_presence:    [],
+  altus_list_documents:        [],
+  altus_get_document:          [],
+  altus_save_document:         [],
+  altus_record_commitment:     [],
+  altus_list_commitments:      [],
+  altus_update_commitment:     [],
+  altus_record_watch_item:     [],
+  altus_list_watch_items:      [],
+  altus_update_watch_item:     [],
+  altus_record_autonomy_note:  [],
   // AI Writer pipeline
   create_article_assignment:   [],
   generate_article_outline:    [],
@@ -340,9 +380,17 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     initWatchListSchema().catch((err) => {
       logger.error('Watch list schema init failed', { error: err.message, code: err.code });
     });
-    initWriterSchema().catch((err) => {
-      logger.error('Writer schema init failed', { error: err.message, code: err.code });
+    initChatPresenceSchema().catch((err) => {
+      logger.error('Chat presence schema init failed', { error: err.message, code: err.code });
     });
+    initCommitmentsSchema().catch((err) => {
+      logger.error('Commitments schema init failed', { error: err.message, code: err.code });
+    });
+    initWriterSchema()
+      .then(() => initOpportunityQueueSchema())
+      .catch((err) => {
+        logger.error('Writer/opportunity schema init failed', { error: err.message, code: err.code });
+      });
     initMountaineeringSchema().catch((err) => {
       logger.error('Mountaineering schema init failed', { error: err.message, code: err.code });
     });
@@ -379,21 +427,54 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   startIngestCron();
 
   // News Monitor — 4:30 AM ET daily (after 4 AM reflection so fresh GSC data is available)
-  cron.schedule('30 4 * * *', () => observe({ name: 'news_monitor', spanType: 'DEFAULT' }, async () => { runNewsMonitorCron(); }), { timezone: 'America/New_York' });
+  cron.schedule('30 4 * * *', () => observe({ name: 'news_monitor', spanType: 'DEFAULT' }, async () => {
+    await runNewsMonitorCron();
+  }), { timezone: 'America/New_York' });
 
   // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; writes altus:story_opportunities:{date} cache)
   cron.schedule('0 5 * * 1-5', () => observe({ name: 'story_opportunities', spanType: 'DEFAULT' }, async () => {
     try {
       const { getStoryOpportunities } = await import('./handlers/altus-topic-discovery.js');
-      await getStoryOpportunities({ days: 28 });
+      await logAltusEvent('cron_trigger', { payload: { cron_name: 'story_opportunities', phase: 'started' } });
+      const result = await getStoryOpportunities({ days: 28 });
+      if (result?.error) {
+        await logAltusEvent('cron_trigger', {
+          payload: {
+            cron_name: 'story_opportunities',
+            phase: 'failed',
+            error: result.error,
+            message: result.message ?? null,
+          },
+        });
+        logger.error('story_opportunities cron failed', { error: result.error, message: result.message });
+        return;
+      }
+      await upsertStoryOpportunityQueue(result);
+      await logAltusEvent('cron_trigger', {
+        payload: {
+          cron_name: 'story_opportunities',
+          phase: 'completed',
+          opportunities: result?.opportunities?.length ?? 0,
+          cached: Boolean(result?.cached),
+        },
+      });
       logger.info('story_opportunities cron: completed');
     } catch (err) {
+      await logAltusEvent('cron_trigger', {
+        payload: {
+          cron_name: 'story_opportunities',
+          phase: 'failed',
+          error: err.message,
+        },
+      });
       logger.error('story_opportunities cron failed', { error: err.message });
     }
   }), { timezone: 'America/New_York' });
 
   // Performance Snapshot — 6 AM ET daily
-  cron.schedule('0 6 * * *', () => observe({ name: 'performance_snapshot', spanType: 'DEFAULT' }, async () => { runPerformanceSnapshotCron(); }), { timezone: 'America/New_York' });
+  cron.schedule('0 6 * * *', () => observe({ name: 'performance_snapshot', spanType: 'DEFAULT' }, async () => {
+    await runPerformanceSnapshotCron();
+  }), { timezone: 'America/New_York' });
 
   // AltWire Nightly Reflection — 4 AM ET daily
   cron.schedule('0 4 * * *', () => observe({ name: 'altwire_reflection', spanType: 'DEFAULT' }, async () => {
@@ -412,6 +493,18 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       await runAltusHeartbeat();
     } catch (err) {
       logger.error('Altus heartbeat cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Chat presence cleanup — hourly
+  cron.schedule('15 * * * *', async () => {
+    try {
+      const result = await cleanupChatPresence();
+      if (result?.deleted > 0) {
+        logger.info('Altus chat presence cleanup completed', { deleted: result.deleted });
+      }
+    } catch (err) {
+      logger.error('Altus chat presence cleanup failed', { error: err.message });
     }
   }, { timezone: 'America/New_York' });
 
@@ -953,7 +1046,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: 1, title: params.title, reviewer: params.reviewer || 'Derek', status: 'assigned' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await createReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -976,7 +1069,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, status: params.status || 'assigned' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -992,7 +1085,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review: { id: params.review_id, title: 'Test Review', reviewer: 'Derek', status: 'assigned' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getReview(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1009,7 +1102,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listReviews(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1025,7 +1118,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, reviews: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getUpcomingReviewDeadlines(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1047,7 +1140,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: 1, item_name: params.item_name, borrower: params.borrower || 'Derek', status: params.is_loaner === false ? 'kept' : 'out' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1072,7 +1165,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, status: params.status || 'out' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1088,7 +1181,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaner: { id: params.loaner_id, item_name: 'Test Item', borrower: 'Derek', status: 'out' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getLoaner(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1105,7 +1198,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listLoaners(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1118,7 +1211,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getOverdueLoaners();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1134,7 +1227,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, loaners: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getUpcomingLoanerReturns(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1152,7 +1245,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: 1, review_id: params.review_id, note_text: params.note_text, category: params.category || 'pro' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await addReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1170,7 +1263,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, note: { id: params.note_id, category: params.category || 'pro' } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await updateReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1187,7 +1280,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, notes: [], count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listReviewNotes(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1203,7 +1296,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deleted: true, note_id: params.note_id }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await deleteReviewNote(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1216,7 +1309,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, review_pipeline: {}, loaner_summary: {}, upcoming_deadlines: [], overdue_loaners: [], generated_at: new Date().toISOString() }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getEditorialDigest();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1237,7 +1330,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subject: { id: 1, name: params.name, active: true, added_at: new Date().toISOString(), notes: params.notes || null } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await addWatchSubject(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1254,7 +1347,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, deactivated_count: 1, subjects: [{ id: 1, name: params.name || 'Test Subject' }] }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await removeWatchSubject(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1270,7 +1363,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, subjects: [], total: 0, active_count: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listWatchSubjects(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1292,7 +1385,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment: { id: 1, topic: params.topic, article_type: params.article_type || 'article', status: 'outline_ready', archive_hits: 3, web_research_summary: 'Test research...', has_review_notes: !!params.review_notes_id } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await createAssignment(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1308,7 +1401,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, outline: { title_suggestion: 'Test Headline', sections: [{ title: 'Intro', points: ['Point 1'] }], angle: 'Test angle', estimated_words: 800 } }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await generateOutline(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1326,7 +1419,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: params.decision === 'approved' ? 'outline_approved' : params.decision === 'rejected' ? 'cancelled' : 'outline_ready', decision_logged: true }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await approveOutline(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1342,7 +1435,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, status: 'draft_ready', word_count: 850, draft_preview: 'Test draft content...' }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await generateDraft(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1358,7 +1451,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, passed: true, issues_found: 0, status: 'ready_to_post' }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await factCheckDraft(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1377,7 +1470,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, wp_post_id: 12345, wp_post_url: 'https://altwire.net/?p=12345', status: 'posted' }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await postToWordPress(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1393,7 +1486,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignment_id: params.assignment_id, topic: 'Test Topic', title_suggestion: 'Test Headline', html: '<h2>Test</h2><p>Draft content.</p>', word_count: 850, instructions: 'Copy the html field and paste into WordPress → Text/Code editor.' }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getDraftAsHtml(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1412,7 +1505,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, decision_id: 1 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logEditorialDecision(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1428,7 +1521,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, id: params.id, topic: 'Test Topic', status: 'outline_ready', decisions: [] }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getAssignment(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -1447,7 +1540,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async (params) => {
       if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, assignments: [], count: 0, total: 0 }) }] };
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await listAssignments(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -2035,7 +2128,7 @@ async ({ status, limit }) => {
       description: 'Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, search opportunities, and today\'s Matomo pageviews.',
     },
     async () => {
-      if (!process.env.DATABASE_URL) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const { rows: activeRows } = await pool.query(
         `SELECT COUNT(*) AS count FROM altus_assignments WHERE status NOT IN ('posted', 'cancelled')`
       );
@@ -2206,6 +2299,198 @@ async ({ status, limit }) => {
   // Mountaineering tools — supervised hill-climbing optimization loop
   // -------------------------------------------------------------------------
   scopedRegister(
+    'altus_list_chat_presence',
+    {
+      description: 'List active Altus chat/session presence rows. Useful when checking whether the shared Hal shell still has a live Altus session attached.',
+      inputSchema: {
+        client_id: z.string().optional().describe('Optional client ID filter'),
+        active_only: z.boolean().default(true).optional().describe('Only return recently active sessions (default true)'),
+        limit: z.number().int().min(1).max(100).default(20).optional().describe('Max rows to return (default 20)'),
+      },
+    },
+    async ({ client_id, active_only, limit }) => {
+      const result = await listChatPresence({ client_id, active_only, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_documents',
+    {
+      description: 'Browse lightweight shared-Hal documents stored in agent memory, including editorial context, reflections, research notes, and workspace guidance.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(200).default(50).optional().describe('Max documents to return (default 50)'),
+      },
+    },
+    async ({ limit }) => {
+      const result = await listDocuments({ limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_document',
+    {
+      description: 'Retrieve a single lightweight shared-Hal document by agent-memory key.',
+      inputSchema: {
+        key: z.string().min(1).describe('Document key, such as hal:altwire:editorial_context'),
+      },
+    },
+    async ({ key }) => {
+      const result = await getDocument(key);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_save_document',
+    {
+      description: 'Update a lightweight shared-Hal document in agent memory without touching broader memory routing or analytics payloads.',
+      inputSchema: {
+        key: z.string().min(1).describe('Existing document key to update'),
+        value: z.string().describe('Replacement document value'),
+      },
+    },
+    async ({ key, value }) => {
+      if (process.env.TEST_MODE === 'true') {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, key }) }] };
+      }
+      const result = await saveDocument(key, value);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_record_commitment',
+    {
+      description: 'Record a durable Altus commitment so shared-Hal follow-through survives beyond the current session.',
+      inputSchema: {
+        admin_id: z.number().int().positive().optional().describe('Optional Altus admin ID owner'),
+        client_id: z.string().optional().describe('Optional OAuth client owner'),
+        title: z.string().min(1).describe('Short commitment title'),
+        description: z.string().optional().describe('Optional detail about what will be done'),
+        due_at: z.string().optional().describe('Optional ISO due datetime'),
+        source: z.string().optional().describe('Source label, defaults to manual'),
+        evidence: z.string().optional().describe('Optional evidence or rationale'),
+        session_id: z.string().optional().describe('Optional originating session ID'),
+      },
+    },
+    async (params) => {
+      const result = await recordCommitment(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_commitments',
+    {
+      description: 'List tracked Altus commitments by status, optionally filtering for overdue items.',
+      inputSchema: {
+        status: z.enum(['open', 'completed', 'blocked', 'cancelled']).default('open').optional().describe('Commitment status to list'),
+        overdue: z.boolean().default(false).optional().describe('Only include overdue commitments'),
+        limit: z.number().int().min(1).max(100).default(20).optional().describe('Max rows to return (default 20)'),
+      },
+    },
+    async ({ status, overdue, limit }) => {
+      const result = await listCommitments({ status, overdue, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_update_commitment',
+    {
+      description: 'Advance or close an existing Altus commitment with evidence and outcome notes.',
+      inputSchema: {
+        commitment_id: z.number().int().positive().describe('Commitment ID'),
+        status: z.enum(['open', 'completed', 'blocked', 'cancelled']).describe('New commitment status'),
+        evidence: z.string().optional().describe('Optional evidence update'),
+        outcome_notes: z.string().optional().describe('Optional outcome notes'),
+      },
+    },
+    async (params) => {
+      const result = await updateCommitment(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_record_watch_item',
+    {
+      description: 'Record a durable watch item for something Altus should revisit or monitor over time.',
+      inputSchema: {
+        admin_id: z.number().int().positive().optional().describe('Optional Altus admin ID owner'),
+        client_id: z.string().optional().describe('Optional OAuth client owner'),
+        title: z.string().min(1).describe('Short watch item title'),
+        description: z.string().optional().describe('Optional detail about what to watch'),
+        cadence: z.string().optional().describe('Cadence label such as daily, weekly, or as-needed'),
+        next_check_at: z.string().optional().describe('Optional ISO datetime for the next check'),
+        source: z.string().optional().describe('Source label, defaults to manual'),
+        evidence: z.string().optional().describe('Optional evidence or rationale'),
+        session_id: z.string().optional().describe('Optional originating session ID'),
+      },
+    },
+    async (params) => {
+      const result = await recordWatchItem(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_list_watch_items',
+    {
+      description: 'List tracked Altus watch items by status, optionally filtering for items due for a check-in.',
+      inputSchema: {
+        status: z.enum(['active', 'resolved', 'cancelled']).default('active').optional().describe('Watch item status to list'),
+        due: z.boolean().default(false).optional().describe('Only include items due for review'),
+        limit: z.number().int().min(1).max(100).default(20).optional().describe('Max rows to return (default 20)'),
+      },
+    },
+    async ({ status, due, limit }) => {
+      const result = await listWatchItems({ status, due, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_update_watch_item',
+    {
+      description: 'Advance, resolve, or cancel a tracked Altus watch item.',
+      inputSchema: {
+        watch_item_id: z.number().int().positive().describe('Watch item ID'),
+        status: z.enum(['active', 'resolved', 'cancelled']).describe('New watch item status'),
+        next_check_at: z.string().optional().describe('Optional replacement ISO next-check datetime'),
+        evidence: z.string().optional().describe('Optional evidence update'),
+        outcome_notes: z.string().optional().describe('Optional outcome notes'),
+      },
+    },
+    async (params) => {
+      const result = await updateWatchItem(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_record_autonomy_note',
+    {
+      description: 'Store a lightweight autonomy or policy note alongside the new commitment-tracking surfaces.',
+      inputSchema: {
+        admin_id: z.number().int().positive().optional().describe('Optional Altus admin ID owner'),
+        client_id: z.string().optional().describe('Optional OAuth client owner'),
+        note_type: z.string().optional().describe('Note type label, defaults to general'),
+        body: z.string().min(1).describe('Autonomy note body'),
+        source: z.string().optional().describe('Source label, defaults to autonomy'),
+        evidence: z.string().optional().describe('Optional evidence or rationale'),
+        session_id: z.string().optional().describe('Optional originating session ID'),
+      },
+    },
+    async (params) => {
+      const result = await recordAutonomyNote(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
     'altus_create_climb',
     {
       description: 'Create a new mountaineering optimization climb. A climb defines what to optimize (objective), how to measure it (metric_description), where the mutable state lives (workspace_key in agent_memory), and frozen evaluation criteria (eval_snapshot). Name must be lowercase kebab-case.',
@@ -2342,6 +2627,23 @@ async function identifyClient(req) {
     } catch { /* timingSafeEqual threw — lengths mismatch */ }
   }
   return null;
+}
+
+async function trackChatPresence(req, clientId) {
+  const authHeader = req.headers['authorization'] || '';
+  if (!authHeader.startsWith('Bearer ')) return;
+  const token = authHeader.slice(7).trim();
+  if (!token || !clientId) return;
+
+  const sessionTokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  try {
+    await upsertChatPresence({
+      client_id: clientId,
+      session_token_hash: sessionTokenHash,
+    });
+  } catch (err) {
+    logger.warn('Chat presence upsert failed', { error: err.message, clientId });
+  }
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -2810,6 +3112,68 @@ const httpServer = createServer(async (req, res) => {
   // ---------------------------------------------------------------------------
   // AltWire REST endpoints — authenticated via HAL_KEY
   // ---------------------------------------------------------------------------
+  // GET /altwire/opportunities — normalized story opportunities feed for chat UI
+  if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.HAL_KEY) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const statusParam = url.searchParams.get('status') || 'active';
+      const resolvedStatus = ['active', 'all', 'pending', 'in_progress', 'assigned', 'completed', 'dismissed'].includes(statusParam)
+        ? statusParam
+        : 'active';
+      const result = await getStoryOpportunities({ days: 28 });
+      if (!result?.error) await upsertStoryOpportunityQueue(result);
+      const queued = await listStoryOpportunityQueue({ status: resolvedStatus });
+      if (queued?.error) throw new Error(queued.error);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(queued));
+    } catch (err) {
+      logger.error('AltWire opportunities endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'opportunities_failed', message: 'Opportunities temporarily unavailable' }));
+    }
+    return;
+  }
+
+  // POST /altwire/opportunities/:id/assign — promote a story opportunity into the writer pipeline
+  const opportunityAssignMatch = url.pathname.match(/^\/altwire\/opportunities\/(\d+)\/assign$/);
+  if (opportunityAssignMatch && req.method === 'POST') {
+    const authToken = req.headers.authorization?.replace('Bearer ', '');
+    if (!authToken || authToken !== process.env.HAL_KEY) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    try {
+      const id = parseInt(opportunityAssignMatch[1], 10);
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const params = body ? JSON.parse(body) : {};
+      const result = await assignStoryOpportunity({
+        id,
+        article_type: params.article_type ?? 'article',
+      });
+      if (result?.error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      logger.error('AltWire opportunity assign endpoint failed', { error: err.message });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'assign_failed', message: 'Opportunity could not be assigned' }));
+    }
+    return;
+  }
+
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
@@ -2883,6 +3247,8 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    await trackChatPresence(req, clientId);
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -2934,6 +3300,8 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'agent_context_not_allowed' }));
       return;
     }
+
+    await trackChatPresence(req, clientId);
 
     // Read the body once so we can extract session_id AND forward it to the transport.
     // If we attach data/end listeners without saving the result, the body is consumed

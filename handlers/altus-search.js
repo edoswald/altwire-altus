@@ -4,7 +4,7 @@
  * Results are recency-weighted and re-sorted before returning.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { embedQuery } from '../lib/voyage.js';
 import { applyRecencyWeight } from '../lib/recency.js';
 import { logger } from '../logger.js';
@@ -14,7 +14,7 @@ import { logger } from '../logger.js';
  * @returns {Promise<object>} results or { error: string }
  */
 export async function searchAltwireArchive({ query, limit, content_type }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 

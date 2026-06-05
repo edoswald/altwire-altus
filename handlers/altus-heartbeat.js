@@ -192,6 +192,24 @@ async function checkConditions() {
   );
   conditions.stale_proposed_items = parseInt(staleResult.rows[0].count, 10);
 
+  // Check: durable commitments past their due date
+  const overdueCommitmentsResult = await pool.query(
+    `SELECT COUNT(*) as count FROM altus_commitments
+      WHERE status = 'open'
+        AND due_at IS NOT NULL
+        AND due_at <= NOW()`,
+  );
+  conditions.overdue_commitments = parseInt(overdueCommitmentsResult.rows[0].count, 10);
+
+  // Check: watch items that are due for review
+  const dueWatchItemsResult = await pool.query(
+    `SELECT COUNT(*) as count FROM altus_watch_items
+      WHERE status = 'active'
+        AND next_check_at IS NOT NULL
+        AND next_check_at <= NOW()`,
+  );
+  conditions.due_watch_items = parseInt(dueWatchItemsResult.rows[0].count, 10);
+
   return conditions;
 }
 
@@ -320,6 +338,12 @@ export async function runAltusHeartbeat() {
     }
     if (conditions.stale_proposed_items > 0) {
       breached.push({ key: 'stale_proposed_items', count: conditions.stale_proposed_items });
+    }
+    if (conditions.overdue_commitments > 0) {
+      breached.push({ key: 'overdue_commitments', count: conditions.overdue_commitments });
+    }
+    if (conditions.due_watch_items > 0) {
+      breached.push({ key: 'due_watch_items', count: conditions.due_watch_items });
     }
 
     for (const alert of breached) {

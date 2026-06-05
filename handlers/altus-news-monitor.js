@@ -3,9 +3,11 @@
  * cross-references with Derek's watch list for coverage alerts.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getNewsSearchPerformance } from './altwire-gsc-client.js';
+import { logAltusEvent } from '../altus-event-log.js';
+import { upsertNewsOpportunityQueue } from './altus-opportunity-queue.js';
 
 /**
  * Case-insensitive substring watch list matching.
@@ -37,7 +39,7 @@ export async function getNewsOpportunities({ days = 7 } = {}) {
     };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
@@ -109,15 +111,29 @@ export async function getNewsOpportunities({ days = 7 } = {}) {
  * @returns {Promise<void>}
  */
 export async function runNewsMonitorCron() {
-  if (!process.env.DATABASE_URL) {
-    logger.warn('News monitor cron: DATABASE_URL not set — skipping');
+  if (!hasDbConfig()) {
+    logger.warn('News monitor cron: database URL not set — skipping');
     return;
   }
 
   logger.info('News monitor cron: starting');
+  await logAltusEvent('cron_trigger', { payload: { cron_name: 'news_monitor', phase: 'started' } });
 
   try {
     const result = await getNewsOpportunities();
+    if (result.error) {
+      logger.error('News monitor cron: opportunities fetch failed', { error: result.error, message: result.message });
+      await logAltusEvent('cron_trigger', {
+        payload: {
+          cron_name: 'news_monitor',
+          phase: 'failed',
+          error: result.error,
+          message: result.message ?? null,
+        },
+      });
+      return result;
+    }
+
     const today = new Date().toISOString().slice(0, 10);
     const alertKey = `altus:news_alert:${today}`;
 
@@ -127,11 +143,34 @@ export async function runNewsMonitorCron() {
       ['altus', alertKey, JSON.stringify(result)]
     );
 
+    const queueResult = await upsertNewsOpportunityQueue(result);
+    if (queueResult?.error) {
+      logger.warn('News monitor cron: opportunity queue upsert failed', { error: queueResult.error });
+    }
+
     logger.info('News monitor cron: completed', {
       newsQueries: result.news_queries?.length ?? 0,
       watchListMatches: result.watch_list_matches?.length ?? 0,
+      queuedOpportunities: queueResult?.upserted ?? 0,
     });
+    await logAltusEvent('cron_trigger', {
+      payload: {
+        cron_name: 'news_monitor',
+        phase: 'completed',
+        news_queries: result.news_queries?.length ?? 0,
+        watch_list_matches: result.watch_list_matches?.length ?? 0,
+        queued_opportunities: queueResult?.upserted ?? 0,
+      },
+    });
+    return result;
   } catch (err) {
     logger.error('News monitor cron: failed', { error: err.message });
+    await logAltusEvent('cron_trigger', {
+      payload: {
+        cron_name: 'news_monitor',
+        phase: 'failed',
+        error: err.message,
+      },
+    });
   }
 }

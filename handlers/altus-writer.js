@@ -533,19 +533,21 @@ If no issues found, return { "passed": true, "issues": [] }`,
     finalResults = results;
   }
 
+  const finalPassed = finalResults.passed === true && (!finalResults.issues || finalResults.issues.length === 0);
+  const finalStatus = finalPassed ? 'ready_to_post' : 'needs_revision';
   const updated = await updateAssignment(assignment_id, {
     draft_content: draftContent,
     draft_word_count: draftContent.split(/\s+/).filter(Boolean).length,
     fact_check_results: JSON.stringify(finalResults),
-    status: 'ready_to_post',
+    status: finalStatus,
   });
 
   return {
-    success: true,
+    success: finalPassed,
     assignment_id: updated.id,
-    passed: finalResults.passed ?? false,
+    passed: finalPassed,
     issues_found: finalResults.issues?.length || 0,
-    status: 'ready_to_post',
+    status: finalStatus,
   };
 }
 

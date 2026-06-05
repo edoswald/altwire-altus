@@ -3,14 +3,14 @@
  * Returns health and coverage statistics for the AltWire content archive.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 
 /**
  * @returns {Promise<object>}
  */
 export async function getArchiveStats() {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 

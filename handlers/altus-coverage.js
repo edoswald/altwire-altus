@@ -6,6 +6,7 @@
 import { searchAltwireArchive } from './altus-search.js';
 import { synthesizeCoverageAssessment } from '../lib/synthesizer.js';
 import { logger } from '../logger.js';
+import { hasDbConfig } from '../lib/altus-db.js';
 
 function buildOpportunities(coverageStatus, monthsSinceLastPost, hasWritten, hasPhoto) {
   const opportunities = [];
@@ -34,7 +35,7 @@ function buildOpportunities(coverageStatus, monthsSinceLastPost, hasWritten, has
  * @returns {Promise<object>}
  */
 export async function analyzeCoverageGaps({ subject, limit }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 

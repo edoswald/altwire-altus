@@ -3,7 +3,7 @@
  * against AltWire archive coverage to surface story opportunities.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
 import { searchAltwireArchive } from './altus-search.js';
@@ -65,7 +65,7 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
     };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 

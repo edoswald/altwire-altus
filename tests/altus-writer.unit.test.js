@@ -1,6 +1,6 @@
 // Feature: altus-ai-writer, Unit tests for AI Writer pipeline
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { detectProvider } from '../lib/writer-client.js';
 
 // ---------------------------------------------------------------------------
@@ -270,5 +270,99 @@ describe('approveOutline decision mapping', () => {
 
   it('modified → outline_ready', () => {
     expect(mapping.modified).toBe('outline_ready');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// factCheckDraft — unresolved issue handling
+// ---------------------------------------------------------------------------
+
+describe('factCheckDraft unresolved issue handling', () => {
+  const mockQuery = vi.fn();
+  const mockGenerate = vi.fn();
+
+  beforeEach(() => {
+    vi.resetModules();
+    mockQuery.mockReset();
+    mockGenerate.mockReset();
+
+    vi.doMock('../lib/altus-db.js', () => ({
+      default: { query: mockQuery },
+    }));
+    vi.doMock('../lib/writer-client.js', () => ({
+      generate: mockGenerate,
+      detectProvider,
+    }));
+    vi.doMock('../handlers/altus-search.js', () => ({
+      searchAltwireArchive: vi.fn(),
+    }));
+    vi.doMock('../lib/wp-client.js', () => ({
+      buildAuthHeader: vi.fn(),
+    }));
+    vi.doMock('../hal-harness.js', () => ({
+      getDerekAuthorProfile: vi.fn(),
+    }));
+    vi.doMock('../logger.js', () => ({
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    }));
+  });
+
+  it('keeps assignment in needs_revision when corrected draft still has unresolved fact-check issues', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 7,
+          topic: 'The Example Band album',
+          status: 'draft_ready',
+          draft_content: '## Release Date\n\nThe album came out in 2024.',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ id: 7, status: 'fact_checking' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 7, status: 'needs_revision' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 7, status: 'needs_revision' }] });
+
+    mockGenerate
+      .mockResolvedValueOnce(JSON.stringify({
+        passed: false,
+        issues: [{
+          section_heading: '## Release Date',
+          claim: 'The album came out in 2024.',
+          issue: 'Release date is unverifiable.',
+          severity: 'high',
+        }],
+      }))
+      .mockResolvedValueOnce('## Release Date\n\nThe album release date is still unclear.')
+      .mockResolvedValueOnce(JSON.stringify({
+        passed: false,
+        issues: [{
+          section_heading: '## Release Date',
+          claim: 'The album release date is still unclear.',
+          issue: 'Still lacks a source.',
+          severity: 'high',
+        }],
+      }));
+
+    const { factCheckDraft } = await import('../handlers/altus-writer.js');
+    const result = await factCheckDraft({ assignment_id: 7 });
+
+    const finalUpdateCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string'
+        && call[0].includes('UPDATE altus_assignments')
+        && call[1]?.includes('needs_revision')
+        && call[1]?.some((value) => typeof value === 'string' && value.includes('Still lacks a source.')),
+    );
+
+    expect(finalUpdateCall).toBeDefined();
+    expect(result).toEqual(expect.objectContaining({
+      success: false,
+      passed: false,
+      status: 'needs_revision',
+      issues_found: 1,
+    }));
   });
 });
