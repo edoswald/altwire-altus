@@ -2787,6 +2787,20 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // OAuth 2.0 Protected Resource Metadata (RFC 9728).
+  // MCP clients (Claude) fetch this FIRST to discover the authorization server
+  // for this resource. Without it, Claude cannot bootstrap the OAuth flow —
+  // cirrus/nimbus expose this, which is why they connect and altus did not.
+  if (url.pathname === '/.well-known/oauth-protected-resource' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      resource: MCP_BASE_URL,
+      authorization_servers: [MCP_BASE_URL],
+      scopes_supported: ['read'],
+    }));
+    return;
+  }
+
   // POST /oauth/register — RFC 7591 Dynamic Client Registration
   // MCP clients (Claude Desktop, Claude Code) use this to self-register before
   // starting the OAuth flow. PKCE-only: no client_secret issued or required.
