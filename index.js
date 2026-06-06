@@ -2835,10 +2835,17 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
       return;
     }
-    // Allow dynamic localhost/127.0.0.1 ports for desktop OAuth clients (PKCE).
-    // These are safe because localhost callbacks can only be reached on the user's machine.
+    // Validate redirect_uri. Accept it if it is on the static allowlist, is a
+    // loopback callback, or was registered by this client via Dynamic Client
+    // Registration (RFC 7591). Honoring the DCR-registered URIs is required for
+    // Claude Desktop / Claude Code, which self-register their own callback —
+    // without this check they fail here with 'redirect_uri not allowed'.
+    // Loopback (localhost/127.0.0.1) ports vary per session and are only
+    // reachable on the user's own machine, so they are matched port-agnostically.
     const isLocalhostRedirect = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(redirectUri);
-    if (!isLocalhostRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
+    const dynamicClient = DYNAMIC_OAUTH_CLIENTS.get(clientId);
+    const isRegisteredRedirect = !!dynamicClient && dynamicClient.redirectUris.includes(redirectUri);
+    if (!isLocalhostRedirect && !isRegisteredRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri not allowed' }));
       return;
