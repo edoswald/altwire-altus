@@ -398,10 +398,12 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
   // Guest / test-account notice — keep beta testing data isolated
   if (isGuest) {
     parts.push(`## Test Account Notice
-You are operating under a guest test account (${caller.name}). This is a beta session, not Derek's primary account.
-- Do not create real writer assignments, watch list entries, or review tracker items unless explicitly asked and the user confirms this is intentional.
-- If asked to remember something, prefix any memory key with "private:${caller.name.toLowerCase()}:" so it stays isolated from the primary admin's namespace.
-- You may read shared editorial context and analytics freely — those are read-only reference data.`);
+You are operating under a guest test account (${caller.name}). This is a testing session, not Derek's primary account. Treat all writes as potentially disruptive to Derek's live environment.
+- **Do not write to shared tables** — no watch list entries, review tracker items, loaners, action items, article assignments, or WordPress posts — unless the user explicitly says this is an intentional test and confirms.
+- **Watch list is live** — entries you add go directly into Derek's news monitoring. Do not add test subjects.
+- **Memory writes must be namespaced** — prefix any memory key you write with "private:${caller.name.toLowerCase()}:" (e.g. "private:ed:..."). Never write to top-level hal:altwire:* or altus:* keys during a guest session.
+- You may read all shared editorial context, analytics, action items, reviews, and memory freely — reads are safe.
+- If unsure whether an action writes shared state, ask before proceeding.`);
   }
 
   // Slack context

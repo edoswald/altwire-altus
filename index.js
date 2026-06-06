@@ -2796,7 +2796,10 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
       return;
     }
-    if (!OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
+    // Allow dynamic localhost/127.0.0.1 ports for desktop OAuth clients (PKCE).
+    // These are safe because localhost callbacks can only be reached on the user's machine.
+    const isLocalhostRedirect = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(redirectUri);
+    if (!isLocalhostRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri not allowed' }));
       return;
@@ -2999,10 +3002,14 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // CORS allowlist for writer REST endpoints
+  // CORS allowlist for writer REST endpoints.
+  // Uses ALTUS_WRITER_ALLOWED_ORIGINS if set; falls back to HAL_UI_ALLOWED_ORIGINS
+  // so the chat UI works without a separate env var.
   const ALLOWED_ORIGINS = new Set(
-    (process.env.ALTUS_WRITER_ALLOWED_ORIGINS || '')
-      .split(',')
+    [
+      ...(process.env.ALTUS_WRITER_ALLOWED_ORIGINS || '').split(','),
+      ...(process.env.HAL_UI_ALLOWED_ORIGINS || '').split(','),
+    ]
       .map(u => u.trim())
       .filter(Boolean)
   );
@@ -3129,6 +3136,24 @@ const httpServer = createServer(async (req, res) => {
         logger.error('Writer news alerts query failed', { error: err.message });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
+      }
+      return;
+    }
+
+    // GET /hal/writer/summary — dashboard summary card for the chat UI prompt page
+    if (url.pathname === '/hal/writer/summary' && req.method === 'GET') {
+      try {
+        const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
+        const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
+        const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
+        const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
+        const summary = await buildWriterSummary({ getTrafficSummary, getSearchOpportunities, getAltwireMorningDigest });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(summary));
+      } catch (err) {
+        logger.error('Writer summary query failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'summary_failed', message: err.message }));
       }
       return;
     }
