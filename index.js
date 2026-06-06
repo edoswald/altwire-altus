@@ -2494,7 +2494,10 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
       return;
     }
-    if (!OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
+    // Allow dynamic localhost/127.0.0.1 ports for desktop OAuth clients (PKCE).
+    // These are safe because localhost callbacks can only be reached on the user's machine.
+    const isLocalhostRedirect = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(redirectUri);
+    if (!isLocalhostRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri not allowed' }));
       return;
