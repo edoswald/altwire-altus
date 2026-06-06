@@ -150,6 +150,11 @@ function discoverOAuthClients() {
 
 const OAUTH_CLIENTS = discoverOAuthClients();
 
+// Dynamic client registry — populated at runtime via POST /oauth/register (RFC 7591).
+// Clients registered here are PKCE-only (no client_secret) and stored in memory.
+// Entries survive for the lifetime of the process; clients re-register after restart.
+const DYNAMIC_OAUTH_CLIENTS = new Map(); // clientId → { redirectUris, clientName }
+
 const MCP_BASE_URL = process.env.MCP_BASE_URL || 'https://altus.altwire.net';
 
 const OAUTH_ALLOWED_REDIRECT_URIS = new Set([
@@ -2765,10 +2770,44 @@ const httpServer = createServer(async (req, res) => {
       issuer: MCP_BASE_URL,
       authorization_endpoint: `${MCP_BASE_URL}/authorize`,
       token_endpoint: `${MCP_BASE_URL}/oauth/token`,
+      registration_endpoint: `${MCP_BASE_URL}/oauth/register`,
       response_types_supported: ['code'],
       code_challenge_methods_supported: ['S256'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
     }));
+    return;
+  }
+
+  // POST /oauth/register — RFC 7591 Dynamic Client Registration
+  // MCP clients (Claude Desktop, Claude Code) use this to self-register before
+  // starting the OAuth flow. PKCE-only: no client_secret issued or required.
+  if (url.pathname === '/oauth/register' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let meta;
+      try { meta = JSON.parse(body); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_client_metadata' }));
+        return;
+      }
+      const clientId = `dyn_${crypto.randomBytes(16).toString('hex')}`;
+      const redirectUris = Array.isArray(meta.redirect_uris) ? meta.redirect_uris : [];
+      DYNAMIC_OAUTH_CLIENTS.set(clientId, {
+        redirectUris,
+        clientName: meta.client_name || 'MCP Client',
+      });
+      logger.info('OAuth dynamic client registered', { clientId, clientName: meta.client_name });
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        client_id: clientId,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        redirect_uris: redirectUris,
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }));
+    });
     return;
   }
 
@@ -2791,7 +2830,7 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'invalid_request' }));
       return;
     }
-    if (!OAUTH_CLIENTS.has(clientId)) {
+    if (!OAUTH_CLIENTS.has(clientId) && !DYNAMIC_OAUTH_CLIENTS.has(clientId)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
       return;
@@ -2858,23 +2897,27 @@ const httpServer = createServer(async (req, res) => {
       }
 
       const operator = OAUTH_CLIENTS.get(clientId);
-      if (!operator) {
+      const isDynamic = !operator && DYNAMIC_OAUTH_CLIENTS.has(clientId);
+      if (!operator && !isDynamic) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_client' }));
         return;
       }
-      const secretEnvKey = `OAUTH_CLIENT_SECRET_${operator}`;
-      const expectedSecret = process.env[secretEnvKey];
-      if (expectedSecret) {
-        // Hash both secrets before timing-safe comparison to prevent timing side-channel leaks
-        const presentedHash = crypto.createHash('sha256').update(presentedSecret).digest();
-        const expectedHash = crypto.createHash('sha256').update(expectedSecret).digest();
-        if (!crypto.timingSafeEqual(presentedHash, expectedHash)) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid_client' }));
-          return;
+      if (!isDynamic) {
+        // Static clients may have a secret — verify if configured
+        const secretEnvKey = `OAUTH_CLIENT_SECRET_${operator}`;
+        const expectedSecret = process.env[secretEnvKey];
+        if (expectedSecret && presentedSecret) {
+          const presentedHash = crypto.createHash('sha256').update(presentedSecret).digest();
+          const expectedHash = crypto.createHash('sha256').update(expectedSecret).digest();
+          if (!crypto.timingSafeEqual(presentedHash, expectedHash)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_client' }));
+            return;
+          }
         }
       }
+      // Dynamic clients are PKCE-only — no secret check needed
 
       if (grantType === 'authorization_code') {
         const { getAuthCode, storeAccessToken, storeRefreshToken } = await import('./lib/oauth-store.js');
