@@ -2771,6 +2771,36 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // --- Global CORS for the MCP transport, OAuth, and discovery endpoints ---
+  // Claude's web/desktop client issues browser-originated requests (Origin:
+  // https://claude.ai) to /.well-known/*, /authorize, /oauth/*, and /mcp. Without
+  // these headers the browser blocks the responses and the connection fails with
+  // "Authorization with the MCP server failed" — which is why cirrus/nimbus (which
+  // set CORS globally) connect and altus did not. Mirrors their behavior.
+  {
+    const ALLOWED_ORIGINS = new Set([
+      'https://claude.ai',
+      'https://app.claude.ai',
+      'https://claude.com',
+      process.env.ALLOWED_ORIGIN,
+    ].filter(Boolean));
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    } else if (!origin) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, X-Agent-Context, Accept');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+  }
+
   if (!globalLimiter.check(req, res)) return;
 
   if (url.pathname === '/.well-known/oauth-authorization-server' && req.method === 'GET') {
@@ -2827,7 +2857,7 @@ const httpServer = createServer(async (req, res) => {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
         redirect_uris: redirectUris,
-        grant_types: ['authorization_code'],
+        grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
       }));
