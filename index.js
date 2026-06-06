@@ -150,15 +150,24 @@ function discoverOAuthClients() {
 
 const OAUTH_CLIENTS = discoverOAuthClients();
 
-// Dynamic client registry — populated at runtime via POST /oauth/register (RFC 7591).
-// Clients registered here are PKCE-only (no client_secret) and stored in memory.
-// Entries survive for the lifetime of the process; clients re-register after restart.
-const DYNAMIC_OAUTH_CLIENTS = new Map(); // clientId → { redirectUris, clientName }
+// Dynamically registered clients (RFC 7591) are persisted in Postgres via
+// lib/oauth-store.js (storeClient/getClient) so a client that registered before
+// a deploy/restart — or against another replica — is still known at /authorize
+// and /oauth/token time. Claude reuses its registered client_id across sessions.
 
 const MCP_BASE_URL = process.env.MCP_BASE_URL || 'https://altus.altwire.net';
 
+// Claude's hosted custom-connector surfaces (claude.ai web and the Desktop app)
+// always redirect to these fixed callbacks. Claude may register one domain and
+// authorize with the other, so both are allowlisted unconditionally.
+const CLAUDE_HOSTED_REDIRECT_URIS = [
+  'https://claude.ai/api/mcp/auth_callback',
+  'https://claude.com/api/mcp/auth_callback',
+];
+
 const OAUTH_ALLOWED_REDIRECT_URIS = new Set([
   process.env.OAUTH_REDIRECT_URI || `${MCP_BASE_URL}/oauth/callback`,
+  ...CLAUDE_HOSTED_REDIRECT_URIS,
   ...(process.env.OAUTH_ALLOWED_REDIRECT_URIS || '')
     .split(',')
     .map(u => u.trim())
@@ -2784,7 +2793,7 @@ const httpServer = createServer(async (req, res) => {
   if (url.pathname === '/oauth/register' && req.method === 'POST') {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
+    req.on('end', async () => {
       let meta;
       try { meta = JSON.parse(body); } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2793,7 +2802,8 @@ const httpServer = createServer(async (req, res) => {
       }
       const clientId = `dyn_${crypto.randomBytes(16).toString('hex')}`;
       const redirectUris = Array.isArray(meta.redirect_uris) ? meta.redirect_uris : [];
-      DYNAMIC_OAUTH_CLIENTS.set(clientId, {
+      const { storeClient } = await import('./lib/oauth-store.js');
+      await storeClient(clientId, {
         redirectUris,
         clientName: meta.client_name || 'MCP Client',
       });
@@ -2830,7 +2840,10 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'invalid_request' }));
       return;
     }
-    if (!OAUTH_CLIENTS.has(clientId) && !DYNAMIC_OAUTH_CLIENTS.has(clientId)) {
+    const isStaticClient = OAUTH_CLIENTS.has(clientId);
+    const { getClient } = await import('./lib/oauth-store.js');
+    const dynamicClient = isStaticClient ? null : await getClient(clientId);
+    if (!isStaticClient && !dynamicClient) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'unknown client_id' }));
       return;
@@ -2843,7 +2856,6 @@ const httpServer = createServer(async (req, res) => {
     // Loopback (localhost/127.0.0.1) ports vary per session and are only
     // reachable on the user's own machine, so they are matched port-agnostically.
     const isLocalhostRedirect = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(redirectUri);
-    const dynamicClient = DYNAMIC_OAUTH_CLIENTS.get(clientId);
     const isRegisteredRedirect = !!dynamicClient && dynamicClient.redirectUris.includes(redirectUri);
     if (!isLocalhostRedirect && !isRegisteredRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2904,7 +2916,8 @@ const httpServer = createServer(async (req, res) => {
       }
 
       const operator = OAUTH_CLIENTS.get(clientId);
-      const isDynamic = !operator && DYNAMIC_OAUTH_CLIENTS.has(clientId);
+      const { getClient } = await import('./lib/oauth-store.js');
+      const isDynamic = !operator && !!(await getClient(clientId));
       if (!operator && !isDynamic) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_client' }));
