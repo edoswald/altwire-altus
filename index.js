@@ -2649,7 +2649,8 @@ const httpServer = createServer(async (req, res) => {
     // GET /hal/writer/opportunities
     if (url.pathname === '/hal/writer/opportunities' && req.method === 'GET') {
       try {
-        const result = await getStoryOpportunities();
+        const refresh = ['1', 'true', 'yes'].includes((url.searchParams.get('refresh') || '').toLowerCase());
+        const result = await getStoryOpportunities({ refresh });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
