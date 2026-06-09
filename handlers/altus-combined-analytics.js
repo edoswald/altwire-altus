@@ -18,6 +18,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { normalizeTopArticles } from '../lib/matomo-utils.js';
+import { getLagAwareGscWindow } from '../lib/gsc-date-window.js';
 import { logger } from '../logger.js';
 import { readAgentMemory } from '../lib/altus-db.js';
 import {
@@ -40,12 +41,6 @@ const HISTORICAL_KEYS = [
   'hal:altwire:gsc:summary_16m',
   'hal:altwire:gsc:opportunities_16m',
 ];
-
-function isoDateOffset(daysBack) {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - daysBack);
-  return d.toISOString().slice(0, 10);
-}
 
 function matomoDateRange(startDate, endDate) {
   return `${startDate},${endDate}`;
@@ -276,8 +271,9 @@ ${JSON.stringify(payload, null, 2)}`,
  * @returns {Promise<object>}
  */
 export async function getCombinedAnalytics(opts = {}) {
-  const endDate = opts.endDate ?? isoDateOffset(3);
-  const startDate = opts.startDate ?? isoDateOffset(31);
+  const defaultWindow = getLagAwareGscWindow(28);
+  const endDate = opts.endDate ?? defaultWindow.endDate;
+  const startDate = opts.startDate ?? defaultWindow.startDate;
   const doSynth = opts.synthesize !== false;
 
   logger.info('combined-analytics: fetching', { startDate, endDate });

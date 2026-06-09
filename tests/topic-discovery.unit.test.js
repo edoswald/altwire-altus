@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+function isoDateOffset(daysBack) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - daysBack);
+  return d.toISOString().slice(0, 10);
+}
+
 // Mock pool (default export from altus-db.js)
 const mockQuery = vi.fn();
 vi.mock('../lib/altus-db.js', () => ({
@@ -94,9 +100,9 @@ describe('altus-topic-discovery', () => {
         pitches: 'Cached pitches',
         cached: false,
       };
-      // Seasonality reads once before the cache lookup
-      mockQuery.mockResolvedValueOnce({ rows: [] });
-      mockQuery.mockResolvedValueOnce({
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({
         rows: [{ value: JSON.stringify(cachedData) }],
       });
 
@@ -110,11 +116,41 @@ describe('altus-topic-discovery', () => {
       expect(mockSynthesizePitches).not.toHaveBeenCalled();
     });
 
+    it('uses the shared lag-aware GSC window by default', async () => {
+      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValue({ rows: [] });
+      mockGetOpportunityZoneQueries.mockResolvedValueOnce({
+        rows: [
+          { keys: ['weather station review', '/reviews/'], impressions: 800, clicks: 40, position: 12 },
+        ],
+      });
+      mockSearchAltwireArchive.mockResolvedValueOnce({
+        results: [{ weighted_score: 0.1 }],
+      });
+      mockSynthesizePitches.mockResolvedValueOnce({
+        pitches: 'Pitch',
+        model: 'claude-haiku-4-5',
+        usage: { input_tokens: 10, output_tokens: 20 },
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const { getStoryOpportunities } = await import('../handlers/altus-topic-discovery.js');
+      const result = await getStoryOpportunities();
+
+      expect(mockGetOpportunityZoneQueries).toHaveBeenCalledWith(
+        isoDateOffset(31),
+        isoDateOffset(3)
+      );
+      expect(result.date_range).toEqual({
+        start: isoDateOffset(31),
+        end: isoDateOffset(3),
+      });
+    });
+
     // Requirement 6.8: Zero GSC rows returns empty opportunities with note
     it('returns empty opportunities with note when GSC returns zero rows', async () => {
       vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
-      // Cache miss
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValue({ rows: [] });
       // GSC returns zero rows
       mockGetOpportunityZoneQueries.mockResolvedValueOnce({
         rows: [],
@@ -130,11 +166,45 @@ describe('altus-topic-discovery', () => {
       expect(mockSynthesizePitches).not.toHaveBeenCalled();
     });
 
+    it('skips cache reads when refresh is requested', async () => {
+      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValue({ rows: [] });
+      mockGetOpportunityZoneQueries.mockResolvedValueOnce({
+        rows: [
+          { keys: ['weather station review', '/reviews/'], impressions: 800, clicks: 40, position: 12 },
+        ],
+      });
+      mockSearchAltwireArchive.mockResolvedValueOnce({
+        results: [{ weighted_score: 0.1 }],
+      });
+      mockSynthesizePitches.mockResolvedValueOnce({
+        pitches: 'Pitch',
+        model: 'claude-haiku-4-5',
+        usage: { input_tokens: 10, output_tokens: 20 },
+      });
+
+      const { getStoryOpportunities } = await import('../handlers/altus-topic-discovery.js');
+      const result = await getStoryOpportunities({ refresh: true });
+
+      expect(result.cached).toBe(false);
+      expect(mockGetOpportunityZoneQueries).toHaveBeenCalledTimes(1);
+      expect(
+        mockQuery.mock.calls.some(([sql, params]) =>
+          typeof sql === 'string' &&
+          sql.includes('SELECT value FROM agent_memory') &&
+          Array.isArray(params) &&
+          params[0] === 'altus' &&
+          typeof params[1] === 'string' &&
+          params[1].startsWith('altus:story_opportunities:')
+        )
+      ).toBe(false);
+      expect(mockQuery.mock.calls.at(-1)?.[0]).toContain('INSERT INTO agent_memory');
+    });
+
     // Haiku failure still returns opportunities
     it('returns opportunities without pitches when synthesizePitches throws', async () => {
       vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
-      // Cache miss
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValue({ rows: [] });
       // GSC returns one row
       mockGetOpportunityZoneQueries.mockResolvedValueOnce({
         rows: [
@@ -147,8 +217,6 @@ describe('altus-topic-discovery', () => {
       });
       // Haiku fails
       mockSynthesizePitches.mockRejectedValueOnce(new Error('Haiku API timeout'));
-      // Cache write succeeds
-      mockQuery.mockResolvedValueOnce({ rows: [] });
 
       const { getStoryOpportunities } = await import('../handlers/altus-topic-discovery.js');
       const result = await getStoryOpportunities();

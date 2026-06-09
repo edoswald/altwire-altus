@@ -22,6 +22,7 @@
 
 import pool from '../lib/altus-db.js';
 import { spawn } from 'child_process';
+import { getLagAwareGscWindow, isoDateOffset } from '../lib/gsc-date-window.js';
 import { logger } from '../logger.js';
 import { normalizeTopArticles } from '../lib/matomo-utils.js';
 import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
@@ -35,12 +36,6 @@ import { getCombinedAnalytics } from './altus-combined-analytics.js';
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_REFRESHED_KEY = 'hal:altwire:analytics:last_refreshed';
 const GSC_LAST_REFRESHED_KEY = 'hal:altwire:gsc:last_refreshed';
-
-function isoDateOffset(daysBack) {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - daysBack);
-  return d.toISOString().slice(0, 10);
-}
 
 async function getLastRefreshTimestamp(key) {
   const result = await readAgentMemory('hal', key);
@@ -217,9 +212,9 @@ export async function runAltwireReflection() {
     }));
 
     // GSC fresh summary — 7d and 28d
-    const gscEnd = isoDateOffset(3);
-    const gscStart7 = isoDateOffset(10);
-    const gscStart28 = isoDateOffset(31);
+    const { endDate: gscEnd } = getLagAwareGscWindow(28);
+    const { startDate: gscStart7 } = getLagAwareGscWindow(7);
+    const { startDate: gscStart28 } = getLagAwareGscWindow(28);
     const [gscFresh7, gscFresh28, gscOpps] = await Promise.allSettled([
       getSearchPerformance(gscStart7, gscEnd, { rowLimit: 25 }),
       getSearchPerformance(gscStart28, gscEnd, { rowLimit: 50 }),

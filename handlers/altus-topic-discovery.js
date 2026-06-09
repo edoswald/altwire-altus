@@ -3,7 +3,9 @@
  * against AltWire archive coverage to surface story opportunities.
  */
 
-import pool, { hasDbConfig } from '../lib/altus-db.js';
+import pool from '../lib/altus-db.js';
+import { getLagAwareGscWindow } from '../lib/gsc-date-window.js';
+import { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
 import { searchAltwireArchive } from './altus-search.js';
@@ -49,10 +51,10 @@ export function scoreOpportunity(impressions, position, gapMultiplier) {
 
 /**
  * Fetch story opportunities by cross-referencing GSC demand against archive coverage.
- * @param {{ days?: number }} params — lookback window (default 28)
+ * @param {{ days?: number, refresh?: boolean }} params — lookback window (default 28)
  * @returns {Promise<object>}
  */
-export async function getStoryOpportunities({ days = 28 } = {}) {
+export async function getStoryOpportunities({ days = 28, refresh = false } = {}) {
   if (process.env.TEST_MODE === 'true') {
     return {
       success: true,
@@ -81,24 +83,22 @@ export async function getStoryOpportunities({ days = 28 } = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const cacheKey = `altus:story_opportunities:${today}`;
 
-  try {
-    const cached = await pool.query(
-      'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
-      ['altus', cacheKey]
-    );
-    if (cached.rows.length > 0) {
-      logger.info('Topic discovery: returning cached result', { cacheKey });
-      return { ...JSON.parse(cached.rows[0].value), cached: true };
+  if (!refresh) {
+    try {
+      const cached = await pool.query(
+        'SELECT value FROM agent_memory WHERE agent = $1 AND key = $2',
+        ['altus', cacheKey]
+      );
+      if (cached.rows.length > 0) {
+        logger.info('Topic discovery: returning cached result', { cacheKey });
+        return { ...JSON.parse(cached.rows[0].value), cached: true };
+      }
+    } catch (err) {
+      logger.warn('Topic discovery: cache read failed, continuing', { error: err.message });
     }
-  } catch (err) {
-    logger.warn('Topic discovery: cache read failed, continuing', { error: err.message });
   }
 
-  const endDate = new Date();
-  const startDate = new Date();
-  startDate.setDate(endDate.getDate() - days);
-  const startStr = startDate.toISOString().slice(0, 10);
-  const endStr = endDate.toISOString().slice(0, 10);
+  const { startDate: startStr, endDate: endStr } = getLagAwareGscWindow(days);
 
   const gscResult = await getOpportunityZoneQueries(startStr, endStr);
   if (gscResult.error) return gscResult;
