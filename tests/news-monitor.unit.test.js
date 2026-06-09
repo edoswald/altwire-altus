@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockQuery = vi.fn();
 vi.mock('../lib/altus-db.js', () => ({
   default: { query: mockQuery },
+  hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
 }));
 
 // Mock logger
@@ -22,12 +23,22 @@ vi.mock('../handlers/altwire-gsc-client.js', () => ({
   getNewsSearchPerformance: mockGetNewsSearchPerformance,
 }));
 
+vi.mock('../altus-event-log.js', () => ({
+  logAltusEvent: vi.fn(),
+}));
+
+const mockUpsertNewsOpportunityQueue = vi.fn();
+vi.mock('../handlers/altus-opportunity-queue.js', () => ({
+  upsertNewsOpportunityQueue: mockUpsertNewsOpportunityQueue,
+}));
+
 describe('altus-news-monitor', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllEnvs();
     mockQuery.mockReset();
     mockGetNewsSearchPerformance.mockReset();
+    mockUpsertNewsOpportunityQueue.mockReset();
   });
 
   describe('getNewsOpportunities', () => {
@@ -47,9 +58,10 @@ describe('altus-news-monitor', () => {
       expect(mockGetNewsSearchPerformance).not.toHaveBeenCalled();
     });
 
-    // Requirement 7.7: Missing DATABASE_URL returns error
-    it('returns error when DATABASE_URL is not set', async () => {
+    // Requirement 7.7: Missing database URL returns error
+    it('returns error when no Altus database env is set', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { getNewsOpportunities } = await import('../handlers/altus-news-monitor.js');
 
       const result = await getNewsOpportunities();
@@ -59,7 +71,7 @@ describe('altus-news-monitor', () => {
 
     // Requirement 7.4: Zero GSC News rows returns empty arrays with note
     it('returns empty arrays with note when GSC returns zero News rows', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       // GSC query dimension returns zero rows
       mockGetNewsSearchPerformance.mockResolvedValueOnce({ rows: [] });
       // GSC page dimension returns zero rows
@@ -77,7 +89,7 @@ describe('altus-news-monitor', () => {
 
     // Requirement 7.5: Missing watch list table handled gracefully
     it('returns watch_list_matches as empty array when altus_watch_list table is missing', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       // GSC returns some news queries
       mockGetNewsSearchPerformance.mockResolvedValueOnce({
         rows: [{ keys: ['rock band tour'], clicks: 5, impressions: 100, ctr: 0.05, position: 8 }],
@@ -102,7 +114,7 @@ describe('altus-news-monitor', () => {
   describe('runNewsMonitorCron', () => {
     // Requirement 10.4, 10.5: Cron stores alert in agent_memory
     it('stores alert in agent_memory with correct key pattern', async () => {
-      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
       // GSC query dimension
       mockGetNewsSearchPerformance.mockResolvedValueOnce({
         rows: [{ keys: ['metal festival 2025'], clicks: 12, impressions: 300, ctr: 0.04, position: 6 }],
@@ -131,9 +143,47 @@ describe('altus-news-monitor', () => {
       expect(storedValue).toHaveProperty('news_queries');
     });
 
-    // Requirement 10.6: Cron skips when DATABASE_URL not set
-    it('skips execution when DATABASE_URL is not set', async () => {
+    it('persists Google News watch-list matches into the opportunity queue', async () => {
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({
+        rows: [{ keys: ['radiohead tour news'], clicks: 12, impressions: 300, ctr: 0.04, position: 6 }],
+      });
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({
+        rows: [{ keys: ['https://altwire.net/radiohead/'], clicks: 3, impressions: 80, ctr: 0.04, position: 10 }],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [{ name: 'Radiohead' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockUpsertNewsOpportunityQueue.mockResolvedValueOnce({ success: true, upserted: 1 });
+
+      const { runNewsMonitorCron } = await import('../handlers/altus-news-monitor.js');
+      await runNewsMonitorCron();
+
+      expect(mockUpsertNewsOpportunityQueue).toHaveBeenCalledWith(expect.objectContaining({
+        watch_list_matches: [
+          expect.objectContaining({
+            query: 'radiohead tour news',
+            matched_items: ['Radiohead'],
+          }),
+        ],
+      }));
+    });
+
+    it('accepts ALTWIRE_DATABASE_URL as sufficient database config', async () => {
       vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({ rows: [] });
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({ rows: [] });
+
+      const { runNewsMonitorCron } = await import('../handlers/altus-news-monitor.js');
+      await runNewsMonitorCron();
+
+      expect(mockGetNewsSearchPerformance).toHaveBeenCalled();
+    });
+
+    // Requirement 10.6: Cron skips when no database URL is set
+    it('skips execution when no database env is set', async () => {
+      vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('ALTWIRE_DATABASE_URL', '');
       const { runNewsMonitorCron } = await import('../handlers/altus-news-monitor.js');
 
       await runNewsMonitorCron();

@@ -1187,7 +1187,7 @@ Returns: `{ success, assignment_id, passed, issues_found, status }`.
 
 **Precondition:** Assignment status must be `draft_ready` or `needs_revision`.
 
-**Fact-check loop:** Initial check → if issues found, regenerate flagged sections → re-check → set status to `ready_to_post` regardless of second pass result.
+**Fact-check loop:** Initial check → if issues found, regenerate flagged sections → re-check. A clean re-check sets status to `ready_to_post`; unresolved issues keep the assignment in `needs_revision`.
 
 ### post_to_wordpress
 
@@ -2127,7 +2127,7 @@ All Slack env var names use the suffix `_ALTUS` (matching `process.env.SLACK_*_A
 - **Watch list table** — `altus_watch_list` is auto-created at startup. The news monitor cross-references it automatically. Soft-delete via `active=false` preserves historical data.
 - **URL normalization** — all article URLs are normalized by stripping trailing slashes via `normalizeUrl()` before storage and comparison.
 - **AI Writer pipeline is human-in-the-loop** — `approve_outline` must be called with `decision='approved'` before any draft is generated. `post_to_wordpress` creates WordPress drafts only, never published posts.
-- **Writer fact-check loop** — maximum one regeneration cycle. Initial check → regenerate flagged sections → re-check → stop. Status set to `ready_to_post` regardless of second pass result.
+- **Writer fact-check loop** — maximum one regeneration cycle. Initial check → regenerate flagged sections → re-check → stop. Clean re-checks advance to `ready_to_post`; unresolved issues remain `needs_revision`.
 - **`openai` package** — listed as a dependency in `package.json` for OpenAI provider support. Only loaded when `ALTUS_WRITER_MODEL` is set to an OpenAI model (lazy import).
 - **Writer REST endpoints** — `/hal/writer/assignments` and `/hal/writer/assignments/:id` read from `altus_assignments` table. Require `ALTUS_ADMIN_TOKEN` bearer auth.
 - **Database URL priority** — `ALTWIRE_DATABASE_URL` takes precedence over `DATABASE_URL` when both are set. Use `ALTWIRE_DATABASE_URL` for AltWire-specific connections.

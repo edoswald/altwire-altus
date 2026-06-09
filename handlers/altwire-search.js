@@ -7,7 +7,7 @@
  * Output: { answer: string, citations: ArticleRef[], results: SearchResult[] }
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { embedQuery } from '../lib/voyage.js';
 import { synthesizeSearchAnswer } from '../lib/minimax-search.js';
 import { logger } from '../logger.js';
@@ -24,7 +24,7 @@ export async function searchAltwirePublic({ query, limit }) {
     return { error: 'Query is required', answer: '', citations: [], results: [] };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured', answer: '', citations: [], results: [] };
   }
 
@@ -112,7 +112,7 @@ async function logSearchQuery({ query, mode, resultCount, responseTimeMs }) {
  * @returns {Promise<object>}
  */
 export async function getSearchFeedback({ rating, since, limit = 50 }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured', feedback: [] };
   }
 

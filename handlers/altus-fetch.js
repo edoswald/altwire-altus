@@ -3,7 +3,7 @@
  * Retrieves a specific piece of content from the archive by URL or slug.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 
 function extractSlug(url) {
@@ -20,7 +20,7 @@ function extractSlug(url) {
  * @returns {Promise<object>}
  */
 export async function getContentByUrl({ url, slug }) {
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
@@ -47,13 +47,26 @@ export async function getContentByUrl({ url, slug }) {
                 published_at, categories, tags, raw_text
          FROM altus_content
          WHERE slug LIKE '%' || $1 || '%' ESCAPE '\'
-         LIMIT 1`,
+         ORDER BY published_at DESC NULLS LAST, id DESC
+         LIMIT 5`,
         [escapedSegment]
       );
     }
 
     if (result.rows.length === 0) {
       return { found: false, content: null };
+    }
+
+    if (result.rows.length > 1) {
+      return {
+        found: false,
+        error: 'ambiguous_slug_match',
+        matches: result.rows.map((row) => ({
+          title: row.title,
+          slug: row.slug,
+          url: row.url,
+        })),
+      };
     }
 
     const row = result.rows[0];

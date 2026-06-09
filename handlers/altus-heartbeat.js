@@ -26,6 +26,7 @@ import { logger } from '../logger.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logAltusEvent } from '../altus-event-log.js';
 import { observe } from '../tracing.js';
+import { acceptStaleProposedItems, createActionItemFromScheduledTask } from './altus-action-items.js';
 
 const HEARTBEAT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -157,15 +158,12 @@ export async function cancelScheduledTask(taskId) {
 // ---------------------------------------------------------------------------
 // Step 1 — condition checks
 // Captures operational and editorial health signals for the heartbeat log.
-// Currently tracks: review deadlines, overdue loaners, stale proposed items.
-// Extend here with editorial-specific signals (e.g., coverage gaps, content
-// freshness, writer workload) — new conditions should be counted and returned
-// as additional fields in the conditions object, stored in altus_heartbeat_log.condition_checks.
+// Tracks: review deadlines, overdue loaners, stale proposed items,
+//         news monitor watch list matches, reflection freshness.
 // ---------------------------------------------------------------------------
 
 async function checkConditions() {
   const conditions = {};
-  const now = new Date();
 
   // Check: upcoming review deadlines (within 7 days)
   const upcomingResult = await pool.query(
@@ -191,6 +189,55 @@ async function checkConditions() {
         AND proposed_at < NOW() - INTERVAL '48 hours'`,
   );
   conditions.stale_proposed_items = parseInt(staleResult.rows[0].count, 10);
+
+  // Check: durable commitments past their due date
+  const overdueCommitmentsResult = await pool.query(
+    `SELECT COUNT(*) as count FROM altus_commitments
+      WHERE status = 'open'
+        AND due_at IS NOT NULL
+        AND due_at <= NOW()`,
+  );
+  conditions.overdue_commitments = parseInt(overdueCommitmentsResult.rows[0].count, 10);
+
+  // Check: watch items that are due for review
+  const dueWatchItemsResult = await pool.query(
+    `SELECT COUNT(*) as count FROM altus_watch_items
+      WHERE status = 'active'
+        AND next_check_at IS NOT NULL
+        AND next_check_at <= NOW()`,
+  );
+  conditions.due_watch_items = parseInt(dueWatchItemsResult.rows[0].count, 10);
+
+  // Check: today's news monitor watch list matches
+  const today = new Date().toISOString().slice(0, 10);
+  const newsResult = await readAgentMemory('altus', `altus:news_alert:${today}`);
+  if (newsResult.success) {
+    try {
+      const newsAlert = JSON.parse(newsResult.value);
+      conditions.news_watch_list_matches = newsAlert.watch_list_matches?.length ?? 0;
+    } catch {
+      conditions.news_watch_list_matches = 0;
+    }
+  } else {
+    conditions.news_watch_list_matches = 0;
+  }
+
+  // Check: reflection freshness — warn if nightly reflection hasn't run in 30h
+  const reflResult = await readAgentMemory('hal', 'hal:altwire:combined_synthesis');
+  if (reflResult.success) {
+    try {
+      const refl = JSON.parse(reflResult.value);
+      const age = refl.generated_at
+        ? Math.round((Date.now() - new Date(refl.generated_at).getTime()) / 3_600_000)
+        : null;
+      conditions.reflection_age_hours = age;
+      conditions.reflection_stale = age != null && age > 30;
+    } catch {
+      conditions.reflection_stale = true;
+    }
+  } else {
+    conditions.reflection_stale = true;
+  }
 
   return conditions;
 }
@@ -238,24 +285,7 @@ async function recordAlertSent(alertKey) {
 // ---------------------------------------------------------------------------
 
 async function queueStaleProposedItems() {
-  const staleResult = await pool.query(
-    `SELECT id, title, category FROM altus_action_items
-      WHERE status = 'proposed'
-        AND proposed_at < NOW() - INTERVAL '24 hours'
-      ORDER BY proposed_at ASC
-      LIMIT 10`,
-  );
-
-  let queued = 0;
-  for (const item of staleResult.rows) {
-    await pool.query(
-      `UPDATE altus_action_items SET status = 'accepted' WHERE id = $1 AND status = 'proposed'`,
-      [item.id],
-    );
-    queued++;
-  }
-
-  return queued;
+  return acceptStaleProposedItems(10);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +316,33 @@ export async function runAltusHeartbeat() {
         );
 
         if (task.task_type === 'action_item') {
-          await pool.query(
-            `INSERT INTO altus_action_items (title, description, category, signal_source, signal_data, reflection_date)
-              VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)`,
-            [task.payload.title ?? 'Scheduled action', task.payload.description ?? '', task.payload.category ?? 'operations', 'heartbeat_scheduled', JSON.stringify(task.payload)],
+          await createActionItemFromScheduledTask(task);
+          counters.items_acted++;
+        } else if (task.task_type === 'chat_task' || task.task_type === 'report' || task.task_type === 'custom') {
+          // Enqueue for the next Hal session to pick up
+          await writeAgentMemory(
+            'altus',
+            `altus:queued_task:${task.id}`,
+            JSON.stringify({ task_type: task.task_type, payload: task.payload, queued_at: new Date().toISOString() }),
           );
           counters.items_acted++;
+        } else if (task.task_type === 'alert') {
+          // Write to a pending alerts key and mark as dedup-eligible
+          const alertKey = `task_alert_${task.id}`;
+          if (await shouldSendAlert(alertKey)) {
+            await writeAgentMemory(
+              'altus',
+              `altus:pending_alert:${task.id}`,
+              JSON.stringify({ message: task.payload?.message ?? 'Scheduled alert', payload: task.payload, triggered_at: new Date().toISOString() }),
+            );
+            await recordAlertSent(alertKey);
+            counters.alerts_sent++;
+            counters.items_acted++;
+            logger.info('runAltusHeartbeat: alert task triggered', { task_id: task.id, message: task.payload?.message });
+          }
+        } else {
+          logger.warn('runAltusHeartbeat: unrecognized task_type — skipping', { task_id: task.id, task_type: task.task_type });
+          counters.items_skipped++;
         }
 
         await pool.query(
@@ -320,6 +371,18 @@ export async function runAltusHeartbeat() {
     }
     if (conditions.stale_proposed_items > 0) {
       breached.push({ key: 'stale_proposed_items', count: conditions.stale_proposed_items });
+    }
+    if (conditions.overdue_commitments > 0) {
+      breached.push({ key: 'overdue_commitments', count: conditions.overdue_commitments });
+    }
+    if (conditions.due_watch_items > 0) {
+      breached.push({ key: 'due_watch_items', count: conditions.due_watch_items });
+    }
+    if (conditions.news_watch_list_matches > 0) {
+      breached.push({ key: 'news_watch_list_matches', count: conditions.news_watch_list_matches });
+    }
+    if (conditions.reflection_stale) {
+      breached.push({ key: 'reflection_stale', count: 1 });
     }
 
     for (const alert of breached) {
@@ -366,48 +429,4 @@ export async function runAltusHeartbeat() {
     return counters;
   }
   });
-}
-
-// ---------------------------------------------------------------------------
-// Action items schema init (called from altus-action-items.js)
-// ---------------------------------------------------------------------------
-
-export async function initActionItemsSchema() {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS altus_action_items (
-        id              SERIAL PRIMARY KEY,
-        title           VARCHAR(200)  NOT NULL,
-        description     TEXT          NOT NULL,
-        category        VARCHAR(20)   NOT NULL
-                        CHECK (category IN ('marketing', 'operations', 'pricing', 'quality', 'infrastructure', 'editorial')),
-        signal_source   VARCHAR(100)  NOT NULL,
-        signal_data     TEXT,
-        proposed_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-        status          VARCHAR(20)   NOT NULL DEFAULT 'proposed'
-                        CHECK (status IN ('proposed', 'accepted', 'completed', 'dismissed')),
-        accepted_at     TIMESTAMPTZ,
-        completed_at    TIMESTAMPTZ,
-        dismissed_at    TIMESTAMPTZ,
-        dismiss_reason  TEXT,
-        outcome_notes   TEXT,
-        reflection_date DATE          NOT NULL
-      )
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_altus_action_items_status_proposed
-        ON altus_action_items (status, proposed_at)
-    `);
-
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_altus_action_items_category_status
-        ON altus_action_items (category, status)
-    `);
-
-    logger.info('initActionItemsSchema: altus_action_items table ready');
-  } finally {
-    client.release();
-  }
 }

@@ -3,7 +3,7 @@
  * performance snapshots at 72h, 7d, and 30d intervals.
  */
 
-import pool from '../lib/altus-db.js';
+import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getPagePerformance, getNewsSearchPerformance, normalizeUrl } from './altwire-gsc-client.js';
 
@@ -18,6 +18,11 @@ export function getSnapshotEligibility(publishedAt, existingSnapshots, effective
   const pubDate = new Date(publishedAt);
   const effective = new Date(effectiveDate);
   const missing = [];
+  const hasSnapshot = (type) => (
+    typeof existingSnapshots?.has === 'function'
+      ? existingSnapshots.has(type)
+      : Array.isArray(existingSnapshots) && existingSnapshots.includes(type)
+  );
 
   const thresholds = [
     { type: '72h', days: 3 },
@@ -26,7 +31,7 @@ export function getSnapshotEligibility(publishedAt, existingSnapshots, effective
   ];
 
   for (const { type, days } of thresholds) {
-    if (existingSnapshots.includes(type)) continue;
+    if (hasSnapshot(type)) continue;
     const threshold = new Date(effective);
     threshold.setDate(threshold.getDate() - days);
     if (pubDate <= threshold) {
@@ -53,7 +58,7 @@ export async function getArticlePerformance({ article_url, snapshot_type } = {})
     };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
@@ -119,7 +124,7 @@ export async function getNewsPerformancePatterns({ days = 30 } = {}) {
     };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
@@ -214,7 +219,7 @@ export async function registerArticleForTracking({ articleUrl, wpPostId, publish
     return { success: true, test_mode: true, article_url: normalizeUrl(articleUrl) };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
@@ -242,8 +247,8 @@ export async function registerArticleForTracking({ articleUrl, wpPostId, publish
  * @returns {Promise<void>}
  */
 export async function runPerformanceSnapshotCron() {
-  if (!process.env.DATABASE_URL) {
-    logger.warn('Performance snapshot cron: DATABASE_URL not set — skipping');
+  if (!hasDbConfig()) {
+    logger.warn('Performance snapshot cron: database URL not set — skipping');
     return;
   }
 
@@ -281,7 +286,7 @@ export async function runPerformanceSnapshotCron() {
     for (const article of assignments.rows) {
       const existingTypes = existingSnapshots.get(article.article_url) || new Set();
 
-      const eligible = getSnapshotEligibility(article.assigned_at, existingTypes, effectiveDate);
+      const eligible = getSnapshotEligibility(article.assigned_at, [...existingTypes], effectiveDate);
 
       for (const snapshotType of eligible) {
         // Compute date range for GSC query — window varies by snapshot type

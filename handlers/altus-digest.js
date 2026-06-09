@@ -41,6 +41,30 @@ async function loadAnalyticsContext() {
   } catch { return null; }
 }
 
+function normalizeWatchListMatches(matches) {
+  if (!Array.isArray(matches)) return [];
+
+  return matches.flatMap((match) => {
+    if (Array.isArray(match.matched_items)) {
+      return match.matched_items.map((name) => ({
+        name,
+        query: match.query,
+        source: 'google_news',
+      }));
+    }
+
+    if (match.name && match.query) {
+      return [{
+        name: match.name,
+        query: match.query,
+        source: match.source ?? 'google_news',
+      }];
+    }
+
+    return [];
+  });
+}
+
 /**
  * Build the daily morning digest from all available data sources.
  * @returns {Promise<object>} Aggregate digest with date, generated_at, and 7 sections.
@@ -65,7 +89,7 @@ export async function getAltwireMorningDigest() {
 
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-  // Fire all 12 fetches in parallel — failures are isolated per section
+  // Fire all 14 fetches in parallel — failures are isolated per section
   const [
     uptimeResult,
     incidentsResult,
@@ -79,6 +103,8 @@ export async function getAltwireMorningDigest() {
     freshTopArticlesResult,
     freshGscOppsResult,
     editorialSynthesisResult,
+    siteSearchKeywordsResult,
+    actionItemsResult,
   ] = await Promise.allSettled([
     getAltwireUptime(),
     getAltwireIncidents(),
@@ -110,6 +136,12 @@ export async function getAltwireMorningDigest() {
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:top_articles']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:gsc:fresh_opportunities']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:combined_synthesis']),
+    pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:site_search_keywords']),
+    pool.query(
+      `SELECT id, title, category, signal_source, proposed_at FROM altus_action_items
+       WHERE status = 'proposed'
+       ORDER BY proposed_at DESC LIMIT 5`,
+    ),
   ]);
 
   // Load historical analytics context alongside fresh fetches
@@ -141,7 +173,11 @@ export async function getAltwireMorningDigest() {
     const rows = newsAlertsResult.value.rows;
     if (rows && rows.length > 0) {
       try {
-        news_alerts = JSON.parse(rows[0].value);
+        const parsed = JSON.parse(rows[0].value);
+        news_alerts = {
+          ...parsed,
+          watch_list_matches: normalizeWatchListMatches(parsed.watch_list_matches),
+        };
       } catch (e) {
         warnings.push({ section: 'news_alerts', message: `Failed to parse news alerts JSON: ${e.message}` });
       }
@@ -241,10 +277,17 @@ export async function getAltwireMorningDigest() {
     try { return JSON.parse(row.value); } catch { return null; }
   };
 
-  const fresh_traffic       = parseMemoryRow(freshTrafficResult);
-  const fresh_top_articles  = parseMemoryRow(freshTopArticlesResult);
-  const fresh_gsc_opps      = parseMemoryRow(freshGscOppsResult);
-  const editorial_synthesis = parseMemoryRow(editorialSynthesisResult);
+  const fresh_traffic        = parseMemoryRow(freshTrafficResult);
+  const fresh_top_articles   = parseMemoryRow(freshTopArticlesResult);
+  const fresh_gsc_opps       = parseMemoryRow(freshGscOppsResult);
+  const editorial_synthesis  = parseMemoryRow(editorialSynthesisResult);
+  const site_search_keywords = parseMemoryRow(siteSearchKeywordsResult);
+
+  // --- Open action items (proposed, most recent first) ---
+  let open_action_items = null;
+  if (actionItemsResult.status === 'fulfilled') {
+    open_action_items = { items: actionItemsResult.value.rows, count: actionItemsResult.value.rows.length };
+  }
 
   // --- Build historical analytics context ---
   let historical = null;
@@ -358,6 +401,8 @@ export async function getAltwireMorningDigest() {
     fresh_top_articles,
     fresh_gsc_opps,
     editorial_synthesis,
+    site_search_keywords,
+    open_action_items,
   };
 
   // Include per-section warning fields for failed sections
@@ -376,6 +421,8 @@ export async function getAltwireMorningDigest() {
     has_fresh_traffic: !!fresh_traffic,
     has_fresh_articles: !!fresh_top_articles,
     has_editorial_synthesis: !!editorial_synthesis,
+    has_site_search: !!site_search_keywords,
+    open_action_items: open_action_items?.count ?? 0,
   });
 
   return digest;

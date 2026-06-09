@@ -5,6 +5,7 @@
 
 import pool from '../lib/altus-db.js';
 import { getLagAwareGscWindow } from '../lib/gsc-date-window.js';
+import { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
 import { searchAltwireArchive } from './altus-search.js';
@@ -66,7 +67,7 @@ export async function getStoryOpportunities({ days = 28, refresh = false } = {})
     };
   }
 
-  if (!process.env.DATABASE_URL) {
+  if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
