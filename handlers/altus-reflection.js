@@ -105,7 +105,7 @@ async function loadTodaysNewsAlert() {
  * @param {string} reflectionDate — ISO date string (YYYY-MM-DD)
  * @returns {Promise<number>} — count of items created
  */
-async function proposeEditorialActionItems(synthesis, reflectionDate) {
+export async function proposeEditorialActionItems(synthesis, reflectionDate) {
   if (!synthesis) return 0;
 
   const candidates = [];
@@ -236,10 +236,15 @@ export async function runAltwireReflection() {
     // Combined Matomo + GSC synthesis — 28-day picture
     let synthItemsCreated = 0;
     try {
+      const reflectionDate = new Date().toISOString().slice(0, 10);
+      const useSynthesisBatch = process.env.ALTUS_SYNTHESIS_BATCH_MODE !== 'direct';
       const combined = await getCombinedAnalytics({
         startDate: gscStart28,
         endDate: gscEnd,
         synthesize: true,
+        batchMode: useSynthesisBatch,
+        newsAlert,
+        reflectionDate,
       });
 
       // Attach news monitor data to the combined object before writing
@@ -253,13 +258,16 @@ export async function runAltwireReflection() {
             }
           : null,
       };
-      await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
+      if (combined.synthesis) {
+        await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
 
-      // Proposer: turn synthesis content gaps + SEO opportunities into action items
-      const reflectionDate = new Date().toISOString().slice(0, 10);
-      synthItemsCreated = await proposeEditorialActionItems(combined.synthesis, reflectionDate);
-      if (synthItemsCreated > 0) {
-        logger.info('altus-reflection: proposer created action items', { count: synthItemsCreated });
+        // Proposer: turn synthesis content gaps + SEO opportunities into action items
+        synthItemsCreated = await proposeEditorialActionItems(combined.synthesis, reflectionDate);
+        if (synthItemsCreated > 0) {
+          logger.info('altus-reflection: proposer created action items', { count: synthItemsCreated });
+        }
+      } else if (combined.synthesis_batch_id) {
+        logger.info('altus-reflection: synthesis batch submitted', { batch_id: combined.synthesis_batch_id });
       }
     } catch (err) {
       logger.warn('altus-reflection: combined synthesis failed', { error: err.message });

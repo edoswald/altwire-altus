@@ -1,9 +1,14 @@
 import { getAltwireMorningDigest } from './altus-digest.js';
-import { generate, detectProvider } from '../lib/writer-client.js';
+import pool from '../lib/altus-db.js';
+import { generate } from '../lib/writer-client.js';
 import { markdownToHtml } from '../lib/markdown.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
+import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
+
+const MODEL_FABLE = 'claude-fable-5';
+const WEEKLY_MODEL = process.env.ALTUS_WEEKLY_MODEL || MODEL_FABLE;
 
 function getIsoWeek(date) {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -16,8 +21,8 @@ function getIsoWeek(date) {
 
 export async function sendAltusWeeklyBrief() {
   if (!process.env.DEREK_EMAIL) {
-    logger.warn('[altus-weekly-brief] DEREK_EMAIL not set — skipping brief send');
-    return;
+    logger.warn('[altus-weekly-brief] DEREK_EMAIL not set — skipping brief submit');
+    return { success: false, skipped: true, reason: 'missing_derek_email' };
   }
 
   try {
@@ -59,7 +64,7 @@ export async function sendAltusWeeklyBrief() {
     const siteSearchKwVal = getValue(siteSearchKw);
     const editorialContextVal = getValue(editorialContext);
     const priorBriefVal = getValue(priorBrief);
-const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.value : null;
+    const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.value : null;
     const newsAlertToday = getNewsAlert(newsAlerts[0]);
     const newsAlertYesterday = getNewsAlert(newsAlerts[1]);
     const storyOppsVal =
@@ -78,7 +83,7 @@ const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.va
       })
       .join('\n');
 
-    const briefText = await generateBriefText({
+    const prompt = buildBriefPrompt({
       trafficSummary: trafficSummaryVal,
       topArticles: topArticlesVal,
       siteSearchKw: siteSearchKwVal,
@@ -89,29 +94,33 @@ const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.va
       morningDigest: morningDigestVal,
     });
 
-    const briefHtml = markdownToHtml(briefText);
-
     const weekLabel = `Week of ${formatWeekRange(now)}`;
-    const subject = `AltWire Weekly Brief — ${weekLabel}`;
+    const batchId = await submitBatch([{
+      custom_id: `altus-weekly-brief-${getIsoWeek(now)}`,
+      params: {
+        model: WEEKLY_MODEL,
+        max_tokens: 4000,
+        output_config: { effort: 'high' },
+        system: prompt.system,
+        messages: [{ role: 'user', content: prompt.prompt }],
+      },
+    }]);
 
-    const html = buildWeeklyBriefHtml(weekLabel, briefHtml);
+    await pool.query(
+      `INSERT INTO altus_weekly_brief_batches (batch_id, week_label, prompt_json, status)
+       VALUES ($1, $2, $3::jsonb, 'pending')`,
+      [batchId, weekLabel, JSON.stringify(prompt)],
+    );
 
-    await sendEmail({
-      to: process.env.DEREK_EMAIL,
-      subject,
-      html,
-      text: briefText,
-    });
-
-    logger.info(`[altus-weekly-brief] Sent weekly brief to Derek — ${weekLabel}`);
-
-    await persistAltusWeeklyBrief(briefText, weekLabel);
+    logger.info('[altus-weekly-brief] Submitted weekly brief batch', { batch_id: batchId, weekLabel, model: WEEKLY_MODEL });
+    return { success: true, batch_id: batchId, week_label: weekLabel };
   } catch (err) {
-    logger.error('[altus-weekly-brief] Failed to send weekly brief', { error: err.message });
+    logger.error('[altus-weekly-brief] Failed to submit weekly brief batch', { error: err.message });
+    return { success: false, error: err.message };
   }
 }
 
-async function generateBriefText({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief, morningDigest }) {
+function buildBriefPrompt({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief, morningDigest }) {
   const trafficParsed = trafficSummary ? safeParseJson(trafficSummary) : null;
   const topArticlesParsed = topArticles ? safeParseJson(topArticles) : null;
   const siteSearchParsed = siteSearchKw ? safeParseJson(siteSearchKw) : null;
@@ -163,12 +172,119 @@ MORNING DIGEST: ${morningDigestParsed ? JSON.stringify(morningDigestParsed, null
 Write only the brief. No preamble, no "Here is your brief:", no sign-off beyond "— Altus".
 Target length: 400–600 words.`;
 
-  return await generate({
-    toolName: 'altus_weekly_brief',
-    system: systemPrompt,
-    prompt,
+  return { system: systemPrompt, prompt };
+}
+
+async function generateBriefFallback(promptJson) {
+  return generate({
+    toolName: 'altus_weekly_brief_fallback',
+    system: promptJson.system,
+    prompt: promptJson.prompt,
     maxTokens: 2000,
   });
+}
+
+export async function deliverAltusWeeklyBrief(briefText, weekLabel) {
+  if (!briefText || !briefText.trim()) {
+    logger.error('[altus-weekly-brief] Empty brief text — not sending');
+    return { success: false, error: 'empty_brief' };
+  }
+
+  const briefHtml = markdownToHtml(briefText);
+  const subject = `AltWire Weekly Brief — ${weekLabel}`;
+  const html = buildWeeklyBriefHtml(weekLabel, briefHtml);
+
+  try {
+    await sendEmail({
+      to: process.env.DEREK_EMAIL,
+      subject,
+      html,
+      text: briefText,
+    });
+
+    logger.info(`[altus-weekly-brief] Sent weekly brief to Derek — ${weekLabel}`);
+    await persistAltusWeeklyBrief(briefText, weekLabel);
+    return { success: true };
+  } catch (err) {
+    logger.error('[altus-weekly-brief] Failed to deliver weekly brief', { error: err.message });
+    return { success: false, error: err.message };
+  }
+}
+
+function parsePromptJson(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return JSON.parse(value);
+  return value;
+}
+
+export async function collectAltusWeeklyBriefBatches() {
+  const summary = { completed: [], failed: [] };
+  const { rows } = await pool.query(
+    `SELECT id, batch_id, week_label, prompt_json
+       FROM altus_weekly_brief_batches
+      WHERE status = 'pending'
+      ORDER BY submitted_at ASC`,
+  );
+
+  for (const row of rows) {
+    let results;
+    try {
+      results = await collectBatch(row.batch_id);
+    } catch (err) {
+      logger.error('[altus-weekly-brief] collectBatch failed', { batch_id: row.batch_id, error: err.message });
+      continue;
+    }
+
+    if (results === null) continue;
+
+    const first = results[0];
+    const promptJson = parsePromptJson(row.prompt_json);
+    let briefText = extractText(first);
+
+    if (isRefusal(first) || !briefText) {
+      logger.warn('[altus-weekly-brief] Batch returned refusal or empty content, using fallback', {
+        batch_id: row.batch_id,
+        refusal: isRefusal(first),
+      });
+      try {
+        briefText = await generateBriefFallback(promptJson);
+      } catch (err) {
+        await pool.query(
+          `UPDATE altus_weekly_brief_batches
+              SET status = 'failed', error_message = $2
+            WHERE id = $1`,
+          [row.id, `Fallback compose failed: ${err.message}`],
+        );
+        await logBatchUsage(row.batch_id, results, 'altus_weekly_brief');
+        summary.failed.push({ week_label: row.week_label, error: err.message });
+        continue;
+      }
+    }
+
+    const delivered = await deliverAltusWeeklyBrief(briefText, row.week_label);
+    await logBatchUsage(row.batch_id, results, 'altus_weekly_brief');
+
+    if (!delivered.success) {
+      await pool.query(
+        `UPDATE altus_weekly_brief_batches
+            SET status = 'failed', error_message = $2
+          WHERE id = $1`,
+        [row.id, delivered.error ?? 'Delivery failed'],
+      );
+      summary.failed.push({ week_label: row.week_label, error: delivered.error ?? 'Delivery failed' });
+      continue;
+    }
+
+    await pool.query(
+      `UPDATE altus_weekly_brief_batches
+          SET status = 'complete', completed_at = NOW()
+        WHERE id = $1`,
+      [row.id],
+    );
+    summary.completed.push({ week_label: row.week_label });
+  }
+
+  return summary;
 }
 
 async function persistAltusWeeklyBrief(briefText, weekLabel) {

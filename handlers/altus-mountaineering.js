@@ -7,9 +7,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
-import { submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
+import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 
 export const CLIMB_SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+const SCORING_MODEL = process.env.ANTHROPIC_CLIMB_SCORING_MODEL || 'claude-fable-5';
+const SCORING_FALLBACK_MODEL = 'claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
 // Schema init
@@ -363,6 +365,50 @@ export async function startClimbIteration({ climb_name }) {
   return _startClimbIterationCore(climb_name);
 }
 
+async function buildScoringPrompt({ evalSnapshot, proposedChange, createdAt }) {
+  let evidenceJson = 'No evidence available';
+  try {
+    const evResult = await pool.query(
+      `SELECT event_type, tool_name, payload, error_message, duration_ms, created_at FROM altus_events
+       WHERE created_at >= $1 ORDER BY created_at DESC LIMIT 50`,
+      [createdAt]
+    );
+    if (evResult.rows.length > 0) evidenceJson = JSON.stringify(evResult.rows);
+  } catch (_) {}
+
+  return {
+    system: `You are evaluating a workspace change for Hal's optimization loop.\nScore the change 0.0-1.0 based on the eval criteria.\nRespond with JSON only: { "score": 0.0, "evidence_summary": "..." }`,
+    user: `Eval criteria:\n${JSON.stringify(evalSnapshot)}\n\nProposed change applied:\n${proposedChange}\n\nEvidence from altus_events since iteration applied:\n${evidenceJson}\n\nScore this change.`,
+  };
+}
+
+function parseScoringText(text) {
+  if (!text) return null;
+  const parsed = JSON.parse(text);
+  const rawScore = parseFloat(parsed.score);
+  if (Number.isNaN(rawScore) || rawScore < 0.0 || rawScore > 1.0) return null;
+  return { score: rawScore, evidenceSummary: parsed.evidence_summary || null };
+}
+
+async function scoreClimbFallback(iter) {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured');
+  const prompt = await buildScoringPrompt({
+    evalSnapshot: iter.eval_snapshot,
+    proposedChange: iter.proposed_change,
+    createdAt: iter.created_at,
+  });
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const response = await anthropic.messages.create({
+    model: SCORING_FALLBACK_MODEL,
+    max_tokens: 1024,
+    system: prompt.system,
+    messages: [{ role: 'user', content: prompt.user }],
+  });
+  await logAiUsage('altus_score_climb_fallback', response.model ?? SCORING_FALLBACK_MODEL, response.usage);
+  const text = response.content?.find((block) => block.type === 'text')?.text;
+  return parseScoringText(text);
+}
+
 // ---------------------------------------------------------------------------
 // scoreClimbIteration
 // ---------------------------------------------------------------------------
@@ -397,26 +443,20 @@ export async function scoreClimbIteration({ climb_name, iteration_number }) {
     return { success: false, exit_reason: 'already_scored', message: `Iteration ${iteration_number} has already been scored.` };
   }
 
-  let evidenceJson = 'No evidence available';
-  try {
-    const evResult = await pool.query(
-      `SELECT event_type, tool_name, payload, error_message, duration_ms, created_at FROM altus_events
-       WHERE created_at >= $1 ORDER BY created_at DESC LIMIT 50`,
-      [iteration.created_at]
-    );
-    if (evResult.rows.length > 0) evidenceJson = JSON.stringify(evResult.rows);
-  } catch (_) {}
-
-  const scoringSystemPrompt = `You are evaluating a workspace change for Hal's optimization loop.\nScore the change 0.0–1.0 based on the eval criteria.\nRespond with JSON only: { "score": 0.0, "evidence_summary": "..." }`;
-  const scoringUserMessage = `Eval criteria:\n${JSON.stringify(climb.eval_snapshot)}\n\nProposed change applied:\n${iteration.proposed_change}\n\nEvidence from altus_events since iteration applied:\n${evidenceJson}\n\nScore this change.`;
+  const scoringPrompt = await buildScoringPrompt({
+    evalSnapshot: climb.eval_snapshot,
+    proposedChange: iteration.proposed_change,
+    createdAt: iteration.created_at,
+  });
 
   const batchRequest = [{
     custom_id: String(iteration.id),
     params: {
-      model: process.env.ANTHROPIC_BATCH_REVIEW_MODEL || 'claude-opus-4-6',
-      max_tokens: 1024,
-      system: scoringSystemPrompt,
-      messages: [{ role: 'user', content: scoringUserMessage }],
+      model: SCORING_MODEL,
+      max_tokens: 2048,
+      output_config: { effort: 'high' },
+      system: scoringPrompt.system,
+      messages: [{ role: 'user', content: scoringPrompt.user }],
     },
   }];
 
@@ -457,7 +497,8 @@ export async function collectClimbScores() {
 
     for (const item of results) {
       const iterRow = await pool.query(
-        `SELECT i.id, i.climb_id, i.iteration_number, i.proposed_change, c.workspace_key, c.best_score
+        `SELECT i.id, i.climb_id, i.iteration_number, i.proposed_change, i.created_at,
+                c.workspace_key, c.best_score, c.eval_snapshot
          FROM altus_climb_iterations i
          JOIN altus_climbs c ON c.id = i.climb_id
          WHERE i.id = $1 AND i.score IS NULL`,
@@ -468,19 +509,38 @@ export async function collectClimbScores() {
 
       let score = null, evidenceSummary = null;
       try {
-        if (item.result?.type === 'succeeded') {
-          const text = item.result.message?.content?.[0]?.text;
-          if (text) {
-            const parsed = JSON.parse(text);
-            const rawScore = parseFloat(parsed.score);
-            if (!isNaN(rawScore) && rawScore >= 0.0 && rawScore <= 1.0) {
-              score = rawScore;
-              evidenceSummary = parsed.evidence_summary || null;
-            }
+        if (item.result?.type === 'succeeded' && !isRefusal(item)) {
+          const parsedScore = parseScoringText(extractText(item));
+          if (parsedScore) {
+            score = parsedScore.score;
+            evidenceSummary = parsedScore.evidenceSummary;
           }
         }
       } catch (parseErr) {
         logger.error(`altus-mountaineering: parse error for iteration id=${item.custom_id}`, { error: parseErr.message });
+      }
+
+      if (score === null && item.result?.type === 'succeeded') {
+        try {
+          const fallbackScore = await scoreClimbFallback(iter);
+          if (fallbackScore) {
+            score = fallbackScore.score;
+            evidenceSummary = fallbackScore.evidenceSummary;
+          }
+        } catch (fallbackErr) {
+          logger.error(`altus-mountaineering: fallback scoring failed for iteration id=${item.custom_id}`, { error: fallbackErr.message });
+        }
+      }
+
+      if (score === null && item.result?.type === 'succeeded') {
+        const reason = isRefusal(item) ? 'refusal' : 'unparseable_response';
+        await pool.query(
+          `UPDATE altus_climb_iterations
+              SET evidence_summary = $1, batch_id = NULL
+            WHERE id = $2`,
+          [`scoring_failed: ${reason}`, iter.id],
+        );
+        logger.error(`altus-mountaineering: scoring failed terminally for iteration id=${item.custom_id}`, { reason });
       }
 
       if (score !== null) {
