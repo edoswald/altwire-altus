@@ -20,7 +20,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { normalizeTopArticles } from '../lib/matomo-utils.js';
 import { getLagAwareGscWindow } from '../lib/gsc-date-window.js';
 import { logger } from '../logger.js';
-import { readAgentMemory } from '../lib/altus-db.js';
+import pool, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+import { collectBatch, extractText, isRefusal, logBatchUsage, submitBatch } from '../batch-client.js';
 import {
   getTrafficSummary,
   getTopArticles,
@@ -223,28 +224,128 @@ const SYNTHESIS_TOOL = {
   },
 };
 
-async function synthesize(payload) {
-  if (!anthropic) return null;
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
-      temperature: 0.3,
-      system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
+export function buildSynthesisRequest(payload) {
+  return {
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    temperature: 0.3,
+    system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
 Be specific and cite numbers, articles, and queries.
 AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.`,
-      tools: [SYNTHESIS_TOOL],
-      tool_choice: { type: 'any' },
-      messages: [
-        {
-          role: 'user',
-          content: `Synthesize the following Matomo + GSC data for AltWire and call the record_synthesis tool with your analysis:
+    tools: [SYNTHESIS_TOOL],
+    tool_choice: { type: 'any' },
+    messages: [
+      {
+        role: 'user',
+        content: `Synthesize the following Matomo + GSC data for AltWire and call the record_synthesis tool with your analysis:\n\n${JSON.stringify(payload, null, 2)}`,
+      },
+    ],
+  };
+}
 
-${JSON.stringify(payload, null, 2)}`,
-        },
-      ],
-    });
+function extractSynthesisFromResult(item) {
+  if (item?.result?.type !== 'succeeded' || isRefusal(item)) return null;
+  const toolUse = item.result.message?.content?.find((b) => b.type === 'tool_use' && b.name === 'record_synthesis');
+  return toolUse?.input ?? null;
+}
+
+function formatDateOnly(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+export async function submitSynthesisBatch(payload, baseline, newsAlert = null, reflectionDate = new Date().toISOString().slice(0, 10)) {
+  const batchId = await submitBatch([{ custom_id: `altus-synthesis-${reflectionDate}`, params: buildSynthesisRequest(payload) }]);
+  await pool.query(
+    `INSERT INTO altus_synthesis_batches (batch_id, payload_json, baseline_json, news_alert_json, reflection_date, status)
+     VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5, 'pending')`,
+    [batchId, JSON.stringify(payload), JSON.stringify(baseline), newsAlert ? JSON.stringify(newsAlert) : null, reflectionDate],
+  );
+  return batchId;
+}
+
+export async function collectSynthesisBatches() {
+  const summary = { completed: [], failed: [] };
+  const { rows } = await pool.query(
+    `SELECT id, batch_id, payload_json, baseline_json, news_alert_json, reflection_date
+       FROM altus_synthesis_batches
+      WHERE status = 'pending'
+      ORDER BY submitted_at ASC`,
+  );
+
+  for (const row of rows) {
+    let results;
+    try {
+      results = await collectBatch(row.batch_id);
+    } catch (err) {
+      logger.error('collectSynthesisBatches: collectBatch failed', { batch_id: row.batch_id, error: err.message });
+      continue;
+    }
+    if (results === null) continue;
+
+    const payload = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json;
+    const baseline = typeof row.baseline_json === 'string' ? JSON.parse(row.baseline_json) : row.baseline_json;
+    const newsAlert = typeof row.news_alert_json === 'string' ? JSON.parse(row.news_alert_json) : row.news_alert_json;
+    const first = results[0];
+    let synthesis = extractSynthesisFromResult(first);
+
+    if (!synthesis) {
+      logger.warn('collectSynthesisBatches: batch returned no synthesis tool call, using direct fallback', {
+        batch_id: row.batch_id,
+        refusal: isRefusal(first),
+        text_preview: extractText(first)?.slice(0, 120) ?? null,
+      });
+      synthesis = await synthesize(payload);
+    }
+
+    await logBatchUsage(row.batch_id, results, 'altus_combined_synthesis');
+
+    if (!synthesis) {
+      await pool.query(
+        `UPDATE altus_synthesis_batches
+            SET status = 'failed', error_message = $2
+          WHERE id = $1`,
+        [row.id, 'Batch completed without synthesis and fallback failed'],
+      );
+      summary.failed.push({ reflection_date: formatDateOnly(row.reflection_date), error: 'no_synthesis' });
+      continue;
+    }
+
+    const combinedWithNews = {
+      ...baseline,
+      synthesis,
+      news_monitor: newsAlert
+        ? {
+            watch_list_matches: newsAlert.watch_list_matches ?? [],
+            match_count: newsAlert.watch_list_matches?.length ?? 0,
+            news_queries_total: newsAlert.news_queries?.length ?? 0,
+          }
+        : null,
+      generated_at: new Date().toISOString(),
+    };
+    await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
+
+    const { proposeEditorialActionItems } = await import('./altus-reflection.js');
+    const reflectionDate = formatDateOnly(row.reflection_date);
+    const created = await proposeEditorialActionItems(synthesis, reflectionDate);
+
+    await pool.query(
+      `UPDATE altus_synthesis_batches
+          SET status = 'complete', completed_at = NOW()
+        WHERE id = $1`,
+      [row.id],
+    );
+    summary.completed.push({ reflection_date: reflectionDate, action_items_created: created });
+  }
+
+  return summary;
+}
+
+export async function synthesize(payload) {
+  if (!anthropic) return null;
+  try {
+    const response = await anthropic.messages.create(buildSynthesisRequest(payload));
 
     const toolUse = response.content.find((b) => b.type === 'tool_use' && b.name === 'record_synthesis');
     if (!toolUse) {
@@ -275,6 +376,7 @@ export async function getCombinedAnalytics(opts = {}) {
   const endDate = opts.endDate ?? defaultWindow.endDate;
   const startDate = opts.startDate ?? defaultWindow.startDate;
   const doSynth = opts.synthesize !== false;
+  const batchMode = opts.batchMode === true;
 
   logger.info('combined-analytics: fetching', { startDate, endDate });
 
@@ -390,6 +492,16 @@ export async function getCombinedAnalytics(opts = {}) {
         rising_topics: historical['hal:altwire:analytics:topic_trends']?.rising_topics?.slice(0, 3) ?? null,
       },
     };
+    if (batchMode) {
+      const reflectionDate = opts.reflectionDate ?? new Date().toISOString().slice(0, 10);
+      const synthesisBatchId = await submitSynthesisBatch(synthPayload, baseline, opts.newsAlert ?? null, reflectionDate);
+      return {
+        ...baseline,
+        synthesis: null,
+        synthesis_batch_id: synthesisBatchId,
+        generated_at: new Date().toISOString(),
+      };
+    }
     synthesis = await synthesize(synthPayload);
   }
 

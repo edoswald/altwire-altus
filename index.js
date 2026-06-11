@@ -541,9 +541,32 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   cron.schedule('30 */2 * * *', () => observe({ name: 'audit_batch', spanType: 'DEFAULT' }, async () => {
     try {
       const { runAuditBatchCollection } = await import('./altus-event-log.js');
+      const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
+      const { collectAltusWeeklyBriefBatches } = await import('./handlers/altus-weekly-brief.js');
       await runAuditBatchCollection();
+      await collectSynthesisBatches();
+      await collectAltusWeeklyBriefBatches();
     } catch (err) {
       logger.error('Altus audit batch collection cron failed', { error: err.message });
+    }
+  }), { timezone: 'America/New_York' });
+
+  // AltWire synthesis focused early poll — helps land before the 5:15 AM digest.
+  cron.schedule('15,30,45 4 * * *', () => observe({ name: 'synthesis_batch_early', spanType: 'DEFAULT' }, async () => {
+    try {
+      const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
+      await collectSynthesisBatches();
+    } catch (err) {
+      logger.error('AltWire synthesis early collection cron failed', { error: err.message });
+    }
+  }), { timezone: 'America/New_York' });
+
+  cron.schedule('0 5 * * *', () => observe({ name: 'synthesis_batch_early', spanType: 'DEFAULT' }, async () => {
+    try {
+      const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
+      await collectSynthesisBatches();
+    } catch (err) {
+      logger.error('AltWire synthesis early collection cron failed', { error: err.message });
     }
   }), { timezone: 'America/New_York' });
 
@@ -573,6 +596,15 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       await sendAltusWeeklyBrief();
     } catch (err) {
       logger.error('altus-weekly-brief cron failed', { error: err.message });
+    }
+  }), { timezone: 'America/New_York' });
+
+  cron.schedule('*/10 8-13 * * 0', () => observe({ name: 'weekly_brief_batch', spanType: 'DEFAULT' }, async () => {
+    try {
+      const { collectAltusWeeklyBriefBatches } = await import('./handlers/altus-weekly-brief.js');
+      await collectAltusWeeklyBriefBatches();
+    } catch (err) {
+      logger.error('altus-weekly-brief batch cron failed', { error: err.message });
     }
   }), { timezone: 'America/New_York' });
 } else {

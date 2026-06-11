@@ -110,6 +110,8 @@ describe('altus-mountaineering — scoreClimbIteration evidence', () => {
     vi.doMock('../batch-client.js', () => ({
       submitBatch: vi.fn().mockResolvedValue('batch-123'),
       collectBatch: vi.fn(),
+      extractText: vi.fn(),
+      isRefusal: vi.fn().mockReturnValue(false),
       logBatchUsage: vi.fn(),
     }));
     vi.doMock('../lib/ai-cost-tracker.js', () => ({
@@ -132,6 +134,67 @@ describe('altus-mountaineering — scoreClimbIteration evidence', () => {
     );
     expect(evidenceQuery[0]).toContain('payload');
     expect(evidenceQuery[0]).not.toContain('details');
+  });
+
+  it('submits scoring batches to Fable with high effort output config', async () => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    process.env.TEST_MODE = 'false';
+    process.env.ALTWIRE_DATABASE_URL = 'postgres://test';
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+
+    const mockQuery = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 1,
+          name: 'morning-digest-v1',
+          eval_snapshot: { scoring_criteria: ['Use recent tool outcomes'] },
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 9,
+          climb_id: 1,
+          iteration_number: 1,
+          proposed_change: 'Add stronger story opportunities section',
+          score: null,
+          created_at: '2026-06-04T12:00:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    const submitBatch = vi.fn().mockResolvedValue('batch-123');
+
+    vi.doMock('../lib/altus-db.js', () => ({
+      default: { query: mockQuery },
+    }));
+    vi.doMock('../batch-client.js', () => ({
+      submitBatch,
+      collectBatch: vi.fn(),
+      extractText: vi.fn(),
+      isRefusal: vi.fn().mockReturnValue(false),
+      logBatchUsage: vi.fn(),
+    }));
+    vi.doMock('../lib/ai-cost-tracker.js', () => ({
+      logAiUsage: vi.fn(),
+    }));
+    vi.doMock('../logger.js', () => ({
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    }));
+
+    const { scoreClimbIteration } = await import('../handlers/altus-mountaineering.js');
+    await scoreClimbIteration({ climb_name: 'morning-digest-v1', iteration_number: 1 });
+
+    expect(submitBatch).toHaveBeenCalledOnce();
+    const request = submitBatch.mock.calls[0][0][0];
+    expect(request.params.model).toBe('claude-fable-5');
+    expect(request.params.max_tokens).toBe(2048);
+    expect(request.params.output_config).toEqual({ effort: 'high' });
   });
 });
 

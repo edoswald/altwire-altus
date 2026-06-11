@@ -5,12 +5,23 @@
  * No database access — callers pass data in and receive results back.
  * Adapted for Altus from cirrusly-nimbus/batch-client.js.
  *
- * Exports: submitBatch, collectBatch, logBatchUsage
+ * Exports: submitBatch, collectBatch, logBatchUsage, isRefusal, extractText
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from './logger.js';
 import { logAiUsage } from './lib/ai-cost-tracker.js';
+
+export function isRefusal(item) {
+  return item?.result?.type === 'succeeded'
+    && item.result.message?.stop_reason === 'refusal';
+}
+
+export function extractText(item) {
+  if (item?.result?.type !== 'succeeded') return null;
+  const block = item.result.message?.content?.find((contentBlock) => contentBlock?.type === 'text');
+  return block?.text?.trim() || null;
+}
 
 /**
  * Submit a batch of review requests to the Anthropic Batch API.
@@ -84,7 +95,7 @@ export async function logBatchUsage(batchId, results, toolName) {
   if (!model) return;
 
   try {
-    await logAiUsage(toolName, model, { input_tokens: inputTokens, output_tokens: outputTokens });
+    await logAiUsage(toolName, model, { input_tokens: inputTokens, output_tokens: outputTokens }, { isBatch: true });
   } catch (err) {
     logger.error('logBatchUsage: failed to log AI usage', { batchId, error: err.message });
   }

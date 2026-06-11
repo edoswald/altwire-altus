@@ -64,8 +64,36 @@ describe('ai-cost-tracker', () => {
       expect(params[1]).toBe('claude-haiku-4-5');
       expect(params[2]).toBe(200);
       expect(params[3]).toBe(100);
-      expect(typeof params[4]).toBe('number'); // estimated_cost_usd
-      expect(params[4]).toBeGreaterThan(0);
+      expect(params[4]).toBe(0);
+      expect(params[5]).toBe(0);
+      expect(typeof params[6]).toBe('number'); // estimated_cost_usd
+      expect(params[6]).toBeGreaterThan(0);
+      expect(params[7]).toBe(false);
+    });
+
+    it('logs cache tokens and applies batch discount', async () => {
+      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValue({ rows: [] });
+
+      const { logAiUsage } = await import('../lib/ai-cost-tracker.js');
+
+      await logAiUsage(
+        'batch_tool',
+        'claude-fable-5',
+        {
+          input_tokens: 1000,
+          output_tokens: 100,
+          cache_read_input_tokens: 500,
+          cache_creation_input_tokens: 200,
+        },
+        { isBatch: true },
+      );
+
+      const [, params] = mockQuery.mock.calls[0];
+      expect(params[4]).toBe(500);
+      expect(params[5]).toBe(200);
+      expect(params[6]).toBeCloseTo(0.009, 8);
+      expect(params[7]).toBe(true);
     });
   });
 

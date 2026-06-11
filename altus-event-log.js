@@ -59,6 +59,22 @@ export async function initAltusEventLogSchema() {
       completed_at  TIMESTAMPTZ
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS altus_synthesis_batches (
+      id               SERIAL PRIMARY KEY,
+      batch_id         VARCHAR(100) NOT NULL UNIQUE,
+      payload_json     JSONB NOT NULL,
+      baseline_json    JSONB NOT NULL,
+      news_alert_json  JSONB,
+      reflection_date  DATE NOT NULL,
+      status           VARCHAR(20) NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'complete', 'failed')),
+      submitted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at     TIMESTAMPTZ,
+      error_message    TEXT
+    )
+  `);
 }
 
 export async function logAltusEvent(eventType, options = {}) {
