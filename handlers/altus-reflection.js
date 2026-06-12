@@ -31,7 +31,7 @@ import {
   getSearchPerformance,
   getSearchOpportunities,
 } from './altwire-gsc-client.js';
-import { getCombinedAnalytics } from './altus-combined-analytics.js';
+import { getCombinedAnalytics, recordSynthesisFeatures } from './altus-combined-analytics.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_REFRESHED_KEY = 'hal:altwire:analytics:last_refreshed';
@@ -260,6 +260,7 @@ export async function runAltwireReflection() {
       };
       if (combined.synthesis) {
         await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
+        await recordSynthesisFeatures(combined.synthesis, reflectionDate);
 
         // Proposer: turn synthesis content gaps + SEO opportunities into action items
         synthItemsCreated = await proposeEditorialActionItems(combined.synthesis, reflectionDate);
