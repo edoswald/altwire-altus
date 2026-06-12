@@ -2801,6 +2801,8 @@ const httpServer = createServer(async (req, res) => {
     url.pathname === '/hal/chat' ||
     url.pathname === '/hal/chat-sessions' ||
     url.pathname.startsWith('/hal/chat-sessions/') ||
+    url.pathname.startsWith('/hal/writer/') ||
+    url.pathname.startsWith('/altwire/') ||
     url.pathname.startsWith('/events/')
   )) {
     setChatCors(req, res);
@@ -3226,27 +3228,21 @@ const httpServer = createServer(async (req, res) => {
   // Writer REST endpoints — authenticated via ALTUS_ADMIN_TOKEN
   // ---------------------------------------------------------------------------
   if (url.pathname.startsWith('/hal/writer/')) {
-    // CORS headers — use explicit allowlist, reject unexpected origins
+    // CORS — enforce the explicit allowlist when one is configured; otherwise
+    // mirror setChatCors and reflect the origin so the chat UI works without
+    // extra env vars. (Preflights are answered by the shared handler above.)
     const origin = req.headers.origin;
-    const allowedOrigin = origin && ALLOWED_ORIGINS.has(origin) ? origin : '';
-    if (origin && !allowedOrigin) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'origin_not_allowed' }));
-      return;
-    }
-    if (allowedOrigin) {
-      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    if (origin) {
+      if (ALLOWED_ORIGINS.size > 0 && !ALLOWED_ORIGINS.has(origin)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'origin_not_allowed' }));
+        return;
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-
-    // Handle OPTIONS preflight
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
 
     // Auth check
     const authToken = req.headers.authorization?.replace('Bearer ', '');
@@ -3562,6 +3558,7 @@ const httpServer = createServer(async (req, res) => {
   // ---------------------------------------------------------------------------
   // GET /altwire/opportunities — normalized story opportunities feed for chat UI
   if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -3591,6 +3588,7 @@ const httpServer = createServer(async (req, res) => {
   // POST /altwire/opportunities/:id/assign — promote a story opportunity into the writer pipeline
   const opportunityAssignMatch = url.pathname.match(/^\/altwire\/opportunities\/(\d+)\/assign$/);
   if (opportunityAssignMatch && req.method === 'POST') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -3624,6 +3622,7 @@ const httpServer = createServer(async (req, res) => {
 
   // GET /altwire/digest — full morning digest (auth via Authorization header)
   if (url.pathname === '/altwire/digest' && req.method === 'GET') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -3644,6 +3643,7 @@ const httpServer = createServer(async (req, res) => {
 
   // GET /altwire/digest/send — trigger morning digest email (auth via Authorization header)
   if (url.pathname === '/altwire/digest/send' && req.method === 'GET') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -3665,6 +3665,7 @@ const httpServer = createServer(async (req, res) => {
 
   // GET /altwire/digest/preview — render live digest as HTML in browser (no email sent)
   if (url.pathname === '/altwire/digest/preview' && req.method === 'GET') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'text/plain' });
@@ -3690,6 +3691,7 @@ const httpServer = createServer(async (req, res) => {
   // Without ?date: returns JSON list of available dates (last 30 days)
   // With ?date=YYYY-MM-DD: returns the archived HTML for that date
   if (url.pathname === '/altwire/digest/archive' && req.method === 'GET') {
+    setChatCors(req, res);
     const authToken = req.headers.authorization?.replace('Bearer ', '') || url.searchParams.get('token');
     if (!isAllowedAltusRestToken(authToken, { allowHalKey: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
