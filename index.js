@@ -454,7 +454,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     await runNewsMonitorCron();
   }), { timezone: 'America/New_York' });
 
-  // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; writes altus:story_opportunities:{date} cache)
+  // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; upserts the altus_story_opportunities queue the digest reads)
   cron.schedule('0 5 * * 1-5', () => observe({ name: 'story_opportunities', spanType: 'DEFAULT' }, async () => {
     try {
       const { getStoryOpportunities } = await import('./handlers/altus-topic-discovery.js');
