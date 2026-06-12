@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { getAltwireUptime, getAltwireIncidents } from './altus-monitoring.js';
 import { getTrafficSummary } from './altwire-matomo-client.js';
 import { getAiCostSummary } from '../lib/ai-cost-tracker.js';
+import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -112,10 +113,7 @@ export async function getAltwireMorningDigest() {
       'SELECT value FROM agent_memory WHERE key = $1 AND agent = $2 LIMIT 1',
       ['altus:news_alert:' + today, 'altus'],
     ),
-    pool.query(
-      'SELECT value FROM agent_memory WHERE key = $1 AND agent = $2 LIMIT 1',
-      ['altus:story_opportunities:' + today, 'altus'],
-    ),
+    listStoryOpportunityQueue({ status: 'active', limit: 50 }),
     pool.query(
       `SELECT id, title, reviewer, due_date, status FROM altus_reviews
        WHERE due_date IS NOT NULL
@@ -187,24 +185,23 @@ export async function getAltwireMorningDigest() {
     warnings.push({ section: 'news_alerts', message: `News alerts fetch failed: ${newsAlertsResult.reason?.message || newsAlertsResult.reason}` });
   }
 
-  // --- Story Opportunities (agent memory) ---
+  // --- Story Opportunities (queue table, populated by the 5 AM weekday cron) ---
   let story_opportunities = null;
   if (storyOppsResult.status === 'fulfilled') {
-    const rows = storyOppsResult.value.rows;
-    if (rows && rows.length > 0) {
-      try {
-        const parsed = JSON.parse(rows[0].value);
-        const opportunities = parsed.opportunities || [];
+    const queue = storyOppsResult.value;
+    if (queue?.success) {
+      const opportunities = queue.opportunities ?? [];
+      if (opportunities.length > 0) {
         story_opportunities = {
           count: opportunities.length,
           top: opportunities.slice(0, 3),
-          pitches: parsed.pitches || null,
+          pitches: null,
         };
-      } catch (e) {
-        warnings.push({ section: 'story_opportunities', message: `Failed to parse story opportunities JSON: ${e.message}` });
       }
+      // Empty queue = nothing pending — render gracefully in email
+    } else if (queue?.error) {
+      warnings.push({ section: 'story_opportunities', message: `Story opportunities query failed: ${queue.error}` });
     }
-    // Empty rows = cron hasn't run yet today — render gracefully in email
   } else {
     warnings.push({ section: 'story_opportunities', message: `Story opportunities fetch failed: ${storyOppsResult.reason?.message || storyOppsResult.reason}` });
   }

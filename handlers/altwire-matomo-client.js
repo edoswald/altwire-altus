@@ -83,8 +83,18 @@ export async function getTrafficSummary(period, date) {
   const cfg = getConfig();
   if (!cfg.configured) return { error: cfg.error };
 
-  const result = await callApi('VisitsSummary.get', period, date);
+  // VisitsSummary.get has no pageview counts (only nb_actions) — merge in
+  // Actions.get so nb_pageviews is available to the digest and synthesis.
+  const [result, actions] = await Promise.all([
+    callApi('VisitsSummary.get', period, date),
+    callApi('Actions.get', period, date),
+  ]);
   if (result.error) return result;
+
+  if (!actions?.error) {
+    if (result.nb_pageviews == null && actions.nb_pageviews != null) result.nb_pageviews = actions.nb_pageviews;
+    if (result.nb_uniq_pageviews == null && actions.nb_uniq_pageviews != null) result.nb_uniq_pageviews = actions.nb_uniq_pageviews;
+  }
 
   logger.info('AltWire Matomo traffic summary fetched', { period, date });
   return result;

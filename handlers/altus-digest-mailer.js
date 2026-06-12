@@ -40,6 +40,42 @@ export async function sendMorningDigestEmail() {
   }
 }
 
+/**
+ * getAiCostSummary returns { by_period: { today, week, month: { total_cost_usd } } }.
+ * Older payloads used flat monthly_total/today_total — support both.
+ */
+function formatAiCosts(c) {
+  if (!c) return null;
+  const monthlyRaw = c.by_period?.month?.total_cost_usd ?? c.monthly_total;
+  const todayRaw = c.by_period?.today?.total_cost_usd ?? c.today_total;
+  return {
+    monthly: monthlyRaw != null ? `$${Number(monthlyRaw).toFixed(2)}` : '—',
+    today: todayRaw != null ? `$${Number(todayRaw).toFixed(2)}` : '—',
+  };
+}
+
+/** Matomo returns bounce_rate as a string like "48%" — normalize to one % sign. */
+function formatBounce(rate) {
+  if (rate === undefined || rate === null || rate === '') return '—';
+  return `${String(rate).replace(/%+$/, '')}%`;
+}
+
+/**
+ * Summarize uptime across monitors, ignoring ones that no longer exist
+ * in Better Stack ('not_monitored') so a deleted monitor doesn't flag
+ * the whole site as having issues.
+ */
+function summarizeUptime(uptime) {
+  const monitors = [
+    ['site', uptime?.site?.status || 'unknown'],
+    ['wp-cron', uptime?.wp_cron?.status || 'unknown'],
+  ];
+  const known = monitors.filter(([, status]) => status !== 'not_monitored');
+  const ok = known.length > 0 && known.every(([, status]) => status === 'up');
+  const detail = known.map(([name, status]) => `${name}: ${status}`).join(', ');
+  return { ok, detail };
+}
+
 export function buildDigestHtml(digest) {
   const sections = [];
   const H = (label) => `<strong style="color:#0066cc;">${label}</strong>`;
@@ -49,11 +85,9 @@ export function buildDigestHtml(digest) {
   `;
 
   // --- Site Status ---
-  const siteStatus = digest.uptime?.site?.status || 'unknown';
-  const wpStatus = digest.uptime?.wp_cron?.status || 'unknown';
-  const siteOk = siteStatus === 'up' && wpStatus === 'up';
+  const uptimeSummary = summarizeUptime(digest.uptime);
   sections.push(row(H('SITE STATUS'),
-    siteOk ? '✓ All systems operational' : `⚠ Issues detected — site: ${siteStatus}, wp-cron: ${wpStatus}`
+    uptimeSummary.ok ? '✓ All systems operational' : `⚠ Issues detected — ${uptimeSummary.detail}`
   ));
 
   // --- Open Incidents ---
@@ -72,7 +106,7 @@ export function buildDigestHtml(digest) {
     if (ft) {
       const v7 = ft.nb_visits?.toLocaleString() || '—';
       const u7 = ft.nb_uniq_visitors?.toLocaleString() || '—';
-      const b7 = ft.bounce_rate !== undefined ? `${ft.bounce_rate}%` : '—';
+      const b7 = formatBounce(ft.bounce_rate);
       lines.push(`7-day &nbsp;&mdash;&nbsp; Visits: ${v7} &nbsp;|&nbsp; Uniques: ${u7} &nbsp;|&nbsp; Bounce: ${b7}`);
     }
     if (digest.traffic) {
@@ -200,11 +234,9 @@ export function buildDigestHtml(digest) {
   }
 
   // --- AI Costs ---
-  if (digest.ai_costs) {
-    const c = digest.ai_costs;
-    const monthly = c.monthly_total != null ? `$${Number(c.monthly_total).toFixed(2)}` : '—';
-    const today_ = c.today_total != null ? `$${Number(c.today_total).toFixed(2)}` : '—';
-    sections.push(row(H('AI COSTS'), `This month: ${monthly} &nbsp;|&nbsp; Today: ${today_}`));
+  {
+    const costs = formatAiCosts(digest.ai_costs);
+    if (costs) sections.push(row(H('AI COSTS'), `Last 30 days: ${costs.monthly} &nbsp;|&nbsp; Today: ${costs.today}`));
   }
 
   // --- Warnings (genuine failures only — empty data is handled gracefully above) ---
@@ -276,8 +308,9 @@ function formatStoryOpportunities(opps) {
 
   for (const o of opps.top.slice(0, 3)) {
     const imp = o.impressions ? ` (${Number(o.impressions).toLocaleString()} impressions)` : '';
-    const gap = o.coverageStatus ? ` — ${o.coverageStatus.replace('_', ' ')}` : '';
-    lines.push(`• ${o.query}${gap}${imp}`);
+    const coverage = o.coverageStatus ?? o.coverage_status;
+    const gap = coverage ? ` — ${coverage.replace(/_/g, ' ')}` : '';
+    lines.push(`• ${o.query ?? o.topic ?? o.title}${gap}${imp}`);
   }
 
   if (opps.pitches) {
@@ -290,10 +323,9 @@ function formatStoryOpportunities(opps) {
 function buildDigestText(digest) {
   const lines = [`AltWire Morning Digest — ${digest.date}`, ''];
 
-  const siteStatus = digest.uptime?.site?.status || 'unknown';
-  const wpStatus = digest.uptime?.wp_cron?.status || 'unknown';
+  const uptimeSummary = summarizeUptime(digest.uptime);
   lines.push('SITE STATUS');
-  lines.push(siteStatus === 'up' && wpStatus === 'up' ? 'All systems operational' : `Issues — site: ${siteStatus}, wp-cron: ${wpStatus}`);
+  lines.push(uptimeSummary.ok ? 'All systems operational' : `Issues — ${uptimeSummary.detail}`);
 
   if (digest.incidents?.site?.length > 0 || digest.incidents?.wp_cron?.length > 0) {
     lines.push('OPEN INCIDENTS');
@@ -304,7 +336,7 @@ function buildDigestText(digest) {
   const ft = digest.fresh_traffic?.period_7d;
   if (ft || digest.traffic) {
     lines.push('TRAFFIC');
-    if (ft) lines.push(`7-day — Visits: ${ft.nb_visits?.toLocaleString() || '—'} | Uniques: ${ft.nb_uniq_visitors?.toLocaleString() || '—'} | Bounce: ${ft.bounce_rate !== undefined ? ft.bounce_rate + '%' : '—'}`);
+    if (ft) lines.push(`7-day — Visits: ${ft.nb_visits?.toLocaleString() || '—'} | Uniques: ${ft.nb_uniq_visitors?.toLocaleString() || '—'} | Bounce: ${formatBounce(ft.bounce_rate)}`);
     if (digest.traffic) {
       const t = digest.traffic;
       lines.push(`Yesterday — Visits: ${t.nb_visits?.toLocaleString() || '—'} | Uniques: ${t.nb_uniq_visitors?.toLocaleString() || '—'} | Pageviews: ${t.nb_pageviews?.toLocaleString() || '—'}`);
@@ -366,11 +398,9 @@ function buildDigestText(digest) {
     lines.push(`OVERDUE LOANERS: ${digest.overdue_loaners.count} overdue — ${names}`);
   }
 
-  if (digest.ai_costs) {
-    const c = digest.ai_costs;
-    const monthly = c.monthly_total != null ? `$${Number(c.monthly_total).toFixed(2)}` : '—';
-    const today_ = c.today_total != null ? `$${Number(c.today_total).toFixed(2)}` : '—';
-    lines.push(`AI COSTS: This month: ${monthly} | Today: ${today_}`);
+  {
+    const costs = formatAiCosts(digest.ai_costs);
+    if (costs) lines.push(`AI COSTS: Last 30 days: ${costs.monthly} | Today: ${costs.today}`);
   }
 
   return lines.join('\n');
