@@ -64,6 +64,7 @@ import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
 import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
+import { initChatHistorySchema, saveSession as saveChatSession, listSessions as listChatSessions, getSession as getChatSession, deleteSession as deleteChatSession } from './lib/altus-chat-history.js';
 import { assembleSystemPrompt } from './hal-harness.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -373,6 +374,9 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   if (altusDbUrl) {
     initSchema().catch((err) => {
       logger.error('Schema init failed', { error: err.message, code: err.code });
+    });
+    initChatHistorySchema().catch((err) => {
+      logger.error('Chat history schema init failed', { error: err.message, code: err.code });
     });
     initAiUsageSchema().catch((err) => {
       logger.error('AI usage schema init failed', { error: err.message, code: err.code });
@@ -2767,7 +2771,7 @@ function setChatCors(req, res) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Agent-Context, Accept');
 }
 
@@ -2795,6 +2799,8 @@ const httpServer = createServer(async (req, res) => {
   if (req.method === 'OPTIONS' && (
     url.pathname === '/hal/auth' ||
     url.pathname === '/hal/chat' ||
+    url.pathname === '/hal/chat-sessions' ||
+    url.pathname.startsWith('/hal/chat-sessions/') ||
     url.pathname.startsWith('/events/')
   )) {
     setChatCors(req, res);
@@ -3132,6 +3138,69 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // ---------------------------------------------------------------------------
+  // Chat session persistence — /hal/chat-sessions
+  // Same REST surface as Nimbus so the shared Hal chat UI can save, list,
+  // restore, and delete sessions when running in altwire mode.
+  // Auth: any valid HAL web API key or signed web session token.
+  // ---------------------------------------------------------------------------
+  if (url.pathname === '/hal/chat-sessions' || url.pathname.startsWith('/hal/chat-sessions/')) {
+    setChatCors(req, res);
+    const bearer = (req.headers['authorization'] || '').replace(/^Bearer /, '').trim();
+    const caller = authenticateHalWebToken(bearer);
+    if (!caller) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+
+    // POST /hal/chat-sessions — save (upsert) a session
+    if (url.pathname === '/hal/chat-sessions' && req.method === 'POST') {
+      const MAX_BODY_BYTES = 1048576; // 1 MB — chat history can be sizeable
+      let bodySize = 0;
+      let bodySizeExceeded = false;
+      let body = '';
+      req.on('data', (chunk) => {
+        bodySize += chunk.length;
+        if (bodySize > MAX_BODY_BYTES) { bodySizeExceeded = true; req.destroy(); return; }
+        body += chunk;
+      });
+      req.on('end', async () => {
+        if (bodySizeExceeded) { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Payload too large' })); return; }
+        let parsed;
+        try { parsed = JSON.parse(body); } catch { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'invalid_json' })); return; }
+        const { id, title, messages } = parsed;
+        if (!id || !messages) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'id and messages required' })); return; }
+        const result = await saveChatSession(id, title || 'Untitled', messages, caller.name ?? null);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
+    // GET /hal/chat-sessions — list recent sessions
+    if (url.pathname === '/hal/chat-sessions' && req.method === 'GET') {
+      const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit'), 10) : 50;
+      const result = await listChatSessions(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // GET/DELETE /hal/chat-sessions/:id — fetch or delete a session
+    if (url.pathname.startsWith('/hal/chat-sessions/') && (req.method === 'GET' || req.method === 'DELETE')) {
+      const sessionId = decodeURIComponent(url.pathname.slice('/hal/chat-sessions/'.length));
+      const result = req.method === 'DELETE' ? await deleteChatSession(sessionId) : await getChatSession(sessionId);
+      res.writeHead(result.error === 'not_found' ? 404 : 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'method_not_allowed' }));
+    return;
+  }
+
   // Slack events — signature verification handled by slack-altus.js
   if (url.pathname === '/slack/events' && req.method === 'POST') {
     await observe({ name: 'slack_webhook', spanType: 'DEFAULT' }, async () => {
@@ -3169,7 +3238,7 @@ const httpServer = createServer(async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
       res.setHeader('Vary', 'Origin');
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 
     // Handle OPTIONS preflight
@@ -3294,6 +3363,68 @@ const httpServer = createServer(async (req, res) => {
         logger.error('Writer summary query failed', { error: err.message });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'summary_failed', message: err.message }));
+      }
+      return;
+    }
+
+    // GET /hal/writer/author-profile — editorial voice profile for the settings drawer
+    if (url.pathname === '/hal/writer/author-profile' && req.method === 'GET') {
+      try {
+        const { getDerekAuthorProfile } = await import('./hal-harness.js');
+        const profile = await getDerekAuthorProfile();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, profile: profile || null }));
+      } catch (err) {
+        logger.error('Author profile query failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'profile_failed' }));
+      }
+      return;
+    }
+
+    // POST /hal/writer/author-profile — update one field ({ field_path, value })
+    if (url.pathname === '/hal/writer/author-profile' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let params;
+      try { params = JSON.parse(body); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'invalid_json' }));
+        return;
+      }
+      const { field_path, value } = params ?? {};
+      const ALLOWED_PROFILE_PATHS = [
+        'writing_voice.tone', 'writing_voice.formality',
+        'writing_voice.sentence_patterns', 'writing_voice.first_person_usage',
+        'writing_voice.emotional_candor', 'writing_voice.humor_style',
+        'what_to_preserve_in_ai_drafts',
+      ];
+      if (!ALLOWED_PROFILE_PATHS.includes(field_path) || typeof value !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'invalid_field_path', allowed: ALLOWED_PROFILE_PATHS }));
+        return;
+      }
+      try {
+        const { getDerekAuthorProfile } = await import('./hal-harness.js');
+        const current = await getDerekAuthorProfile() || {};
+        const parts = field_path.split('.');
+        let obj = current;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!obj[parts[i]]) obj[parts[i]] = {};
+          obj = obj[parts[i]];
+        }
+        obj[parts[parts.length - 1]] = value;
+        await pool.query(
+          `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
+           ON CONFLICT (agent, key) DO UPDATE SET value = $3`,
+          ['hal', 'hal:altwire:editorial_voice_profile', JSON.stringify(current)]
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, profile: current }));
+      } catch (err) {
+        logger.error('Author profile update failed', { error: err.message });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'update_failed' }));
       }
       return;
     }
@@ -3432,7 +3563,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/opportunities — normalized story opportunities feed for chat UI
   if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3461,7 +3592,7 @@ const httpServer = createServer(async (req, res) => {
   const opportunityAssignMatch = url.pathname.match(/^\/altwire\/opportunities\/(\d+)\/assign$/);
   if (opportunityAssignMatch && req.method === 'POST') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3597,25 +3728,6 @@ const httpServer = createServer(async (req, res) => {
       logger.error('AltWire digest archive endpoint failed', { error: err.message });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'archive_failed', message: err.message }));
-    }
-    return;
-  }
-
-  if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
-    const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'unauthorized' }));
-      return;
-    }
-    try {
-      const result = await getStoryOpportunities();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
-    } catch (err) {
-      logger.error('AltWire opportunities endpoint failed', { error: err.message });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'query_failed', message: 'Writer data temporarily unavailable' }));
     }
     return;
   }
