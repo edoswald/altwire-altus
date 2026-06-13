@@ -28,6 +28,7 @@ export const SHARED_PREFIXES = [
   'altus:story_opportunities:',
   'altus:news_alert:',
   'altus:heartbeat:',
+  'hal:portable_context:',
   'hal:altwire:',
   'hal:soul',
   'hal:perch_agenda',
