@@ -120,6 +120,7 @@ import {
   listStoryOpportunityQueue,
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
+import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
@@ -295,6 +296,7 @@ const TOOL_CONTEXTS = {
   altus_list_watch_items:      [],
   altus_update_watch_item:     [],
   altus_record_autonomy_note:  [],
+  altus_send_admin_email:      [],
   // AI Writer pipeline
   create_article_assignment:   [],
   generate_article_outline:    [],
@@ -2608,6 +2610,23 @@ async ({ status, limit }) => {
     },
     async (params) => {
       const result = await recordAutonomyNote(params);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_send_admin_email',
+    {
+      description: 'Send a fresh Altus admin-only email via SES. Use only for Derek/Ed/admin progress updates, small blocking questions, or urgent admin alerts. Recipients must be configured admin addresses such as DEREK_EMAIL, ED_EMAIL, ALTUS_ADMIN_EMAILS, ALTUS_CC_EMAILS, ADMIN_EMAILS, or HAL_ADMIN_EMAILS.',
+      inputSchema: {
+        to: z.string().describe('Admin recipient email address. Display-name format is allowed if it resolves to a configured admin address.'),
+        cc: z.string().optional().describe('Optional comma-separated admin CC recipients. All recipients must be configured admins.'),
+        subject: z.string().min(1).max(200).describe('Email subject line'),
+        body: z.string().min(1).max(10000).describe('Plain-text email body'),
+      },
+    },
+    async ({ to, cc, subject, body }) => {
+      const result = await sendAltusAdminEmail({ to, cc, subject, body });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
