@@ -10,7 +10,7 @@ import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 
 export const CLIMB_SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
-const SCORING_MODEL = process.env.ANTHROPIC_CLIMB_SCORING_MODEL || 'claude-fable-5';
+const SCORING_MODEL = process.env.ANTHROPIC_CLIMB_SCORING_MODEL || 'claude-opus-4-8';
 const SCORING_FALLBACK_MODEL = 'claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------

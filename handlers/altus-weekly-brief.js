@@ -7,8 +7,8 @@ import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 
-const MODEL_FABLE = 'claude-fable-5';
-const WEEKLY_MODEL = process.env.ALTUS_WEEKLY_MODEL || MODEL_FABLE;
+const MODEL_OPUS = 'claude-opus-4-8';
+const WEEKLY_MODEL = process.env.ALTUS_WEEKLY_MODEL || MODEL_OPUS;
 
 function getIsoWeek(date) {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));

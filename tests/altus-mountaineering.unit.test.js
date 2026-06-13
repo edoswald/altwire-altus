@@ -136,7 +136,7 @@ describe('altus-mountaineering — scoreClimbIteration evidence', () => {
     expect(evidenceQuery[0]).not.toContain('details');
   });
 
-  it('submits scoring batches to Fable with high effort output config', async () => {
+  it('submits scoring batches to Opus with high effort output config', async () => {
     vi.resetModules();
     vi.unstubAllEnvs();
     process.env.TEST_MODE = 'false';
@@ -192,7 +192,7 @@ describe('altus-mountaineering — scoreClimbIteration evidence', () => {
 
     expect(submitBatch).toHaveBeenCalledOnce();
     const request = submitBatch.mock.calls[0][0][0];
-    expect(request.params.model).toBe('claude-fable-5');
+    expect(request.params.model).toBe('claude-opus-4-8');
     expect(request.params.max_tokens).toBe(2048);
     expect(request.params.output_config).toEqual({ effort: 'high' });
   });
