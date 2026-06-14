@@ -55,6 +55,7 @@ import {
 } from './handlers/altwire-gsc-client.js';
 import { getCombinedAnalytics } from './handlers/altus-combined-analytics.js';
 import { generateChart } from './hal-chart.js';
+import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
