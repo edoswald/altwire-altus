@@ -41,31 +41,32 @@ export async function getAltwireUptime() {
       Authorization: `Bearer ${process.env.BETTER_STACK_TOKEN}`,
     };
 
-    const [siteRes, wpCronRes] = await Promise.all([
-      fetch(`${BETTER_STACK_BASE}/monitors/${MONITORS.site}`, { headers }),
-      fetch(`${BETTER_STACK_BASE}/monitors/${MONITORS.wp_cron}`, { headers }),
-    ]);
-
-    if (!siteRes.ok || !wpCronRes.ok) {
-      const failedStatus = !siteRes.ok ? siteRes.status : wpCronRes.status;
-      return { error: `Better Stack API error`, status: failedStatus };
-    }
-
-    const [siteJson, wpCronJson] = await Promise.all([
-      siteRes.json(),
-      wpCronRes.json(),
-    ]);
-
     const mapMonitor = (json) => ({
       status: json.data.attributes.status,
       last_checked_at: json.data.attributes.last_checked_at,
       url: json.data.attributes.url,
     });
 
-    return {
-      site: mapMonitor(siteJson),
-      wp_cron: mapMonitor(wpCronJson),
+    // Fetch each monitor independently so one missing/failing monitor
+    // (e.g. a deleted wp-cron monitor returning 404) doesn't blank out
+    // the status of the others in the digest.
+    const fetchMonitor = async (id) => {
+      try {
+        const res = await fetch(`${BETTER_STACK_BASE}/monitors/${id}`, { headers });
+        if (res.status === 404) return { status: 'not_monitored', error: 'monitor_not_found', monitor_id: id };
+        if (!res.ok) return { status: 'unknown', error: 'Better Stack API error', http_status: res.status };
+        return mapMonitor(await res.json());
+      } catch (err) {
+        return { status: 'unknown', error: err.message };
+      }
     };
+
+    const [site, wp_cron] = await Promise.all([
+      fetchMonitor(MONITORS.site),
+      fetchMonitor(MONITORS.wp_cron),
+    ]);
+
+    return { site, wp_cron };
   } catch (err) {
     logger.error('getAltwireUptime failed', { error: err.message });
     return { error: err.message };

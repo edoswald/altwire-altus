@@ -5,6 +5,7 @@ describe('Altus memory scope parity', () => {
   it('keeps shared Hal prefixes shared', () => {
     expect(classifyKey('hal:soul')).toBe('shared');
     expect(classifyKey('hal:altwire:editorial_context')).toBe('shared');
+    expect(classifyKey('hal:portable_context:admin_collaboration')).toBe('shared');
     expect(classifyKey('reflection:combined')).toBe('shared');
   });
 

@@ -126,6 +126,78 @@ function buildSearchGaps(opportunityZone, siteSearchKeywords) {
   return gaps.slice(0, 20);
 }
 
+const RECENT_FEATURES_KEY = 'hal:altwire:synthesis_recent_features';
+const RECENT_FEATURES_WINDOW_DAYS = 7;
+const RECENT_FEATURES_RETENTION_DAYS = 14;
+
+/**
+ * Load articles/queries featured in recent syntheses so today's run can
+ * rotate to fresh material instead of repeating the same strong/weak picks.
+ */
+async function loadRecentFeatures(days = RECENT_FEATURES_WINDOW_DAYS) {
+  const empty = { entries: [], urls: new Set(), queries: new Set() };
+  const result = await readAgentMemory('hal', RECENT_FEATURES_KEY);
+  if (!result.success) return empty;
+
+  let entries;
+  try { entries = JSON.parse(result.value); } catch { return empty; }
+  if (!Array.isArray(entries)) return empty;
+
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const recent = entries.filter((e) => typeof e?.date === 'string' && e.date >= cutoff);
+
+  const urls = new Set();
+  const queries = new Set();
+  for (const e of recent) {
+    for (const u of e.urls ?? []) urls.add(normalizeUrl(u));
+    for (const q of e.queries ?? []) queries.add(String(q).toLowerCase().trim());
+  }
+  return { entries: recent, urls, queries };
+}
+
+/**
+ * Record which articles/queries a completed synthesis featured, so the next
+ * runs can de-prioritize them. Call wherever a synthesis becomes the digest's
+ * combined_synthesis (reflection direct path and batch collection path).
+ */
+export async function recordSynthesisFeatures(synthesis, reflectionDate = new Date().toISOString().slice(0, 10)) {
+  if (!synthesis) return;
+  try {
+    const urls = [
+      ...(synthesis.top_dual_winners ?? []),
+      ...(synthesis.underperforming_in_search ?? []),
+    ].map((a) => a?.url).filter(Boolean);
+    const queries = [
+      ...(synthesis.opportunity_alignments ?? []),
+      ...(synthesis.content_gaps ?? []),
+    ].map((q) => q?.query).filter(Boolean);
+
+    const { entries } = await loadRecentFeatures(RECENT_FEATURES_RETENTION_DAYS);
+    const next = [
+      ...entries.filter((e) => e.date !== reflectionDate),
+      { date: reflectionDate, urls, queries },
+    ];
+    await writeAgentMemory('hal', RECENT_FEATURES_KEY, JSON.stringify(next));
+  } catch (err) {
+    logger.warn('combined-analytics: failed to record synthesis features', { error: err.message });
+  }
+}
+
+/**
+ * Order candidates so items not featured in recent syntheses come first,
+ * then cap to limit. Featured items stay available as backfill when fresh
+ * candidates run short.
+ */
+function preferFresh(items, featuredKeys, keyOf, limit) {
+  const fresh = [];
+  const featured = [];
+  for (const item of items) {
+    const key = keyOf(item);
+    (key && featuredKeys.has(key) ? featured : fresh).push(item);
+  }
+  return [...fresh, ...featured].slice(0, limit);
+}
+
 async function loadHistoricalContext() {
   const ctx = {};
   for (const key of HISTORICAL_KEYS) {
@@ -232,6 +304,7 @@ export function buildSynthesisRequest(payload) {
     system: `You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
 Be specific and cite numbers, articles, and queries.
+The payload may include recently_featured — articles and queries highlighted in syntheses from the past ${RECENT_FEATURES_WINDOW_DAYS} days. Do NOT repeat those as top_dual_winners, underperforming_in_search, opportunity_alignments, or content_gaps unless something materially changed for them (and say what changed in the "why"/"rationale"). Prefer fresh articles, emerging queries, and untapped areas of interest so the daily digest stays varied and useful.
 AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.`,
     tools: [SYNTHESIS_TOOL],
     tool_choice: { type: 'any' },
@@ -328,6 +401,7 @@ export async function collectSynthesisBatches() {
 
     const { proposeEditorialActionItems } = await import('./altus-reflection.js');
     const reflectionDate = formatDateOnly(row.reflection_date);
+    await recordSynthesisFeatures(synthesis, reflectionDate);
     const created = await proposeEditorialActionItems(synthesis, reflectionDate);
 
     await pool.query(
@@ -462,6 +536,8 @@ export async function getCombinedAnalytics(opts = {}) {
 
   let synthesis = null;
   if (doSynth && (matomoConfigured || gscConfigured)) {
+    const recentFeatures = await loadRecentFeatures();
+    const featuredQueryKey = (g) => (g?.query ? String(g.query).toLowerCase().trim() : null);
     const synthPayload = {
       period: { start_date: startDate, end_date: endDate },
       search_traffic_share_pct,
@@ -470,7 +546,12 @@ export async function getCombinedAnalytics(opts = {}) {
         nb_pageviews: matomo.traffic?.nb_pageviews ?? null,
         bounce_rate: matomo.traffic?.bounce_rate ?? null,
       },
-      top_articles: topArticlesArr.slice(0, 10).map((a) => ({
+      top_articles: preferFresh(
+        topArticlesArr,
+        recentFeatures.urls,
+        (a) => normalizeUrl(a.url ?? a.label),
+        10,
+      ).map((a) => ({
         url: a.url ?? a.label,
         label: a.label ?? a.title ?? a.url,
       pageviews: a.pageviews ?? a.nb_hits ?? a.nb_visits ?? 0,
@@ -482,9 +563,24 @@ export async function getCombinedAnalytics(opts = {}) {
         position: r.position,
         ctr: r.ctr,
       })),
-      top_opportunities: (gsc.opportunities?.opportunities ?? []).slice(0, 10),
-      cross_reference: cross_reference.slice(0, 10),
-      search_gaps: search_gaps.slice(0, 10),
+      top_opportunities: preferFresh(
+        gsc.opportunities?.opportunities ?? [],
+        recentFeatures.queries,
+        featuredQueryKey,
+        10,
+      ),
+      cross_reference: preferFresh(
+        cross_reference,
+        recentFeatures.urls,
+        (r) => normalizeUrl(r.url),
+        10,
+      ),
+      search_gaps: preferFresh(search_gaps, recentFeatures.queries, featuredQueryKey, 10),
+      recently_featured: {
+        window_days: RECENT_FEATURES_WINDOW_DAYS,
+        urls: [...recentFeatures.urls].slice(0, 30),
+        queries: [...recentFeatures.queries].slice(0, 30),
+      },
       historical_summary: {
         gsc_16m_insights: historical['hal:altwire:gsc:summary_16m']?.insights ?? null,
         gsc_16m_trend: historical['hal:altwire:gsc:summary_16m']?.trend_direction ?? null,

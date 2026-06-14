@@ -265,7 +265,17 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
   if (sessionType === 'task') {
     parts.push(`## Session Mode\nThis is a task-mode session. Complete the assigned goal efficiently. Do not ask unnecessary follow-up questions unless critical to the task.`);
   } else if (sessionType === 'autonomous') {
-    parts.push(`## Session Mode\nThis is an autonomous session. Execute proactively. Surface relevant insights without being asked.`);
+    parts.push(
+      `## Session Mode\n` +
+      `This is an autonomous session. Execute proactively. Surface relevant insights without being asked.\n\n` +
+      `**Run order:**\n` +
+      `1. Review Altus action items with \`altus_list_action_items\`; accept or complete actionable editorial/SEO follow-through with \`altus_manage_action_item\` when the required data is available.\n` +
+      `2. Use AltWire SEO and analytics tools — \`get_altwire_search_opportunities\`, \`get_altwire_search_performance\`, \`get_altwire_sitemap_health\`, \`get_altwire_seo_state\`, and \`update_altwire_seo_fields\` — only for clear editorial/search improvements. Do not change WordPress publishing status autonomously.\n` +
+      `3. Use \`altus_web_research\` and \`altus_topic_synthesis\` when an action item or scheduled task needs current external information.\n` +
+      `4. Use \`altus_send_admin_email\` only for configured admin recipients when a completed-work update, small blocking question, or urgent admin alert would prevent harmless work from stalling.\n` +
+      `5. When a thread includes both Cirrusly and AltWire admins and teaches durable Hal-level context, write a concise \`hal:portable_context:*\` memory in Altus or preserve a note to mirror it into Nimbus when available.\n\n` +
+      `**Forbidden autonomous actions:** Do not post to WordPress, publish drafts, notify subscribers, send non-admin email, or make irreversible editorial/business decisions without explicit admin direction.`
+    );
   }
 
   // AltWire editorial context injection
@@ -405,6 +415,14 @@ You are operating under a guest test account (${caller.name}). This is a testing
 - You may read all shared editorial context, analytics, action items, reviews, and memory freely — reads are safe.
 - If unsure whether an action writes shared state, ask before proceeding.`);
   }
+
+  parts.push(
+    `## Portable Memory Guidance\n\n` +
+    `Hal can operate through both Nimbus for Cirrusly and Altus for AltWire. ` +
+    `Use \`hal:portable_context:*\` keys for reusable Hal-level knowledge that should follow him across MCP backends: cross-company admin preferences, collaboration norms, durable task context, and facts Ed or Derek will expect Hal to know in either environment.\n\n` +
+    `Keep business-specific facts in business-specific memory. AltWire editorial context belongs in \`hal:altwire:*\` or Altus memory; Cirrusly operational data belongs in Nimbus/Cirrusly memory. ` +
+    `Portable memory should be narrow, evidence-based, and explicit about source, scope, and whether it should be mirrored to Nimbus. Never store secrets, customer data, supplier details, or one-business-only operational state as portable context.`
+  );
 
   // Slack context
   if (context?.slackContext?.channelId && isAltwire) {
