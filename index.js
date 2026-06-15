@@ -122,6 +122,7 @@ import {
   listStoryOpportunityQueue,
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
+import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js';
 import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
@@ -3590,8 +3591,7 @@ const httpServer = createServer(async (req, res) => {
       const resolvedStatus = ['active', 'all', 'pending', 'in_progress', 'assigned', 'completed', 'dismissed'].includes(statusParam)
         ? statusParam
         : 'active';
-      const result = await getStoryOpportunities({ days: 28 });
-      if (!result?.error) await upsertStoryOpportunityQueue(result);
+      await refreshOpportunityQueue({ days: 28, includeNews: true });
       const queued = await listStoryOpportunityQueue({ status: resolvedStatus });
       if (queued?.error) throw new Error(queued.error);
 
