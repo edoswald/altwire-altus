@@ -120,6 +120,7 @@ import {
   listStoryOpportunityQueue,
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
+import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
@@ -3432,7 +3433,7 @@ const httpServer = createServer(async (req, res) => {
   // GET /altwire/opportunities — normalized story opportunities feed for chat UI
   if (url.pathname === '/altwire/opportunities' && req.method === 'GET') {
     const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!authToken || authToken !== process.env.HAL_KEY) {
+    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -3442,8 +3443,7 @@ const httpServer = createServer(async (req, res) => {
       const resolvedStatus = ['active', 'all', 'pending', 'in_progress', 'assigned', 'completed', 'dismissed'].includes(statusParam)
         ? statusParam
         : 'active';
-      const result = await getStoryOpportunities({ days: 28 });
-      if (!result?.error) await upsertStoryOpportunityQueue(result);
+      await refreshOpportunityQueue({ days: 28, includeNews: true });
       const queued = await listStoryOpportunityQueue({ status: resolvedStatus });
       if (queued?.error) throw new Error(queued.error);
 

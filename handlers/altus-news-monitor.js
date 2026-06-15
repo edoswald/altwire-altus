@@ -74,7 +74,7 @@ export async function getNewsOpportunities({ days = 7 } = {}) {
   let watchItems = [];
   let watchListNote = null;
   try {
-    const watchResult = await pool.query('SELECT name FROM altus_watch_list');
+    const watchResult = await pool.query('SELECT name FROM altus_watch_list WHERE active = true');
     watchItems = watchResult.rows;
   } catch (err) {
     // Table may not exist — graceful handling

@@ -109,6 +109,20 @@ describe('altus-news-monitor', () => {
       expect(result.news_queries.length).toBe(1);
       expect(result.news_pages.length).toBe(1);
     });
+
+    it('only matches active watch list subjects', async () => {
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({
+        rows: [{ keys: ['radiohead tour news'], clicks: 5, impressions: 100, ctr: 0.05, position: 8 }],
+      });
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ name: 'Radiohead' }] });
+
+      const { getNewsOpportunities } = await import('../handlers/altus-news-monitor.js');
+      await getNewsOpportunities();
+
+      expect(mockQuery).toHaveBeenCalledWith('SELECT name FROM altus_watch_list WHERE active = true');
+    });
   });
 
   describe('runNewsMonitorCron', () => {
