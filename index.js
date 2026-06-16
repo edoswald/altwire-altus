@@ -813,8 +813,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire traffic summary for a period — visits, unique visitors, pageviews, bounce rate. Use to assess overall site health and content performance trends.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -828,8 +828,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire referrer breakdown — where readers are coming from. Includes social media, organic search, direct, and campaign referrers. Use to understand content distribution channel performance.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -843,8 +843,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire most-viewed articles, entry pages, and exit pages for a period. Use to identify best-performing content and high-exit pages that may need improvement.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -858,8 +858,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire internal search terms — what readers are searching for on the site. Useful for identifying content gaps and topics with reader demand.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -880,7 +880,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         start_date: z.string().describe('Start date — ISO format, e.g. 2024-06-01'),
         end_date: z.string().describe('End date — ISO format, e.g. 2024-06-30'),
         row_limit: z.number().int().min(1).max(1000).default(25).optional().describe('Max rows to return (default 25)'),
-        dimensions: z.string().optional().describe('Dimensions to group by — e.g. query, page, country. Default: query'),
+        dimensions: z.union([z.array(z.string()), z.string()]).optional().describe('Dimensions to group by — e.g. query, page, country. Default: query'),
       },
     },
     async ({ start_date, end_date, row_limit, dimensions }) => {
@@ -967,7 +967,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         start_date: z.string().describe('Start date — ISO format'),
         end_date: z.string().describe('End date — ISO format'),
         row_limit: z.number().int().min(1).max(1000).default(25).optional(),
-        dimensions: z.string().optional().describe('Dimensions to group by — query (default), page, country'),
+        dimensions: z.union([z.array(z.string()), z.string()]).optional().describe('Dimensions to group by — query (default), page, country'),
       },
     },
     async ({ start_date, end_date, row_limit, dimensions }) => {
@@ -2538,7 +2538,7 @@ async ({ status, limit }) => {
         due_at: z.string().optional().describe('Optional ISO due datetime'),
         source: z.string().optional().describe('Source label, defaults to manual'),
         evidence: z.string().optional().describe('Optional evidence or rationale'),
-        session_id: z.string().optional().describe('Optional originating session ID'),
+        session_id: z.union([z.string(), z.number()]).optional().describe('Optional originating session ID'),
       },
     },
     async (params) => {
@@ -2593,7 +2593,7 @@ async ({ status, limit }) => {
         next_check_at: z.string().optional().describe('Optional ISO datetime for the next check'),
         source: z.string().optional().describe('Source label, defaults to manual'),
         evidence: z.string().optional().describe('Optional evidence or rationale'),
-        session_id: z.string().optional().describe('Optional originating session ID'),
+        session_id: z.union([z.string(), z.number()]).optional().describe('Optional originating session ID'),
       },
     },
     async (params) => {
