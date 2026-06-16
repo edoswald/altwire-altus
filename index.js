@@ -18,7 +18,7 @@ import { initializeLaminar } from './lib/laminar-integration.js';
 // ---------------------------------------------------------------------------
 await initializeLaminar();
 
-import { sessionIdStorage } from './lib/safe-tool-handler.js';
+import { sessionIdStorage, oauthClientStorage } from './lib/safe-tool-handler.js';
 import { observe } from './tracing.js';
 import { logAltusEvent } from './altus-event-log.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -132,10 +132,6 @@ import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
 import crypto from 'crypto';
-import { AsyncLocalStorage } from 'async_hooks';
-
-export const oauthClientStorage = new AsyncLocalStorage();
-
 const PORT = process.env.PORT || 3000;
 
 // Rate limiters
@@ -3859,6 +3855,16 @@ const httpServer = createServer(async (req, res) => {
         description: t.description ?? '',
         input_schema: t.inputSchema ?? { type: 'object', properties: {} },
       }));
+      const clientCtx = { clientId, allowedTools };
+
+      const callChatTool = async (block) => oauthClientStorage.run(clientCtx, async () => {
+        if (session_id) {
+          return sessionIdStorage.run(session_id, async () =>
+            mcpClient.callTool({ name: block.name, arguments: block.input })
+          );
+        }
+        return mcpClient.callTool({ name: block.name, arguments: block.input });
+      });
 
       // Build conversation history
       let messages = [
@@ -3928,7 +3934,7 @@ const httpServer = createServer(async (req, res) => {
           let toolContent = [{ type: 'text', text: 'Error: tool call failed' }];
           let success = false;
           try {
-            const result = await mcpClient.callTool({ name: block.name, arguments: block.input });
+            const result = await callChatTool(block);
             toolContent = result.content ?? [{ type: 'text', text: '' }];
             success = true;
           } catch (err) {

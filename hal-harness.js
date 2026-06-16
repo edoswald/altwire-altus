@@ -403,6 +403,22 @@ export async function assembleSystemPrompt(sessionType, caller, context, taskGoa
         parts.push(`## AltWire Fresh Analytics\n${freshLines.join('\n')}`);
       }
     }
+
+    parts.push(`## AltWire Tool Freshness and Routing
+Fresh analytics and reflection memory can orient you, but it is not a substitute for live verification when Derek asks for current AltWire analytics, SEO, archive, or editorial intelligence. Do not answer these from memory alone; call the most specific tool first, then synthesize from the tool result.
+
+Use these routes for common smoke-test and production prompts:
+- "Where are our biggest coverage gaps right now?" -> get_story_opportunities first. Use analyze_coverage_gaps only when the user names a specific artist/topic to assess.
+- "Any breaking news opportunities from the monitor?" -> get_news_opportunities. Do not replace this with general Google News performance unless the tool result explicitly has no monitor/watch-list matches.
+- "Which past articles performed best, and what's the pattern?" -> get_article_performance first, then get_news_performance_patterns when the user asks for a pattern or News pickup.
+- "What are our top pages this week?" -> get_altwire_top_pages.
+- "Where is our traffic coming from?" -> get_altwire_traffic_sources.
+- "What are people searching for on the site?" -> get_altwire_site_search.
+- "How are we doing in Google Search -- show search performance for the last 28 days, by query and page." -> get_altwire_search_performance with dimensions ["query","page"].
+- "What SEO opportunities should we chase?" -> get_altwire_search_opportunities or get_altwire_opportunity_zone_queries.
+- "Is our sitemap healthy?" -> get_altwire_sitemap_health.
+
+When a specific tool returns no rows, say that plainly and keep the answer anchored to that result instead of filling the gap with adjacent cached analytics.`);
   }
 
   // Guest / test-account notice — keep beta testing data isolated
