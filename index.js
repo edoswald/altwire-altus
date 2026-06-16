@@ -66,6 +66,7 @@ import cron from 'node-cron';
 import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
 import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
 import { initChatHistorySchema, saveSession as saveChatSession, listSessions as listChatSessions, getSession as getChatSession, deleteSession as deleteChatSession } from './lib/altus-chat-history.js';
+import { createAnthropicMessageStream } from './lib/anthropic-message-stream.js';
 import { assembleSystemPrompt } from './hal-harness.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -3884,7 +3885,7 @@ const httpServer = createServer(async (req, res) => {
 
       // Agentic loop — max 15 iterations to prevent runaway tool chains
       for (let iteration = 0; iteration < 15; iteration++) {
-        const responseStream = anthropic.messages.stream({
+        const responseStream = await createAnthropicMessageStream(anthropic, {
           model,
           max_tokens: 8192,
           system: systemPrompt,
