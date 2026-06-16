@@ -8,12 +8,17 @@
  */
 
 import pool from '../lib/altus-db.js';
+import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { generate } from '../lib/writer-client.js';
 import { searchAltwireArchive } from './altus-search.js';
 import { buildAuthHeader } from '../lib/wp-client.js';
 import { markdownToHtml } from '../lib/markdown.js';
 import { getDerekAuthorProfile } from '../hal-harness.js';
+
+// agent_memory namespace for Hal-scoped editorial intelligence (matches the
+// analytics seed keys under hal:altwire:*).
+const AGENT_HAL = 'hal';
 
 // ---------------------------------------------------------------------------
 // Schema initialization
@@ -225,7 +230,8 @@ export async function generateOutline({ assignment_id }) {
 
   const archiveContext = formatArchiveForPrompt(assignment.archive_research);
 
-  const system = `You are an editorial assistant for AltWire, an independent music news publication covering alternative, indie, and emerging artists. Write in AltWire's voice: direct, knowledgeable, enthusiastic without being breathless. Avoid generic music journalism clichés. Derek is the editor and will approve this outline before any writing begins.`;
+  const learnedDirectives = formatLearnedDirectives((await getWriterDirectives())?.directives);
+  const system = `You are an editorial assistant for AltWire, an independent music news publication covering alternative, indie, and emerging artists. Write in AltWire's voice: direct, knowledgeable, enthusiastic without being breathless. Avoid generic music journalism clichés. Derek is the editor and will approve this outline before any writing begins.${learnedDirectives}`;
 
   const prompt = `Generate a structured outline for a ${assignment.article_type} about: ${assignment.topic}
 
@@ -371,6 +377,7 @@ export async function generateDraft({ assignment_id }) {
   const voiceDirective = authorProfile?.what_to_preserve_in_ai_drafts
     ? `\n\nVoice directive from Derek: ${authorProfile.what_to_preserve_in_ai_drafts}`
     : '';
+  const learnedDirectives = formatLearnedDirectives((await getWriterDirectives())?.directives);
 
   const outlineFormatted = (outline.sections || [])
     .map((s) => `## ${s.title}\n${(s.points || []).map((p) => `- ${p}`).join('\n')}`)
@@ -378,7 +385,7 @@ export async function generateDraft({ assignment_id }) {
 
   const system = `You are a staff writer for AltWire, an independent music news publication.
 Write in AltWire's voice: direct, knowledgeable, conversational. Music-literate readers who follow indie and alternative scenes. No filler. No hollow superlatives. Lead with the most interesting thing. Active voice. Concrete details over vague praise.
-Target length: ${outline.estimated_words || 800} words.${voiceDirective}`;
+Target length: ${outline.estimated_words || 800} words.${voiceDirective}${learnedDirectives}`;
 
   const prompt = `Write a ${assignment.article_type} about: ${assignment.topic}
 
@@ -682,6 +689,156 @@ export async function logEditorialDecision({ assignment_id, stage, decision, fee
   );
 
   return { success: true, decision_id: rows[0].id };
+}
+
+// ---------------------------------------------------------------------------
+// Self-improving loop: Content Feedback -> System Prompt Adjuster -> System Prompt
+//
+// Editorial decisions (outline edits, draft revisions, rejections, and explicit
+// 'feedback'-stage notes) are mined into durable, generalizable writing
+// directives. Those directives are persisted to agent_memory and injected into
+// the outline + draft system prompts so the writer improves over time without a
+// human re-editing the base prompt.
+// ---------------------------------------------------------------------------
+
+const WRITER_DIRECTIVES_KEY = 'hal:altwire:writer:learned_directives';
+const MAX_DIRECTIVES = 10;
+
+/**
+ * Read the current learned directives from agent_memory.
+ * @returns {Promise<{directives: string[], updated_at: string, source_count: number}|null>}
+ */
+export async function getWriterDirectives() {
+  const result = await readAgentMemory(AGENT_HAL, WRITER_DIRECTIVES_KEY);
+  if (!result.success || !result.value) return null;
+  try {
+    const parsed = JSON.parse(result.value);
+    if (!parsed || !Array.isArray(parsed.directives)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Format learned directives for injection into a writer system prompt.
+ * Returns '' when there are none, so prompts are unchanged on a cold start.
+ */
+function formatLearnedDirectives(directives) {
+  if (!directives || !directives.length) return '';
+  const lines = directives.map((d) => `- ${d}`).join('\n');
+  return `\n\nLearned editorial directives (distilled from Derek's past edits and feedback — apply these):\n${lines}`;
+}
+
+/**
+ * System Prompt Adjuster. Mines recent editorial feedback into durable
+ * directives and persists them. Idempotent and safe to run on a schedule.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.lookback_days=120] - window of editorial decisions to consider
+ * @param {number} [opts.min_signals=3]     - minimum feedback signals required to adjust
+ * @param {boolean} [opts.dry_run=false]    - compute but do not persist
+ */
+export async function adjustWriterSystemPrompt({ lookback_days = 120, min_signals = 3, dry_run = false } = {}) {
+  // "Content Feedback": decisions that carry a human signal — explicit feedback
+  // text, rejections, revisions, or edits. Pure 'approved' rows with no notes
+  // carry no corrective signal and are excluded.
+  const { rows: signals } = await pool.query(
+    `SELECT stage, decision, feedback, article_type, topic, created_at
+       FROM altus_editorial_decisions
+      WHERE created_at > NOW() - ($1 || ' days')::interval
+        AND (
+          (feedback IS NOT NULL AND length(trim(feedback)) > 0)
+          OR decision IN ('rejected', 'revised', 'needs_revision', 'edited', 'cancelled')
+        )
+      ORDER BY created_at DESC
+      LIMIT 200`,
+    [String(lookback_days)],
+  );
+
+  if (signals.length < min_signals) {
+    return {
+      success: true,
+      adjusted: false,
+      reason: 'insufficient_feedback',
+      signals_found: signals.length,
+      min_signals,
+    };
+  }
+
+  const current = await getWriterDirectives();
+  const currentList = current?.directives ?? [];
+
+  const feedbackBlock = signals
+    .map((s) => {
+      const parts = [`[${s.stage}/${s.decision}]`];
+      if (s.article_type) parts.push(`(${s.article_type})`);
+      if (s.feedback) parts.push(`— ${s.feedback}`);
+      return parts.join(' ');
+    })
+    .join('\n');
+
+  const system = `You are the editorial system-prompt tuner for AltWire, an independent music news publication.
+You analyze an editor's accumulated feedback on AI-written drafts and distill it into a small set of durable, generalizable writing directives that will be injected into the writer's system prompt.
+Rules:
+- Output GENERAL, reusable rules — not corrections specific to one article or artist.
+- Keep each directive to one imperative sentence.
+- Merge with the existing directives: keep what still holds, drop what is contradicted or stale, add what recurs.
+- Return at most ${MAX_DIRECTIVES} directives, ordered by importance.
+- Do not invent preferences the feedback does not support.`;
+
+  const prompt = `Existing learned directives:
+${currentList.length ? currentList.map((d) => `- ${d}`).join('\n') : '(none yet)'}
+
+Recent editorial feedback signals (${signals.length}, newest first):
+${feedbackBlock}
+
+Return a JSON object: { "directives": ["...", "..."], "rationale": "one sentence on what changed" }`;
+
+  let parsed;
+  try {
+    const raw = await generate({
+      toolName: 'adjust_writer_system_prompt',
+      system,
+      prompt,
+      jsonMode: true,
+      maxTokens: 1500,
+    });
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    logger.error('adjustWriterSystemPrompt: synthesis failed', { error: err.message });
+    return { success: false, adjusted: false, error: 'synthesis_failed', detail: err.message };
+  }
+
+  const directives = Array.isArray(parsed?.directives)
+    ? parsed.directives.filter((d) => typeof d === 'string' && d.trim()).slice(0, MAX_DIRECTIVES)
+    : [];
+
+  if (!directives.length) {
+    return { success: true, adjusted: false, reason: 'no_directives_produced', signals_found: signals.length };
+  }
+
+  const payload = {
+    directives,
+    rationale: typeof parsed.rationale === 'string' ? parsed.rationale : null,
+    source_count: signals.length,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (!dry_run) {
+    await writeAgentMemory(AGENT_HAL, WRITER_DIRECTIVES_KEY, JSON.stringify(payload));
+    logger.info('adjustWriterSystemPrompt: directives updated', { count: directives.length, signals: signals.length });
+  }
+
+  return {
+    success: true,
+    adjusted: !dry_run,
+    dry_run,
+    directives,
+    rationale: payload.rationale,
+    signals_found: signals.length,
+    previous_count: currentList.length,
+  };
 }
 
 // ---------------------------------------------------------------------------

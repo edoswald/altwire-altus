@@ -113,6 +113,8 @@ import {
   postToWordPress,
   getDraftAsHtml,
   logEditorialDecision,
+  adjustWriterSystemPrompt,
+  getWriterDirectives,
   getAssignment,
   listAssignments,
 } from './handlers/altus-writer.js';
@@ -309,6 +311,8 @@ const TOOL_CONTEXTS = {
   post_to_wordpress:           [],
   get_draft_as_html:           [],
   log_editorial_decision:      [],
+  adjust_writer_system_prompt: [],
+  get_writer_directives:       [],
   get_article_assignment:     [],
   list_article_assignments:   [],
   // Slack status (Altus outbound)
@@ -809,8 +813,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire traffic summary for a period — visits, unique visitors, pageviews, bounce rate. Use to assess overall site health and content performance trends.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -824,8 +828,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire referrer breakdown — where readers are coming from. Includes social media, organic search, direct, and campaign referrers. Use to understand content distribution channel performance.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -839,8 +843,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire most-viewed articles, entry pages, and exit pages for a period. Use to identify best-performing content and high-exit pages that may need improvement.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -854,8 +858,8 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'AltWire internal search terms — what readers are searching for on the site. Useful for identifying content gaps and topics with reader demand.',
       inputSchema: {
-        period: z.enum(['day', 'week', 'month', 'year']).describe('Time period'),
-        date: z.string().describe('Matomo date — ISO date or keyword like yesterday, today'),
+        period: z.enum(['day', 'week', 'month', 'year']).optional().default('day').describe('Time period (default: day)'),
+        date: z.string().optional().default('yesterday').describe('Matomo date — ISO date or keyword like yesterday, today (default: yesterday)'),
       },
     },
     async ({ period, date }) => {
@@ -876,7 +880,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         start_date: z.string().describe('Start date — ISO format, e.g. 2024-06-01'),
         end_date: z.string().describe('End date — ISO format, e.g. 2024-06-30'),
         row_limit: z.number().int().min(1).max(1000).default(25).optional().describe('Max rows to return (default 25)'),
-        dimensions: z.string().optional().describe('Dimensions to group by — e.g. query, page, country. Default: query'),
+        dimensions: z.union([z.array(z.string()), z.string()]).optional().describe('Dimensions to group by — e.g. query, page, country. Default: query'),
       },
     },
     async ({ start_date, end_date, row_limit, dimensions }) => {
@@ -963,7 +967,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         start_date: z.string().describe('Start date — ISO format'),
         end_date: z.string().describe('End date — ISO format'),
         row_limit: z.number().int().min(1).max(1000).default(25).optional(),
-        dimensions: z.string().optional().describe('Dimensions to group by — query (default), page, country'),
+        dimensions: z.union([z.array(z.string()), z.string()]).optional().describe('Dimensions to group by — query (default), page, country'),
       },
     },
     async ({ start_date, end_date, row_limit, dimensions }) => {
@@ -1567,6 +1571,38 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
       if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logEditorialDecision(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'adjust_writer_system_prompt',
+    {
+      description: 'Self-improving loop: mine recent editorial feedback (outline edits, rejections, revisions, and feedback notes) into durable writing directives that are injected into the writer\'s outline and draft system prompts. Safe to run on demand or on a schedule.',
+      inputSchema: {
+        lookback_days: z.number().int().positive().optional().describe('Window of editorial decisions to consider (default 120)'),
+        min_signals: z.number().int().positive().optional().describe('Minimum feedback signals required to adjust (default 3)'),
+        dry_run: z.boolean().optional().describe('Compute proposed directives without persisting'),
+      },
+    },
+    async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, adjusted: false }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await adjustWriterSystemPrompt(params || {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_writer_directives',
+    {
+      description: 'Return the writer\'s current learned editorial directives (the persisted output of the self-improving system-prompt loop).',
+      inputSchema: {},
+    },
+    async () => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ directives: [], test_mode: true }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getWriterDirectives();
+      return { content: [{ type: 'text', text: JSON.stringify(result || { directives: [] }) }] };
     }
   );
 
@@ -2502,7 +2538,7 @@ async ({ status, limit }) => {
         due_at: z.string().optional().describe('Optional ISO due datetime'),
         source: z.string().optional().describe('Source label, defaults to manual'),
         evidence: z.string().optional().describe('Optional evidence or rationale'),
-        session_id: z.string().optional().describe('Optional originating session ID'),
+        session_id: z.union([z.string(), z.number()]).optional().describe('Optional originating session ID'),
       },
     },
     async (params) => {
@@ -2557,7 +2593,7 @@ async ({ status, limit }) => {
         next_check_at: z.string().optional().describe('Optional ISO datetime for the next check'),
         source: z.string().optional().describe('Source label, defaults to manual'),
         evidence: z.string().optional().describe('Optional evidence or rationale'),
-        session_id: z.string().optional().describe('Optional originating session ID'),
+        session_id: z.union([z.string(), z.number()]).optional().describe('Optional originating session ID'),
       },
     },
     async (params) => {

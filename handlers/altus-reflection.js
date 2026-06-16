@@ -32,6 +32,7 @@ import {
   getSearchOpportunities,
 } from './altwire-gsc-client.js';
 import { getCombinedAnalytics, recordSynthesisFeatures } from './altus-combined-analytics.js';
+import { adjustWriterSystemPrompt } from './altus-writer.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_REFRESHED_KEY = 'hal:altwire:analytics:last_refreshed';
@@ -300,9 +301,23 @@ export async function runAltwireReflection() {
       }
     }
 
+    // Self-improving writer loop: distill accumulated editorial feedback into
+    // durable writing directives that get injected into future drafts.
+    let writerAdjusted = false;
+    try {
+      const adjust = await adjustWriterSystemPrompt({});
+      writerAdjusted = !!adjust?.adjusted;
+      if (writerAdjusted) {
+        logger.info('altus-reflection: writer directives updated', { count: adjust.directives?.length, signals: adjust.signals_found });
+      }
+    } catch (err) {
+      logger.warn('altus-reflection: writer system-prompt adjust failed', { error: err.message });
+    }
+
     logger.info('altus-reflection: completed', {
       news_matches: newsAlert?.watch_list_matches?.length ?? 0,
       action_items_proposed: synthItemsCreated,
+      writer_directives_adjusted: writerAdjusted,
     });
   } catch (err) {
     logger.error('altus-reflection: error', { error: err.message });
