@@ -126,6 +126,7 @@ import {
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
 import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js';
+import { handleAltwireOpportunityAssignRoute } from './handlers/altus-opportunity-routes.js';
 import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
@@ -2330,17 +2331,19 @@ async ({ status, limit }) => {
   scopedRegister(
     'get_writer_summary',
     {
-      description: 'Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, search opportunities, and today\'s Matomo pageviews.',
+      description: 'Aggregated writer stats for the prompt page context card — active assignments, action needed count, ready to post count, last digest time, queued AltWire story opportunities, and today\'s Matomo pageviews.',
     },
     async () => {
       if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
-      const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
+      const { refreshOpportunityQueue } = await import('./handlers/altus-opportunity-refresh.js');
+      const { listStoryOpportunityQueue } = await import('./handlers/altus-opportunity-queue.js');
       const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
       const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
       const summary = await buildWriterSummary({
         getTrafficSummary,
-        getSearchOpportunities,
+        refreshOpportunityQueue,
+        listStoryOpportunityQueue,
         getAltwireMorningDigest,
       });
       return { content: [{ type: 'text', text: JSON.stringify(summary) }] };
@@ -3407,10 +3410,16 @@ const httpServer = createServer(async (req, res) => {
     if (url.pathname === '/hal/writer/summary' && req.method === 'GET') {
       try {
         const { getTrafficSummary } = await import('./handlers/altwire-matomo-client.js');
-        const { getSearchOpportunities } = await import('./handlers/altwire-gsc-client.js');
+        const { refreshOpportunityQueue } = await import('./handlers/altus-opportunity-refresh.js');
+        const { listStoryOpportunityQueue } = await import('./handlers/altus-opportunity-queue.js');
         const { getAltwireMorningDigest } = await import('./handlers/altus-digest.js');
         const { buildWriterSummary } = await import('./handlers/altus-writer-summary.js');
-        const summary = await buildWriterSummary({ getTrafficSummary, getSearchOpportunities, getAltwireMorningDigest });
+        const summary = await buildWriterSummary({
+          getTrafficSummary,
+          refreshOpportunityQueue,
+          listStoryOpportunityQueue,
+          getAltwireMorningDigest,
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
       } catch (err) {
@@ -3643,37 +3652,15 @@ const httpServer = createServer(async (req, res) => {
   }
 
   // POST /altwire/opportunities/:id/assign — promote a story opportunity into the writer pipeline
-  const opportunityAssignMatch = url.pathname.match(/^\/altwire\/opportunities\/(\d+)\/assign$/);
-  if (opportunityAssignMatch && req.method === 'POST') {
-    setChatCors(req, res);
-    const authToken = req.headers.authorization?.replace('Bearer ', '');
-    if (!isAllowedAltusRestToken(authToken, { allowHalKey: true, allowAltusAdminToken: true })) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'unauthorized' }));
-      return;
-    }
-    try {
-      const id = parseInt(opportunityAssignMatch[1], 10);
-      let body = '';
-      for await (const chunk of req) body += chunk;
-      const params = body ? JSON.parse(body) : {};
-      const result = await assignStoryOpportunity({
-        id,
-        article_type: params.article_type ?? 'article',
-      });
-      if (result?.error) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
-        return;
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
-    } catch (err) {
-      logger.error('AltWire opportunity assign endpoint failed', { error: err.message });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'assign_failed', message: 'Opportunity could not be assigned' }));
-    }
+  if (await handleAltwireOpportunityAssignRoute({
+    url,
+    req,
+    res,
+    setCors: setChatCors,
+    isAllowedToken: isAllowedAltusRestToken,
+    assignStoryOpportunity,
+    logger,
+  })) {
     return;
   }
 
