@@ -130,6 +130,7 @@ import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
+import { getHalUiRateLimitBucket } from './lib/hal-ui-rate-limit.js';
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 
@@ -140,6 +141,8 @@ const PORT = process.env.PORT || 3000;
 // Rate limiters
 const globalLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 200 });
 const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
+const halUiLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 600 });
+const halChatLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 120 });
 
 // OAuth Configuration
 // Discover clients by scanning OAUTH_CLIENT_ID_* env vars at startup.
@@ -2899,7 +2902,14 @@ const httpServer = createServer(async (req, res) => {
     }
   }
 
-  if (!globalLimiter.check(req, res)) return;
+  const halUiRateLimitBucket = getHalUiRateLimitBucket(req.method, url.pathname);
+  if (halUiRateLimitBucket === 'chat') {
+    if (!halChatLimiter.check(req, res)) return;
+  } else if (halUiRateLimitBucket === 'ui') {
+    if (!halUiLimiter.check(req, res)) return;
+  } else if (!globalLimiter.check(req, res)) {
+    return;
+  }
 
   if (url.pathname === '/.well-known/oauth-authorization-server' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3806,7 +3816,6 @@ const httpServer = createServer(async (req, res) => {
   // Auth: same Bearer token accepted by the MCP endpoint.
   // ---------------------------------------------------------------------------
   if (url.pathname === '/hal/chat' && req.method === 'POST') {
-    if (!authLimiter.check(req, res)) return;
     setChatCors(req, res);
 
     const clientId = await identifyClient(req);
