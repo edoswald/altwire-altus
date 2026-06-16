@@ -113,6 +113,8 @@ import {
   postToWordPress,
   getDraftAsHtml,
   logEditorialDecision,
+  adjustWriterSystemPrompt,
+  getWriterDirectives,
   getAssignment,
   listAssignments,
 } from './handlers/altus-writer.js';
@@ -309,6 +311,8 @@ const TOOL_CONTEXTS = {
   post_to_wordpress:           [],
   get_draft_as_html:           [],
   log_editorial_decision:      [],
+  adjust_writer_system_prompt: [],
+  get_writer_directives:       [],
   get_article_assignment:     [],
   list_article_assignments:   [],
   // Slack status (Altus outbound)
@@ -1567,6 +1571,38 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
       if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await logEditorialDecision(params);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'adjust_writer_system_prompt',
+    {
+      description: 'Self-improving loop: mine recent editorial feedback (outline edits, rejections, revisions, and feedback notes) into durable writing directives that are injected into the writer\'s outline and draft system prompts. Safe to run on demand or on a schedule.',
+      inputSchema: {
+        lookback_days: z.number().int().positive().optional().describe('Window of editorial decisions to consider (default 120)'),
+        min_signals: z.number().int().positive().optional().describe('Minimum feedback signals required to adjust (default 3)'),
+        dry_run: z.boolean().optional().describe('Compute proposed directives without persisting'),
+      },
+    },
+    async (params) => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, adjusted: false }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await adjustWriterSystemPrompt(params || {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_writer_directives',
+    {
+      description: 'Return the writer\'s current learned editorial directives (the persisted output of the self-improving system-prompt loop).',
+      inputSchema: {},
+    },
+    async () => {
+      if (process.env.TEST_MODE === 'true') return { content: [{ type: 'text', text: JSON.stringify({ directives: [], test_mode: true }) }] };
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getWriterDirectives();
+      return { content: [{ type: 'text', text: JSON.stringify(result || { directives: [] }) }] };
     }
   );
 
