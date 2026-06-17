@@ -34,13 +34,16 @@ function parseStoryCache(row) {
   }
 }
 
-function buildWarnings({ storyQueue, activeWatchSubjects, articlePerformance, storyCache }) {
+function buildWarnings({ storyQueue, activeWatchSubjects, articleTrackingAssignments, articlePerformance, storyCache }) {
   const warnings = [];
   if (!storyQueue.exists || storyQueue.count === 0) {
     warnings.push('altus_story_opportunities is empty; prompt-page and queue-backed story opportunities will have nothing durable to list.');
   }
   if (!activeWatchSubjects.exists || activeWatchSubjects.count === 0) {
     warnings.push('altus_watch_list has no active subjects; news monitor can return Google News data but cannot produce watch-list matches.');
+  }
+  if (!articleTrackingAssignments.exists || articleTrackingAssignments.count === 0) {
+    warnings.push('altus_article_assignments is empty; performance snapshot cron has no tracked published articles to evaluate.');
   }
   if (!articlePerformance.exists || articlePerformance.count === 0) {
     warnings.push('altus_article_performance is empty; post-publish 72h/7d/30d performance snapshots are not available yet.');
@@ -72,6 +75,11 @@ export async function getAltusDataHealth() {
       'SELECT COUNT(*)::int AS count FROM altus_article_performance',
       'SELECT MAX(snapshot_taken_at) AS latest_at FROM altus_article_performance',
     );
+    const articleTrackingAssignments = await tableStats(
+      'altus_article_assignments',
+      'SELECT COUNT(*)::int AS count FROM altus_article_assignments',
+      'SELECT MAX(assigned_at) AS latest_at FROM altus_article_assignments',
+    );
 
     let storyCache = { latest_at: null, opportunities: null, cached: false };
     if (await tableExists('agent_memory')) {
@@ -90,6 +98,7 @@ export async function getAltusDataHealth() {
       checks: {
         story_queue: storyQueue,
         active_watch_subjects: activeWatchSubjects,
+        article_tracking_assignments: articleTrackingAssignments,
         article_performance: articlePerformance,
         story_opportunities_cache: storyCache,
       },
@@ -97,6 +106,7 @@ export async function getAltusDataHealth() {
     result.warnings = buildWarnings({
       storyQueue,
       activeWatchSubjects,
+      articleTrackingAssignments,
       articlePerformance,
       storyCache,
     });

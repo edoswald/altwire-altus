@@ -36,4 +36,21 @@ describe('Altus shared Hal registry parity', () => {
     expect(storyToolBlock).toContain('refresh');
     expect(storyToolBlock).toContain('getStoryOpportunities({ days, refresh })');
   });
+
+  it('wires the story opportunities cron through the unified queue refresh path', () => {
+    const storyCronBlock = indexSource.match(/cron\.schedule\(\s*'0 5 \* \* 1-5'[\s\S]+?\), \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
+
+    expect(storyCronBlock).toContain('refreshOpportunityQueue({ days: 28, includeNews: true })');
+    expect(storyCronBlock).not.toContain('getStoryOpportunities({ days: 28 })');
+  });
+
+  it('exposes an explicit article tracking registration tool for performance snapshots', () => {
+    const names = new Set(extractScopedToolNames(indexSource));
+    const trackingToolBlock = indexSource.match(/scopedRegister\(\s*'altus_register_article_tracking'[\s\S]+?\n  \);/)?.[0] ?? '';
+
+    expect(names.has('altus_register_article_tracking')).toBe(true);
+    expect(trackingToolBlock).toContain('registerArticleForTracking');
+    expect(trackingToolBlock).toContain('article_url');
+    expect(trackingToolBlock).toContain('published_at');
+  });
 });

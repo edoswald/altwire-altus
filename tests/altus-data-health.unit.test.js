@@ -45,6 +45,11 @@ describe('altus-data-health', () => {
       .mockResolvedValueOnce({ rows: [{ latest_at: null }] });
 
     mockExistingTable();
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: 0 }] })
+      .mockResolvedValueOnce({ rows: [{ latest_at: null }] });
+
+    mockExistingTable();
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     const { getAltusDataHealth } = await import('../handlers/altus-data-health.js');
@@ -53,11 +58,13 @@ describe('altus-data-health', () => {
     expect(result.ok).toBe(false);
     expect(result.checks.story_queue.count).toBe(0);
     expect(result.checks.active_watch_subjects.count).toBe(0);
+    expect(result.checks.article_tracking_assignments.count).toBe(0);
     expect(result.checks.article_performance.count).toBe(0);
     expect(result.checks.story_opportunities_cache.cached).toBe(false);
     expect(result.warnings).toEqual([
       expect.stringContaining('altus_story_opportunities is empty'),
       expect.stringContaining('altus_watch_list has no active subjects'),
+      expect.stringContaining('altus_article_assignments is empty'),
       expect.stringContaining('altus_article_performance is empty'),
       expect.stringContaining('No altus:story_opportunities cache exists'),
     ]);
@@ -79,6 +86,11 @@ describe('altus-data-health', () => {
     mockExistingTable();
     mockQuery
       .mockResolvedValueOnce({ rows: [{ count: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ latest_at: '2026-06-17T01:00:00.000Z' }] });
+
+    mockExistingTable();
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: 2 }] })
       .mockResolvedValueOnce({ rows: [{ latest_at: '2026-06-17T01:00:00.000Z' }] });
 
     mockExistingTable();
