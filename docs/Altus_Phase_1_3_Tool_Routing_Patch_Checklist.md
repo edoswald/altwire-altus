@@ -42,3 +42,8 @@ tool result.
 | D.1 | After running one prompt with a visible tool call, ask Hal to query recent `tool_call` events. | The event log includes the tool name used by the chat prompt with the active chat `session_id` when the UI supplies one. |
 | D.2 | During a streamed answer with a tool call, watch the UI tool activity indicator. | `tool_start` and `tool_done` events appear for the called tool, and the final response still streams normally. |
 
+## E. Postgres Data-Plane Health
+
+| # | Prompt | Expected tool behavior | Expected response |
+|---|---|---|---|
+| E.1 | "Is there anything in Postgres for the Phase 1-3 opportunity checks?" | Calls `altus_get_data_health`. | Reports counts/freshness for `altus_story_opportunities`, active `altus_watch_list` subjects, `altus_article_performance`, and latest `altus:story_opportunities:*` cache. If any are empty, explains which feature will appear empty and why. |

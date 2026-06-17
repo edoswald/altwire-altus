@@ -193,4 +193,39 @@ describe('altus-opportunity-queue', () => {
     expect(insertCall[0]).toContain("'high'");
     expect(insertCall[0]).toContain("'watch_list_match'");
   });
+
+  it('upserts clicked Google News pages even when the watch list is empty', async () => {
+    vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+    mockQuery.mockResolvedValue({ rows: [] });
+
+    const { upsertNewsOpportunityQueue } = await import('../handlers/altus-opportunity-queue.js');
+    const result = await upsertNewsOpportunityQueue({
+      watch_list_matches: [],
+      news_pages: [
+        {
+          keys: ['https://altwire.net/die-antwoord-abuse-allegations-german/'],
+          clicks: 38,
+          impressions: 404,
+          ctr: 0.094,
+          position: 7.9,
+        },
+        {
+          keys: ['https://altwire.net/no-click-news-page/'],
+          clicks: 0,
+          impressions: 200,
+          ctr: 0,
+          position: 12,
+        },
+      ],
+    });
+
+    const insertCalls = mockQuery.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('INSERT INTO altus_story_opportunities')
+    );
+    expect(result).toEqual({ success: true, upserted: 1 });
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0][1][1]).toBe('die antwoord abuse allegations german');
+    expect(insertCalls[0][1][2]).toBe('https://altwire.net/die-antwoord-abuse-allegations-german/');
+    expect(insertCalls[0][0]).toContain("'news_performer'");
+  });
 });

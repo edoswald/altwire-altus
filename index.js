@@ -126,6 +126,7 @@ import {
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
 import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js';
+import { getAltusDataHealth } from './handlers/altus-data-health.js';
 import { handleAltwireOpportunityAssignRoute } from './handlers/altus-opportunity-routes.js';
 import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
@@ -352,6 +353,7 @@ const TOOL_CONTEXTS = {
 // Event log tools
   query_altus_events:           [],
   get_altus_audit_log:         [],
+  altus_get_data_health:       [],
   // AI cost
   get_altus_ai_cost_summary:    [],
   // Multi-admin onboarding
@@ -1035,10 +1037,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
       inputSchema: {
         days: z.number().int().min(7).max(90).default(28)
           .describe('Lookback window in days for GSC data (default 28)'),
+        refresh: z.boolean().optional().default(false)
+          .describe('Bypass today\'s cached story-opportunity result and recompute from GSC/archive data. Use for smoke tests, "right now" checks, or suspected stale empty results.'),
       },
     },
-    async ({ days }) => {
-      const result = await getStoryOpportunities({ days });
+    async ({ days, refresh }) => {
+      const result = await getStoryOpportunities({ days, refresh });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -1865,6 +1869,17 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getActionItemStats();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_data_health',
+    {
+      description: 'Check whether the Phase 1-3 Altus data plane has usable Postgres data: story opportunity queue rows, active watch-list subjects, article performance snapshots, and story-opportunity cache freshness. Use when smoke tests return no opportunities or when asking whether the backing tables are populated.',
+    },
+    async () => {
+      const result = await getAltusDataHealth();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
