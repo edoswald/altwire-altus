@@ -1,12 +1,59 @@
 import { getAltwireMorningDigest } from './altus-digest.js';
 import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
-import { writeAgentMemory } from '../lib/altus-db.js';
+import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
 
+// Tracks the outcome of the most recent digest send so a missed or failed run
+// can be retried at the next opportunity (e.g. during the heartbeat).
+const DIGEST_STATUS_KEY = 'altus:digest:send_status';
+
+// The digest is scheduled Mon–Fri at 5:15 AM ET. The retry must not fire before
+// that slot (it would preempt the scheduled send and cause a duplicate).
+const DIGEST_SCHEDULED_MINUTES = 5 * 60 + 15; // 05:15 ET
+
+// Calendar date (YYYY-MM-DD) and weekday/minute-of-day in America/New_York —
+// matches the timezone the digest date and cron are anchored to.
+function easternNow() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  const date = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const hour = parseInt(get('hour'), 10);
+  const minute = parseInt(get('minute'), 10);
+  const weekday = get('weekday'); // 'Mon'..'Sun'
+  return { date, weekday, minutesOfDay: hour * 60 + minute };
+}
+
+async function recordDigestStatus(status) {
+  await writeAgentMemory('altus', DIGEST_STATUS_KEY, JSON.stringify(status))
+    .catch((err) => logger.warn('[altus-digest-mailer] Failed to record digest status', { error: err.message }));
+}
+
+// The editorial synthesis is produced by an LLM tool call and stored in agent
+// memory. Although the tool schema declares array fields, the model occasionally
+// returns a non-array (e.g. a string), which still passes `?.length > 0` and
+// supports `.slice()` but not `.map()`/`.forEach()`. Coerce defensively so a
+// malformed synthesis can never crash the digest send.
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Build and send the morning digest email.
+ *
+ * @returns {Promise<{ status: 'sent'|'failed'|'skipped', date?: string, reason?: string, error?: string }>}
+ *   A structured result so callers (e.g. the heartbeat retry) can tell whether
+ *   the send succeeded without re-deriving it from logs.
+ */
 export async function sendMorningDigestEmail() {
   if (!process.env.DEREK_EMAIL) {
     logger.warn('[altus-digest-mailer] DEREK_EMAIL not set — skipping digest send');
-    return;
+    return { status: 'skipped', reason: 'no_recipient' };
   }
 
   // ALTUS_CC_EMAILS: comma-separated list of addresses to CC on every digest.
@@ -15,8 +62,10 @@ export async function sendMorningDigestEmail() {
     ? process.env.ALTUS_CC_EMAILS.split(',').map(e => e.trim()).filter(Boolean)
     : [];
 
+  let digestDate;
   try {
     const digest = await getAltwireMorningDigest();
+    digestDate = digest.date;
     const subject = `AltWire Morning Digest — ${digest.date}`;
     const html = buildDigestHtml(digest);
     const text = buildDigestText(digest);
@@ -32,12 +81,55 @@ export async function sendMorningDigestEmail() {
         html,
         sent_at: new Date().toISOString(),
       })).catch(err => logger.warn('[altus-digest-mailer] Failed to archive digest HTML', { error: err.message }));
-    } else {
-      logger.error(`[altus-digest-mailer] Failed to send morning digest to Derek — ${result.error}`);
+      await recordDigestStatus({ status: 'sent', date: digest.date, sent_at: new Date().toISOString() });
+      return { status: 'sent', date: digest.date };
     }
+
+    logger.error(`[altus-digest-mailer] Failed to send morning digest to Derek — ${result.error}`);
+    await recordDigestStatus({ status: 'failed', date: digest.date, failed_at: new Date().toISOString(), error: result.error });
+    return { status: 'failed', date: digest.date, error: result.error };
   } catch (err) {
     logger.error('[altus-digest-mailer] Failed to send morning digest', { error: err.message });
+    await recordDigestStatus({ status: 'failed', date: digestDate ?? null, failed_at: new Date().toISOString(), error: err.message });
+    return { status: 'failed', date: digestDate, error: err.message };
   }
+}
+
+/**
+ * Self-healing retry: send today's digest if the scheduled run was missed or
+ * failed. Safe to call repeatedly (e.g. from the heartbeat) — it sends at most
+ * once per day and never preempts the scheduled 5:15 AM ET send.
+ *
+ * @returns {Promise<{ status: 'sent'|'failed'|'skipped', reason?: string, date?: string, error?: string }>}
+ */
+export async function sendMorningDigestIfMissed() {
+  const { date, weekday, minutesOfDay } = easternNow();
+
+  // The digest only runs Mon–Fri; don't resurrect a stale digest on weekends.
+  if (weekday === 'Sat' || weekday === 'Sun') {
+    return { status: 'skipped', reason: 'weekend' };
+  }
+
+  // Don't fire before the scheduled slot — that would duplicate the cron send.
+  if (minutesOfDay < DIGEST_SCHEDULED_MINUTES) {
+    return { status: 'skipped', reason: 'before_scheduled_time' };
+  }
+
+  // Already sent today? Nothing to do.
+  const existing = await readAgentMemory('altus', DIGEST_STATUS_KEY);
+  if (existing.success) {
+    try {
+      const status = JSON.parse(existing.value);
+      if (status.status === 'sent' && status.date === date) {
+        return { status: 'skipped', reason: 'already_sent', date };
+      }
+    } catch {
+      // Corrupt status — fall through and attempt a send.
+    }
+  }
+
+  logger.info('[altus-digest-mailer] Today\'s digest not yet sent — attempting retry', { date });
+  return sendMorningDigestEmail();
 }
 
 /**
@@ -150,22 +242,25 @@ export function buildDigestHtml(digest) {
       lines.push(`<br><em>${synth.editorial_recommendation}</em>`);
     }
 
-    if (synth.top_dual_winners?.length > 0) {
-      const winners = synth.top_dual_winners.slice(0, 2)
+    const dualWinners = asArray(synth.top_dual_winners);
+    if (dualWinners.length > 0) {
+      const winners = dualWinners.slice(0, 2)
         .map(a => `&nbsp;&nbsp;★ ${a.title} — <span style="color:#555;">${a.why}</span>`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">STRONG IN BOTH TRAFFIC &amp; SEARCH</span><br>${winners}`);
     }
 
-    if (synth.underperforming_in_search?.length > 0) {
-      const under = synth.underperforming_in_search.slice(0, 2)
+    const underperforming = asArray(synth.underperforming_in_search);
+    if (underperforming.length > 0) {
+      const under = underperforming.slice(0, 2)
         .map(a => `&nbsp;&nbsp;↓ ${a.title} — <span style="color:#555;">${a.why}</span>`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">POPULAR BUT WEAK IN SEARCH</span><br>${under}`);
     }
 
-    if (synth.content_gaps?.length > 0) {
-      const gaps = synth.content_gaps.slice(0, 3)
+    const contentGaps = asArray(synth.content_gaps);
+    if (contentGaps.length > 0) {
+      const gaps = contentGaps.slice(0, 3)
         .map(g => `&nbsp;&nbsp;• <strong>${g.query}</strong>${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">CONTENT GAPS</span><br>${gaps}`);
@@ -358,13 +453,15 @@ function buildDigestText(digest) {
     lines.push(synth.headline);
     if (synth.search_traffic_share_pct != null) lines.push(`Search-driven traffic: ~${synth.search_traffic_share_pct}%`);
     if (synth.editorial_recommendation) lines.push(synth.editorial_recommendation);
-    if (synth.top_dual_winners?.length > 0) {
+    const dualWinners = asArray(synth.top_dual_winners);
+    if (dualWinners.length > 0) {
       lines.push('Strong in traffic + search:');
-      synth.top_dual_winners.slice(0, 2).forEach(a => lines.push(`  ★ ${a.title}`));
+      dualWinners.slice(0, 2).forEach(a => lines.push(`  ★ ${a.title}`));
     }
-    if (synth.content_gaps?.length > 0) {
+    const contentGaps = asArray(synth.content_gaps);
+    if (contentGaps.length > 0) {
       lines.push('Content gaps:');
-      synth.content_gaps.slice(0, 3).forEach(g => lines.push(`  • ${g.query}${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`));
+      contentGaps.slice(0, 3).forEach(g => lines.push(`  • ${g.query}${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`));
     }
   }
 
