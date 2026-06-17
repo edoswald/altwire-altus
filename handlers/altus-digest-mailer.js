@@ -3,6 +3,15 @@ import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
 import { writeAgentMemory } from '../lib/altus-db.js';
 
+// The editorial synthesis is produced by an LLM tool call and stored in agent
+// memory. Although the tool schema declares array fields, the model occasionally
+// returns a non-array (e.g. a string), which still passes `?.length > 0` and
+// supports `.slice()` but not `.map()`/`.forEach()`. Coerce defensively so a
+// malformed synthesis can never crash the digest send.
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 export async function sendMorningDigestEmail() {
   if (!process.env.DEREK_EMAIL) {
     logger.warn('[altus-digest-mailer] DEREK_EMAIL not set — skipping digest send');
@@ -150,22 +159,25 @@ export function buildDigestHtml(digest) {
       lines.push(`<br><em>${synth.editorial_recommendation}</em>`);
     }
 
-    if (synth.top_dual_winners?.length > 0) {
-      const winners = synth.top_dual_winners.slice(0, 2)
+    const dualWinners = asArray(synth.top_dual_winners);
+    if (dualWinners.length > 0) {
+      const winners = dualWinners.slice(0, 2)
         .map(a => `&nbsp;&nbsp;★ ${a.title} — <span style="color:#555;">${a.why}</span>`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">STRONG IN BOTH TRAFFIC &amp; SEARCH</span><br>${winners}`);
     }
 
-    if (synth.underperforming_in_search?.length > 0) {
-      const under = synth.underperforming_in_search.slice(0, 2)
+    const underperforming = asArray(synth.underperforming_in_search);
+    if (underperforming.length > 0) {
+      const under = underperforming.slice(0, 2)
         .map(a => `&nbsp;&nbsp;↓ ${a.title} — <span style="color:#555;">${a.why}</span>`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">POPULAR BUT WEAK IN SEARCH</span><br>${under}`);
     }
 
-    if (synth.content_gaps?.length > 0) {
-      const gaps = synth.content_gaps.slice(0, 3)
+    const contentGaps = asArray(synth.content_gaps);
+    if (contentGaps.length > 0) {
+      const gaps = contentGaps.slice(0, 3)
         .map(g => `&nbsp;&nbsp;• <strong>${g.query}</strong>${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`)
         .join('<br>');
       lines.push(`<br><span style="color:#0066cc;font-size:12px;">CONTENT GAPS</span><br>${gaps}`);
@@ -358,13 +370,15 @@ function buildDigestText(digest) {
     lines.push(synth.headline);
     if (synth.search_traffic_share_pct != null) lines.push(`Search-driven traffic: ~${synth.search_traffic_share_pct}%`);
     if (synth.editorial_recommendation) lines.push(synth.editorial_recommendation);
-    if (synth.top_dual_winners?.length > 0) {
+    const dualWinners = asArray(synth.top_dual_winners);
+    if (dualWinners.length > 0) {
       lines.push('Strong in traffic + search:');
-      synth.top_dual_winners.slice(0, 2).forEach(a => lines.push(`  ★ ${a.title}`));
+      dualWinners.slice(0, 2).forEach(a => lines.push(`  ★ ${a.title}`));
     }
-    if (synth.content_gaps?.length > 0) {
+    const contentGaps = asArray(synth.content_gaps);
+    if (contentGaps.length > 0) {
       lines.push('Content gaps:');
-      synth.content_gaps.slice(0, 3).forEach(g => lines.push(`  • ${g.query}${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`));
+      contentGaps.slice(0, 3).forEach(g => lines.push(`  • ${g.query}${g.impressions ? ` (${Number(g.impressions).toLocaleString()} impressions)` : ''}`));
     }
   }
 
