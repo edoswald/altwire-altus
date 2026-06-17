@@ -63,7 +63,7 @@ import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-searc
 import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRegistered } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
-import { initAiUsageSchema } from './lib/ai-cost-tracker.js';
+import { initAiUsageSchema, logAiUsage } from './lib/ai-cost-tracker.js';
 import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
 import { initChatHistorySchema, saveSession as saveChatSession, listSessions as listChatSessions, getSession as getChatSession, deleteSession as deleteChatSession } from './lib/altus-chat-history.js';
 import { createAnthropicMessageStream } from './lib/anthropic-message-stream.js';
@@ -3926,8 +3926,13 @@ const httpServer = createServer(async (req, res) => {
 
         const currentContent = [];
         let stopReason = null;
+        let usage = null;
 
         for await (const event of responseStream) {
+          if (event.type === 'message_start') {
+            // Carries input_tokens + cache_read/creation_input_tokens for this request.
+            usage = { ...event.message.usage };
+          }
           if (event.type === 'content_block_start') {
             if (event.content_block.type === 'text') {
               currentContent[event.index] = { type: 'text', text: '' };
@@ -3957,8 +3962,16 @@ const httpServer = createServer(async (req, res) => {
               try { block.input = JSON.parse(block._inputJson || '{}'); } catch { block.input = {}; }
             }
           }
-          if (event.type === 'message_delta') stopReason = event.delta.stop_reason;
+          if (event.type === 'message_delta') {
+            stopReason = event.delta.stop_reason;
+            // Final cumulative output_tokens arrives on message_delta.
+            if (event.usage && usage) usage.output_tokens = event.usage.output_tokens;
+          }
         }
+
+        // Record per-request usage (incl. cache hits) so chat cost and cache
+        // effectiveness show up in get_ai_cost_summary. Non-throwing.
+        if (usage) logAiUsage('hal_chat', model, usage).catch(() => {});
 
         // Push assistant turn into history
         messages.push({ role: 'assistant', content: currentContent.filter(Boolean).map(({ _inputJson: _, ...b }) => b) });
