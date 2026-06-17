@@ -1,3 +1,5 @@
+import pool from '../lib/altus-db.js';
+import { logger } from '../logger.js';
 import { getStoryOpportunities } from './altus-topic-discovery.js';
 import { getNewsOpportunities } from './altus-news-monitor.js';
 import {
@@ -36,6 +38,22 @@ export async function refreshOpportunityQueue({ days = 28, includeNews = true } 
           matches: newsResult?.watch_list_matches?.length ?? 0,
           queries: newsResult?.news_queries?.length ?? 0,
         };
+      }
+
+      // Persist the news-alert snapshot under today's ET key (same key the
+      // 4:30 AM cron writes and the digest reads). This lets a manual Sync /
+      // opportunities refresh self-heal the digest's News Alerts count instead
+      // of waiting for the next cron run.
+      try {
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        await pool.query(
+          `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
+           ON CONFLICT (agent, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          ['altus', `altus:news_alert:${today}`, JSON.stringify(newsResult)],
+        );
+      } catch (err) {
+        warnings.push({ source: 'news_alert_cache', error: err.message });
+        logger.warn('refreshOpportunityQueue: news_alert cache write failed', { error: err.message });
       }
     }
   }

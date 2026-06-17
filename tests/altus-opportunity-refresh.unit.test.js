@@ -4,6 +4,11 @@ const mockGetStoryOpportunities = vi.fn();
 const mockGetNewsOpportunities = vi.fn();
 const mockUpsertStoryOpportunityQueue = vi.fn();
 const mockUpsertNewsOpportunityQueue = vi.fn();
+const mockPoolQuery = vi.fn();
+
+vi.mock('../lib/altus-db.js', () => ({
+  default: { query: mockPoolQuery },
+}));
 
 vi.mock('../handlers/altus-topic-discovery.js', () => ({
   getStoryOpportunities: mockGetStoryOpportunities,
@@ -25,6 +30,8 @@ describe('altus-opportunity-refresh', () => {
     mockGetNewsOpportunities.mockReset();
     mockUpsertStoryOpportunityQueue.mockReset();
     mockUpsertNewsOpportunityQueue.mockReset();
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValue({ rows: [] });
   });
 
   it('refreshes both story opportunities and Google News matches into the queue', async () => {
@@ -48,6 +55,11 @@ describe('altus-opportunity-refresh', () => {
     expect(mockUpsertStoryOpportunityQueue).toHaveBeenCalledWith(storyResult);
     expect(mockGetNewsOpportunities).toHaveBeenCalledWith({ days: 7 });
     expect(mockUpsertNewsOpportunityQueue).toHaveBeenCalledWith(newsResult);
+    // Snapshot is persisted under today's news_alert key so a manual Sync heals the digest count.
+    expect(mockPoolQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO agent_memory'),
+      expect.arrayContaining(['altus', expect.stringMatching(/^altus:news_alert:\d{4}-\d{2}-\d{2}$/), JSON.stringify(newsResult)]),
+    );
     expect(result).toEqual({
       success: true,
       story: { upserted: 1 },
