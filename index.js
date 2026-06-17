@@ -3883,15 +3883,44 @@ const httpServer = createServer(async (req, res) => {
 
       const { default: Anthropic } = await import('@anthropic-ai/sdk');
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const model = process.env.ALTUS_CHAT_MODEL ?? 'claude-sonnet-4-5';
+      const model = process.env.ALTUS_CHAT_MODEL ?? 'claude-haiku-4-5';
+
+      // Prompt caching — the tools + system-prompt prefix is large and identical
+      // on every agentic-loop iteration and every follow-up turn. Render order is
+      // tools → system → messages, so a single breakpoint on the system block
+      // caches the tool schemas and system prompt together.
+      const cachedSystem = [
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+      ];
+
+      // Add a rolling breakpoint on the most-recent message so the growing
+      // conversation prefix (history + tool results) is served from cache across
+      // iterations and turns rather than re-billed at full price each time.
+      const withConversationCaching = (msgs) => {
+        if (!msgs.length) return msgs;
+        const out = msgs.slice();
+        const last = out[out.length - 1];
+        let content = last.content;
+        if (typeof content === 'string') {
+          content = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+        } else if (Array.isArray(content) && content.length) {
+          content = content.map((b, i) =>
+            i === content.length - 1 ? { ...b, cache_control: { type: 'ephemeral' } } : b,
+          );
+        } else {
+          return msgs;
+        }
+        out[out.length - 1] = { ...last, content };
+        return out;
+      };
 
       // Agentic loop — max 15 iterations to prevent runaway tool chains
       for (let iteration = 0; iteration < 15; iteration++) {
         const responseStream = await createAnthropicMessageStream(anthropic, {
           model,
           max_tokens: 8192,
-          system: systemPrompt,
-          messages,
+          system: cachedSystem,
+          messages: withConversationCaching(messages),
           tools: anthropicTools,
         });
 
