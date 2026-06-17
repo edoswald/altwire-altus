@@ -134,7 +134,10 @@ export async function runNewsMonitorCron() {
       return result;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    // Key by America/New_York date so it matches how the digest reads it
+    // (altus-digest.js). Using UTC here previously caused a day-boundary mismatch
+    // where the digest looked up a key the cron had not written.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     const alertKey = `altus:news_alert:${today}`;
 
     await pool.query(

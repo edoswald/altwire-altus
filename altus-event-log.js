@@ -84,6 +84,17 @@ export async function logAltusEvent(eventType, options = {}) {
 
   const safeEventType = typeof eventType === 'string' ? eventType.substring(0, 20) : eventType;
 
+  // session_id and duration_ms map to INTEGER columns. Guard against NaN/Infinity
+  // (e.g. a UUID session id passed through Number()) — `?? null` does not catch
+  // NaN, and an unguarded NaN fails the whole insert.
+  const toIntOrNull = (value) => {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  };
+  const safeSessionId = toIntOrNull(session_id);
+  const safeDurationMs = toIntOrNull(duration_ms);
+
   let storedPayload = payload ?? null;
   if (storedPayload !== null) {
     const payloadJson = JSON.stringify(storedPayload);
@@ -101,10 +112,10 @@ export async function logAltusEvent(eventType, options = {}) {
       [
         safeEventType,
         tool_name ?? null,
-        session_id ?? null,
+        safeSessionId,
         storedPayload !== null ? JSON.stringify(storedPayload) : null,
         error_message ?? null,
-        duration_ms ?? null,
+        safeDurationMs,
       ],
     );
   } catch (err) {
