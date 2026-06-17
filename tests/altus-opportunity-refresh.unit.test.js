@@ -44,7 +44,7 @@ describe('altus-opportunity-refresh', () => {
     const { refreshOpportunityQueue } = await import('../handlers/altus-opportunity-refresh.js');
     const result = await refreshOpportunityQueue({ days: 28, includeNews: true });
 
-    expect(mockGetStoryOpportunities).toHaveBeenCalledWith({ days: 28 });
+    expect(mockGetStoryOpportunities).toHaveBeenCalledWith({ days: 28, refresh: true });
     expect(mockUpsertStoryOpportunityQueue).toHaveBeenCalledWith(storyResult);
     expect(mockGetNewsOpportunities).toHaveBeenCalledWith({ days: 7 });
     expect(mockUpsertNewsOpportunityQueue).toHaveBeenCalledWith(newsResult);

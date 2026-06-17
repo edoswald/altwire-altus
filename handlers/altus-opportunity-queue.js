@@ -13,6 +13,7 @@ import { createAssignment } from './altus-writer.js';
 const SOURCE_LABELS = {
   gsc_opportunity_zone: 'GSC opportunity zone',
   google_news: 'Google News',
+  news_performer: 'Google News performer',
 };
 
 export async function initOpportunityQueueSchema() {
@@ -55,6 +56,22 @@ function sourceKeyForOpportunity(opp) {
 function sourceKeyForNewsMatch(match) {
   const basis = ['google_news', match.query ?? '', (match.matched_items ?? []).join('|')].join(':');
   return crypto.createHash('sha256').update(basis).digest('hex').slice(0, 32);
+}
+
+function sourceKeyForNewsPage(page) {
+  const pageUrl = page.keys?.[0] ?? '';
+  const basis = ['news_performer', pageUrl].join(':');
+  return crypto.createHash('sha256').update(basis).digest('hex').slice(0, 32);
+}
+
+function topicFromNewsPage(pageUrl) {
+  try {
+    const pathname = new URL(pageUrl).pathname;
+    const slug = pathname.split('/').filter(Boolean).pop() ?? pageUrl;
+    return slug.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim() || pageUrl;
+  } catch {
+    return String(pageUrl).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
 }
 
 function classifyPriority(position) {
@@ -159,6 +176,49 @@ export async function upsertNewsOpportunityQueue(newsResult = {}) {
         clicks,
         impressions + clicks * 25,
         JSON.stringify(match),
+      ],
+    );
+    upserted++;
+  }
+
+  for (const page of newsPages) {
+    const pageUrl = page.keys?.[0];
+    const clicks = Math.round(page.clicks ?? 0);
+    if (!pageUrl || clicks <= 0) continue;
+
+    const impressions = Math.round(page.impressions ?? 0);
+    const position = page.position ?? null;
+    const sourceKey = sourceKeyForNewsPage(page);
+    const topic = topicFromNewsPage(pageUrl);
+    const suggestedAngle = `Google News is already sending traffic to "${topic}". Review whether this should become a follow-up, update, translation, or internal-linking opportunity.`;
+
+    await pool.query(
+      `INSERT INTO altus_story_opportunities
+         (source_key, topic, url, suggested_angle, source, priority, coverage_status,
+          impressions, clicks, position, score, payload)
+       VALUES ($1, $2, $3, $4, 'news_performer', $5, 'news_performer', $6, $7, $8, $9, $10)
+       ON CONFLICT (source_key) DO UPDATE SET
+         suggested_angle = EXCLUDED.suggested_angle,
+         priority = EXCLUDED.priority,
+         coverage_status = EXCLUDED.coverage_status,
+         impressions = EXCLUDED.impressions,
+         clicks = EXCLUDED.clicks,
+         position = EXCLUDED.position,
+         score = EXCLUDED.score,
+         payload = EXCLUDED.payload,
+         updated_at = NOW()
+       WHERE altus_story_opportunities.status IN ('pending', 'in_progress')`,
+      [
+        sourceKey,
+        topic,
+        pageUrl,
+        suggestedAngle,
+        classifyPriority(position),
+        impressions,
+        clicks,
+        position,
+        impressions + clicks * 25,
+        JSON.stringify(page),
       ],
     );
     upserted++;

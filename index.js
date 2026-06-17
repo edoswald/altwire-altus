@@ -58,7 +58,7 @@ import { generateChart } from './hal-chart.js';
 import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
-import { getArticlePerformance, getNewsPerformancePatterns, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
+import { getArticlePerformance, getNewsPerformancePatterns, registerArticleForTracking, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
 import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRegistered } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
@@ -121,11 +121,11 @@ import {
 } from './handlers/altus-writer.js';
 import {
   initOpportunityQueueSchema,
-  upsertStoryOpportunityQueue,
   listStoryOpportunityQueue,
   assignStoryOpportunity,
 } from './handlers/altus-opportunity-queue.js';
 import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js';
+import { getAltusDataHealth } from './handlers/altus-data-health.js';
 import { handleAltwireOpportunityAssignRoute } from './handlers/altus-opportunity-routes.js';
 import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
 import { getSeoState, updateSeoFields } from './lib/wp-client.js';
@@ -352,6 +352,7 @@ const TOOL_CONTEXTS = {
 // Event log tools
   query_altus_events:           [],
   get_altus_audit_log:         [],
+  altus_get_data_health:       [],
   // AI cost
   get_altus_ai_cost_summary:    [],
   // Multi-admin onboarding
@@ -466,31 +467,35 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; upserts the altus_story_opportunities queue the digest reads)
   cron.schedule('0 5 * * 1-5', () => observe({ name: 'story_opportunities', spanType: 'DEFAULT' }, async () => {
     try {
-      const { getStoryOpportunities } = await import('./handlers/altus-topic-discovery.js');
       await logAltusEvent('cron_trigger', { payload: { cron_name: 'story_opportunities', phase: 'started' } });
-      const result = await getStoryOpportunities({ days: 28 });
-      if (result?.error) {
+      const result = await refreshOpportunityQueue({ days: 28, includeNews: true });
+      if (result?.warnings?.length) {
         await logAltusEvent('cron_trigger', {
           payload: {
             cron_name: 'story_opportunities',
-            phase: 'failed',
-            error: result.error,
-            message: result.message ?? null,
+            phase: result.success ? 'completed_with_warnings' : 'failed',
+            warnings: result.warnings,
           },
         });
-        logger.error('story_opportunities cron failed', { error: result.error, message: result.message });
-        return;
+        if (!result.success) {
+          logger.error('story_opportunities cron failed', { warnings: result.warnings });
+          return;
+        }
       }
-      await upsertStoryOpportunityQueue(result);
       await logAltusEvent('cron_trigger', {
         payload: {
           cron_name: 'story_opportunities',
           phase: 'completed',
-          opportunities: result?.opportunities?.length ?? 0,
-          cached: Boolean(result?.cached),
+          story_upserted: result?.story?.upserted ?? 0,
+          news_upserted: result?.news?.upserted ?? 0,
+          news_queries: result?.news?.queries ?? 0,
+          watch_list_matches: result?.news?.matches ?? 0,
         },
       });
-      logger.info('story_opportunities cron: completed');
+      logger.info('story_opportunities cron: completed', {
+        storyUpserted: result?.story?.upserted ?? 0,
+        newsUpserted: result?.news?.upserted ?? 0,
+      });
     } catch (err) {
       await logAltusEvent('cron_trigger', {
         payload: {
@@ -1035,10 +1040,12 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
       inputSchema: {
         days: z.number().int().min(7).max(90).default(28)
           .describe('Lookback window in days for GSC data (default 28)'),
+        refresh: z.boolean().optional().default(false)
+          .describe('Bypass today\'s cached story-opportunity result and recompute from GSC/archive data. Use for smoke tests, "right now" checks, or suspected stale empty results.'),
       },
     },
-    async ({ days }) => {
-      const result = await getStoryOpportunities({ days });
+    async ({ days, refresh }) => {
+      const result = await getStoryOpportunities({ days, refresh });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -1071,6 +1078,32 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ article_url, snapshot_type }) => {
       const result = await getArticlePerformance({ article_url, snapshot_type });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_register_article_tracking',
+    {
+      description: 'Register a published or scheduled AltWire article for 72h, 7d, and 30d GSC performance snapshots. Use after a WordPress draft has a final public URL or publication time.',
+      inputSchema: {
+        article_url: z.string().url().describe('Canonical public AltWire article URL to track'),
+        wp_post_id: z.number().int().optional().describe('WordPress post ID, when known'),
+        published_at: z.string().datetime().optional().describe('Publication timestamp in ISO 8601 format; defaults to now'),
+        source_query: z.string().optional().describe('Original story opportunity or search query that led to the article'),
+      },
+    },
+    async ({ article_url, wp_post_id, published_at, source_query }) => {
+      if (process.env.TEST_MODE === 'true') {
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, test_mode: true, article_url }) }] };
+      }
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await registerArticleForTracking({
+        articleUrl: article_url,
+        wpPostId: wp_post_id,
+        publishedAt: published_at,
+        sourceQuery: source_query,
+      });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -1865,6 +1898,17 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async () => {
       const result = await getActionItemStats();
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'altus_get_data_health',
+    {
+      description: 'Check whether the Phase 1-3 Altus data plane has usable Postgres data: story opportunity queue rows, active watch-list subjects, article performance snapshots, and story-opportunity cache freshness. Use when smoke tests return no opportunities or when asking whether the backing tables are populated.',
+    },
+    async () => {
+      const result = await getAltusDataHealth();
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

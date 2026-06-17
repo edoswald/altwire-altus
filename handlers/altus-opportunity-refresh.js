@@ -7,7 +7,7 @@ import {
 
 export async function refreshOpportunityQueue({ days = 28, includeNews = true } = {}) {
   const warnings = [];
-  const storyResult = await getStoryOpportunities({ days });
+  const storyResult = await getStoryOpportunities({ days, refresh: true });
   let story = { upserted: 0 };
   let news = { upserted: 0, matches: 0, queries: 0 };
 

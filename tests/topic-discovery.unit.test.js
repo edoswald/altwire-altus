@@ -164,6 +164,21 @@ describe('altus-topic-discovery', () => {
       expect(result.note).toContain('position 5-30');
       expect(mockSearchAltwireArchive).not.toHaveBeenCalled();
       expect(mockSynthesizePitches).not.toHaveBeenCalled();
+      const cacheWrite = mockQuery.mock.calls.find(([sql, params]) =>
+        typeof sql === 'string' &&
+        sql.includes('INSERT INTO agent_memory') &&
+        Array.isArray(params) &&
+        params[0] === 'altus' &&
+        typeof params[1] === 'string' &&
+        params[1].startsWith('altus:story_opportunities:')
+      );
+      expect(cacheWrite).toBeTruthy();
+      const cachedResult = JSON.parse(cacheWrite[1][2]);
+      expect(cachedResult.opportunities).toEqual([]);
+      expect(cachedResult.date_range).toEqual({
+        start: isoDateOffset(31),
+        end: isoDateOffset(3),
+      });
     });
 
     it('skips cache reads when refresh is requested', async () => {

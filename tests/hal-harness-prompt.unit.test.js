@@ -51,6 +51,7 @@ describe('Altus Hal harness prompt', () => {
     expect(prompt).toContain('get_altwire_search_performance');
     expect(prompt).toContain('get_altwire_search_opportunities');
     expect(prompt).toContain('get_altwire_sitemap_health');
+    expect(prompt).toContain('altus_get_data_health');
   });
 
   it('routes Phase 3 smoke-test prompts to their specific editorial tools', async () => {
@@ -64,5 +65,8 @@ describe('Altus Hal harness prompt', () => {
     expect(prompt).toContain("\"Which past articles performed best, and what's the pattern?\" -> get_article_performance first");
     expect(prompt).toContain('get_news_performance_patterns');
     expect(prompt).toContain('"Where are our biggest coverage gaps right now?" -> get_story_opportunities first');
+    expect(prompt).toContain('use refresh=true for smoke tests or "right now" checks');
+    expect(prompt).toContain('"Is there anything in Postgres?"');
+    expect(prompt).toContain('-> altus_get_data_health');
   });
 });

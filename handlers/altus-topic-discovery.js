@@ -83,6 +83,18 @@ export async function getStoryOpportunities({ days = 28, refresh = false } = {})
   const today = new Date().toISOString().slice(0, 10);
   const cacheKey = `altus:story_opportunities:${today}`;
 
+  async function cacheResult(result) {
+    try {
+      await pool.query(
+        `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
+         ON CONFLICT (agent, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        ['altus', cacheKey, JSON.stringify(result)]
+      );
+    } catch (err) {
+      logger.warn('Topic discovery: cache write failed', { error: err.message });
+    }
+  }
+
   if (!refresh) {
     try {
       const cached = await pool.query(
@@ -103,10 +115,15 @@ export async function getStoryOpportunities({ days = 28, refresh = false } = {})
   const gscResult = await getOpportunityZoneQueries(startStr, endStr);
   if (gscResult.error) return gscResult;
   if (gscResult.rows.length === 0) {
-    return {
+    const result = {
       opportunities: [],
       note: `No queries found in the opportunity zone (position 5-30) for the last ${days} days`,
+      total_evaluated: 0,
+      date_range: { start: startStr, end: endStr },
+      cached: false,
     };
+    await cacheResult(result);
+    return result;
   }
 
   const scored = [];
@@ -178,15 +195,7 @@ export async function getStoryOpportunities({ days = 28, refresh = false } = {})
     cached: false,
   };
 
-  try {
-    await pool.query(
-      `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
-       ON CONFLICT (agent, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      ['altus', cacheKey, JSON.stringify(result)]
-    );
-  } catch (err) {
-    logger.warn('Topic discovery: cache write failed', { error: err.message });
-  }
+  await cacheResult(result);
 
   return result;
 }
