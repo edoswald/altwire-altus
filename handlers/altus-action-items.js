@@ -1,5 +1,7 @@
-import pool from '../lib/altus-db.js';
+import pool, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
+
+const MAX_WINS = 25;
 
 const VALID_TRANSITIONS = {
   proposed: ['accepted', 'completed', 'dismissed'],
@@ -13,6 +15,39 @@ const ACTION_TO_STATUS = {
   complete: 'completed',
   dismiss: 'dismissed',
 };
+
+function formatActionItemWin(item) {
+  const title = String(item?.title ?? '').trim();
+  if (!title) return '';
+
+  const notes = String(item?.outcome_notes ?? '').trim();
+  if (!notes || notes === title) {
+    return `Completed: ${title}`;
+  }
+
+  return `Completed: ${title} - ${notes}`;
+}
+
+async function appendActionItemWin(item) {
+  const winText = formatActionItemWin(item);
+  if (!winText) return;
+
+  const existing = await readAgentMemory('hal', 'reflection:wins').catch(() => null);
+  let current = [];
+
+  if (existing?.success && existing.value) {
+    try {
+      current = JSON.parse(existing.value);
+    } catch {
+      current = [];
+    }
+  }
+
+  if (!Array.isArray(current)) current = [];
+
+  const updated = [...current, winText].slice(-MAX_WINS);
+  await writeAgentMemory('hal', 'reflection:wins', JSON.stringify(updated));
+}
 
 export async function initActionItemsSchema() {
   const client = await pool.connect();
@@ -129,6 +164,17 @@ export async function manageActionItem({ item_id, action, reason, outcome_notes 
     `UPDATE altus_action_items SET ${updates.join(', ')} WHERE id = $${params.length} RETURNING *`,
     params,
   );
+
+  if (targetStatus === 'completed') {
+    try {
+      await appendActionItemWin(result.rows[0]);
+    } catch (err) {
+      logger.warn('manageActionItem: failed to record completion win', {
+        item_id,
+        error: err.message,
+      });
+    }
+  }
 
   return { success: true, item: result.rows[0] };
 }

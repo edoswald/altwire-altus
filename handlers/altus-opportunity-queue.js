@@ -13,8 +13,34 @@ import { createAssignment } from './altus-writer.js';
 const SOURCE_LABELS = {
   gsc_opportunity_zone: 'GSC opportunity zone',
   google_news: 'Google News',
-  news_performer: 'Google News performer',
+  news_performer: 'Existing coverage',
 };
+
+const SOURCE_BEHAVIOR = {
+  gsc_opportunity_zone: {
+    opportunity_kind: 'optimization',
+    recommendation_type: 'optimize_search',
+    assignable: false,
+  },
+  google_news: {
+    opportunity_kind: 'new_content',
+    recommendation_type: 'cover_news',
+    assignable: true,
+  },
+  news_performer: {
+    opportunity_kind: 'optimization',
+    recommendation_type: 'refresh_existing',
+    assignable: false,
+  },
+};
+
+function getOpportunityBehavior(source) {
+  return SOURCE_BEHAVIOR[source] ?? {
+    opportunity_kind: 'optimization',
+    recommendation_type: 'investigate',
+    assignable: false,
+  };
+}
 
 export async function initOpportunityQueueSchema() {
   await pool.query(`
@@ -80,10 +106,26 @@ function classifyPriority(position) {
   return 'low';
 }
 
-function defaultAngle(opp, pitches) {
-  if (pitches) return pitches;
-  const coverage = opp.coverageStatus ? opp.coverageStatus.replace(/_/g, ' ') : 'thin coverage';
-  return `Search demand exists for "${opp.query}" with ${coverage}.`;
+function formatMetricSnapshot(opp) {
+  const pieces = [];
+  if (Number.isFinite(opp.impressions)) pieces.push(`${Math.round(opp.impressions).toLocaleString()} impressions`);
+  if (Number.isFinite(opp.position)) pieces.push(`average position ${Number(opp.position).toFixed(1)}`);
+  return pieces.join(' and ');
+}
+
+function defaultAngle(opp) {
+  const metrics = formatMetricSnapshot(opp);
+  const metricsText = metrics ? `${metrics}. ` : '';
+
+  if (opp.coverageStatus === 'no_coverage') {
+    return `${metricsText}AltWire is already getting search demand for "${opp.query}" without a strong matching page. Build or substantially expand coverage so this query has a clear landing page to rank.`;
+  }
+
+  if (opp.coverageStatus === 'weak_coverage') {
+    return `${metricsText}AltWire already appears for "${opp.query}", but the current coverage looks thin. Refresh the existing story, improve the headline and internal links, and add missing context to move it higher.`;
+  }
+
+  return `${metricsText}AltWire already ranks for "${opp.query}". Treat this as an optimization lead: tighten titles, update the copy, and strengthen internal links on the best-matching page.`;
 }
 
 export async function upsertStoryOpportunityQueue(storyResult = {}) {
@@ -117,7 +159,7 @@ export async function upsertStoryOpportunityQueue(storyResult = {}) {
         sourceKey,
         topic,
         opp.page ?? null,
-        defaultAngle(opp, storyResult.pitches),
+        defaultAngle(opp),
         classifyPriority(opp.position),
         opp.coverageStatus ?? null,
         Math.round(opp.impressions ?? 0),
@@ -190,13 +232,13 @@ export async function upsertNewsOpportunityQueue(newsResult = {}) {
     const position = page.position ?? null;
     const sourceKey = sourceKeyForNewsPage(page);
     const topic = topicFromNewsPage(pageUrl);
-    const suggestedAngle = `Google News is already sending traffic to "${topic}". Review whether this should become a follow-up, update, translation, or internal-linking opportunity.`;
+    const suggestedAngle = `This AltWire story is already earning Google News traffic. Refresh "${topic}" with the newest context, tighten the headline and dek, and strengthen internal links while the topic is still active.`;
 
     await pool.query(
       `INSERT INTO altus_story_opportunities
          (source_key, topic, url, suggested_angle, source, priority, coverage_status,
           impressions, clicks, position, score, payload)
-       VALUES ($1, $2, $3, $4, 'news_performer', $5, 'news_performer', $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, 'news_performer', $5, 'existing_story', $6, $7, $8, $9, $10)
        ON CONFLICT (source_key) DO UPDATE SET
          suggested_angle = EXCLUDED.suggested_angle,
          priority = EXCLUDED.priority,
@@ -228,6 +270,7 @@ export async function upsertNewsOpportunityQueue(newsResult = {}) {
 }
 
 function rowToOpportunity(row) {
+  const behavior = getOpportunityBehavior(row.source);
   const discoveredAt = row.discovered_at instanceof Date
     ? row.discovered_at.toISOString()
     : row.discovered_at;
@@ -257,6 +300,9 @@ function rowToOpportunity(row) {
     position,
     score,
     coverage_status: row.coverage_status ?? '',
+    opportunity_kind: behavior.opportunity_kind,
+    recommendation_type: behavior.recommendation_type,
+    assignable: behavior.assignable,
   };
 }
 
@@ -299,6 +345,10 @@ export async function assignStoryOpportunity({ id, article_type = 'article' }) {
   );
   const opportunity = rows[0];
   if (!opportunity) return { error: 'opportunity_not_found', id };
+  const behavior = getOpportunityBehavior(opportunity.source);
+  if (!behavior.assignable) {
+    return { error: 'opportunity_not_assignable', id, status: opportunity.status, source: opportunity.source };
+  }
   if (!['pending', 'in_progress'].includes(opportunity.status)) {
     return { error: 'opportunity_not_assignable', id, status: opportunity.status };
   }

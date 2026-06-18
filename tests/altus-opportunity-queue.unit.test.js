@@ -95,6 +95,9 @@ describe('altus-opportunity-queue', () => {
         status: 'pending',
         source: 'GSC opportunity zone',
         coverage_status: 'no_coverage',
+        opportunity_kind: 'optimization',
+        recommendation_type: 'optimize_search',
+        assignable: false,
         impressions: 700,
         position: 14.4,
       }),
@@ -138,11 +141,50 @@ describe('altus-opportunity-queue', () => {
     ]);
   });
 
+  it('labels news performers as optimization-only opportunities', async () => {
+    vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 18,
+          topic: 'die antwoord abuse allegations german',
+          url: 'https://altwire.net/die-antwoord-abuse-allegations-german/',
+          suggested_angle: 'Review whether the existing story needs an update or stronger internal links.',
+          priority: 'high',
+          status: 'pending',
+          source: 'news_performer',
+          coverage_status: 'existing_story',
+          impressions: 404,
+          clicks: 38,
+          position: 7.9,
+          score: 1354,
+          discovered_at: new Date('2026-06-05T10:00:00.000Z'),
+          assigned_at: null,
+          assignment_id: null,
+        },
+      ],
+    });
+
+    const { listStoryOpportunityQueue } = await import('../handlers/altus-opportunity-queue.js');
+    const result = await listStoryOpportunityQueue();
+
+    expect(result.opportunities).toEqual([
+      expect.objectContaining({
+        id: 18,
+        source: 'Existing coverage',
+        coverage_status: 'existing_story',
+        opportunity_kind: 'optimization',
+        recommendation_type: 'refresh_existing',
+        assignable: false,
+      }),
+    ]);
+  });
+
   it('assigns an opportunity to the writer and marks it assigned', async () => {
     vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ id: 12, topic: 'radiohead album news', status: 'pending' }],
+        rows: [{ id: 12, topic: 'radiohead album news', status: 'pending', source: 'google_news' }],
       })
       .mockResolvedValueOnce({
         rows: [{ id: 12, status: 'assigned', assignment_id: 44 }],
@@ -163,6 +205,24 @@ describe('altus-opportunity-queue', () => {
       success: true,
       opportunity_id: 12,
       assignment: { id: 44, topic: 'radiohead album news', status: 'outline_ready' },
+    });
+  });
+
+  it('does not allow optimization-only opportunities into the writer assignment flow', async () => {
+    vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 22, topic: 'sleep token interview', status: 'pending', source: 'gsc_opportunity_zone' }],
+    });
+
+    const { assignStoryOpportunity } = await import('../handlers/altus-opportunity-queue.js');
+    const result = await assignStoryOpportunity({ id: 22 });
+
+    expect(mockCreateAssignment).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      error: 'opportunity_not_assignable',
+      id: 22,
+      status: 'pending',
+      source: 'gsc_opportunity_zone',
     });
   });
 

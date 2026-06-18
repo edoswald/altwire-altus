@@ -123,6 +123,31 @@ describe('altus-news-monitor', () => {
 
       expect(mockQuery).toHaveBeenCalledWith('SELECT name FROM altus_watch_list WHERE active = true');
     });
+
+    it('filters non-English Google News queries out of returned recommendations', async () => {
+      vi.stubEnv('ALTWIRE_DATABASE_URL', 'postgres://localhost/test');
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({
+        rows: [
+          { keys: ['radiohead tour news'], clicks: 5, impressions: 100, ctr: 0.05, position: 8 },
+          { keys: ['noticias de radiohead en espanol'], clicks: 8, impressions: 180, ctr: 0.04, position: 6 },
+        ],
+      });
+      mockGetNewsSearchPerformance.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ name: 'Radiohead' }] });
+
+      const { getNewsOpportunities } = await import('../handlers/altus-news-monitor.js');
+      const result = await getNewsOpportunities();
+
+      expect(result.news_queries).toEqual([
+        expect.objectContaining({ keys: ['radiohead tour news'] }),
+      ]);
+      expect(result.watch_list_matches).toEqual([
+        expect.objectContaining({
+          query: 'radiohead tour news',
+          matched_items: ['Radiohead'],
+        }),
+      ]);
+    });
   });
 
   describe('runNewsMonitorCron', () => {
