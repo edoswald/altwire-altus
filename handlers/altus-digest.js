@@ -66,11 +66,47 @@ function normalizeWatchListMatches(matches) {
   });
 }
 
+// Short-lived cache for the assembled digest. Each build fans out to ~14
+// upstream calls (GSC, Matomo, Postgres), and the dashboard can request the
+// digest several times in quick succession (mount + Sync + post-deploy
+// reconnects). Collapse those into one build per TTL window, and dedupe
+// concurrent in-flight builds so a burst of requests triggers a single build.
+const DIGEST_CACHE_TTL_MS = 60_000;
+let _digestCache = { at: 0, value: null };
+let _digestInFlight = null;
+
+/**
+ * Cached entry point for the morning digest. Returns a recent build when one is
+ * available, otherwise builds once and shares that build with any concurrent
+ * callers. TEST_MODE always builds fresh (the canned response is cheap).
+ * @returns {Promise<object>}
+ */
+export async function getAltwireMorningDigest() {
+  if (process.env.TEST_MODE === 'true') return buildMorningDigest();
+
+  const now = Date.now();
+  if (_digestCache.value && now - _digestCache.at < DIGEST_CACHE_TTL_MS) {
+    return _digestCache.value;
+  }
+  if (_digestInFlight) return _digestInFlight;
+
+  _digestInFlight = (async () => {
+    try {
+      const digest = await buildMorningDigest();
+      _digestCache = { at: Date.now(), value: digest };
+      return digest;
+    } finally {
+      _digestInFlight = null;
+    }
+  })();
+  return _digestInFlight;
+}
+
 /**
  * Build the daily morning digest from all available data sources.
  * @returns {Promise<object>} Aggregate digest with date, generated_at, and 7 sections.
  */
-export async function getAltwireMorningDigest() {
+async function buildMorningDigest() {
   // TEST_MODE guard — return canned response, skip all live calls
   if (process.env.TEST_MODE === 'true') {
     return {
@@ -109,9 +145,14 @@ export async function getAltwireMorningDigest() {
   ] = await Promise.allSettled([
     getAltwireUptime(),
     getAltwireIncidents(),
+    // Most recent available news-alert snapshot. Prefer today's, but fall back to
+    // the latest prior day so the count never collapses to 0 just because the
+    // 4:30 AM ET news_monitor cron hasn't run yet for the current date.
+    // Keys are `altus:news_alert:YYYY-MM-DD`, so DESC ordering returns the newest.
     pool.query(
-      'SELECT value FROM agent_memory WHERE key = $1 AND agent = $2 LIMIT 1',
-      ['altus:news_alert:' + today, 'altus'],
+      `SELECT key, value FROM agent_memory
+       WHERE agent = 'altus' AND key LIKE 'altus:news_alert:%' AND deleted_at IS NULL
+       ORDER BY key DESC LIMIT 1`,
     ),
     listStoryOpportunityQueue({ status: 'active', limit: 50 }),
     pool.query(
@@ -172,15 +213,19 @@ export async function getAltwireMorningDigest() {
     if (rows && rows.length > 0) {
       try {
         const parsed = JSON.parse(rows[0].value);
+        // Snapshot date is encoded in the key (altus:news_alert:YYYY-MM-DD).
+        const asOf = (rows[0].key || '').split(':').pop() || null;
         news_alerts = {
           ...parsed,
           watch_list_matches: normalizeWatchListMatches(parsed.watch_list_matches),
+          as_of: asOf,
+          stale: asOf ? asOf !== today : false,
         };
       } catch (e) {
         warnings.push({ section: 'news_alerts', message: `Failed to parse news alerts JSON: ${e.message}` });
       }
     }
-    // Empty rows = no GSC news signals today — not an error, render gracefully in email
+    // Empty rows = no news snapshot has ever been stored — not an error, render gracefully in email
   } else {
     warnings.push({ section: 'news_alerts', message: `News alerts fetch failed: ${newsAlertsResult.reason?.message || newsAlertsResult.reason}` });
   }

@@ -417,6 +417,23 @@ export async function runAltusHeartbeat() {
       }
     }
 
+    // Step 0.5 — self-healing morning digest send.
+    // If the scheduled 5:15 AM ET digest was missed or failed, retry it here so
+    // it still goes out at the next available time. The retry is a no-op on
+    // weekends, before the scheduled slot, or once today's digest has been sent.
+    try {
+      const { sendMorningDigestIfMissed } = await import('./altus-digest-mailer.js');
+      const digestResult = await sendMorningDigestIfMissed();
+      if (digestResult?.status === 'sent') {
+        counters.items_acted++;
+        logger.info('runAltusHeartbeat: recovered missed morning digest', { date: digestResult.date });
+      } else if (digestResult?.status === 'failed') {
+        logger.warn('runAltusHeartbeat: morning digest retry failed', { error: digestResult.error });
+      }
+    } catch (err) {
+      logger.error('runAltusHeartbeat: morning digest retry threw', { error: err.message });
+    }
+
     // Step 1 — condition checks
     const conditions = await checkConditions();
 
