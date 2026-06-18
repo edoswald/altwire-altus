@@ -9,6 +9,19 @@ import { getNewsSearchPerformance } from './altwire-gsc-client.js';
 import { logAltusEvent } from '../altus-event-log.js';
 import { upsertNewsOpportunityQueue } from './altus-opportunity-queue.js';
 
+const NON_LATIN_QUERY_RE = /[\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Hebrew}\p{Script=Thai}\p{Script=Devanagari}]/u;
+const ENGLISH_NEWS_TERMS = new Set([
+  'album', 'announce', 'announced', 'band', 'cover', 'dates', 'ep', 'feature',
+  'festival', 'interview', 'live', 'lyrics', 'music', 'new', 'news', 'premiere',
+  'release', 'review', 'setlist', 'single', 'song', 'tour', 'track', 'video',
+]);
+const FOREIGN_SIGNAL_TERMS = new Set([
+  'albumen', 'artista', 'avec', 'con', 'dans', 'das', 'del', 'der', 'des', 'die',
+  'el', 'en', 'espanol', 'et', 'fuer', 'für', 'la', 'las', 'le', 'les', 'los',
+  'mit', 'musik', 'nachrichten', 'noticias', 'nouvel', 'nuevo', 'para', 'por',
+  'sur', 'und', 'una', 'uno', 'von',
+]);
+
 /**
  * Case-insensitive substring watch list matching.
  * @param {string} query — News query string
@@ -20,6 +33,31 @@ export function matchesWatchList(query, watchItems) {
   return watchItems
     .filter((item) => lowerQuery.includes(item.name.toLowerCase()))
     .map((item) => item.name);
+}
+
+function tokenizeQuery(query) {
+  return String(query)
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .match(/[a-z]+/g) ?? [];
+}
+
+export function isLikelyEnglishNewsQuery(query) {
+  if (typeof query !== 'string' || !query.trim()) return false;
+  if (NON_LATIN_QUERY_RE.test(query)) return false;
+
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) return false;
+
+  const englishSignals = tokens.filter((token) => ENGLISH_NEWS_TERMS.has(token)).length;
+  const foreignSignals = tokens.filter((token) => FOREIGN_SIGNAL_TERMS.has(token)).length;
+
+  if (englishSignals > 0) return true;
+  if (foreignSignals >= 2) return false;
+  if (/[^\u0000-\u007F]/.test(query) && foreignSignals > 0) return false;
+
+  return true;
 }
 
 /**
@@ -58,7 +96,7 @@ export async function getNewsOpportunities({ days = 7 } = {}) {
   // Fetch News pages
   const pageResult = await getNewsSearchPerformance(startStr, endStr, { dimensions: ['page'], rowLimit: 50 });
 
-  const newsQueries = queryResult.rows || [];
+  const newsQueries = (queryResult.rows || []).filter((row) => isLikelyEnglishNewsQuery(row.keys?.[0]));
   const newsPages = pageResult.error ? [] : (pageResult.rows || []);
 
   if (newsQueries.length === 0 && newsPages.length === 0) {

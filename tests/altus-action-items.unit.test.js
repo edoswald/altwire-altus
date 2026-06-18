@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const { poolQueryMock, readAgentMemoryMock, writeAgentMemoryMock } = vi.hoisted(() => ({
+  poolQueryMock: vi.fn(),
+  readAgentMemoryMock: vi.fn(),
+  writeAgentMemoryMock: vi.fn(),
+}));
+
 vi.mock('../lib/altus-db.js', () => ({
   default: {
-    query: vi.fn(),
+    query: poolQueryMock,
     connect: vi.fn(),
   },
+  readAgentMemory: (...args) => readAgentMemoryMock(...args),
+  writeAgentMemory: (...args) => writeAgentMemoryMock(...args),
 }));
 
 vi.mock('../logger.js', () => ({
@@ -41,5 +49,46 @@ describe('Altus action-item parity module', () => {
     expect(result.success).toBe(true);
     expect(result.count).toBe(1);
     expect(result.items).toEqual([{ id: 1, status: 'proposed' }]);
+  });
+
+  it('records a win when a concrete action item is completed', async () => {
+    readAgentMemoryMock.mockResolvedValue({ success: true, value: '[]' });
+    writeAgentMemoryMock.mockResolvedValue({ success: true });
+    pool.query.mockImplementation(async (sql) => {
+      if (String(sql).startsWith('SELECT')) {
+        return {
+          rows: [{
+            id: 44,
+            status: 'accepted',
+            title: 'Fix artist page SEO',
+            category: 'editorial',
+            signal_source: 'altus:story_opportunities',
+          }],
+        };
+      }
+      return {
+        rows: [{
+          id: 44,
+          status: 'completed',
+          title: 'Fix artist page SEO',
+          category: 'editorial',
+          signal_source: 'altus:story_opportunities',
+          outcome_notes: 'Updated title, deck, and keyword framing for the article.',
+        }],
+      };
+    });
+
+    const result = await manageActionItem({
+      item_id: 44,
+      action: 'complete',
+      outcome_notes: 'Updated title, deck, and keyword framing for the article.',
+    });
+
+    expect(result.success).toBe(true);
+    expect(writeAgentMemoryMock).toHaveBeenCalledWith(
+      'hal',
+      'reflection:wins',
+      expect.stringContaining('Fix artist page SEO'),
+    );
   });
 });

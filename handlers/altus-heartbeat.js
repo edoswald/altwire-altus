@@ -26,9 +26,11 @@ import { logger } from '../logger.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logAltusEvent } from '../altus-event-log.js';
 import { observe } from '../tracing.js';
-import { acceptStaleProposedItems, createActionItemFromScheduledTask } from './altus-action-items.js';
+import { createActionItemFromScheduledTask } from './altus-action-items.js';
 
 const HEARTBEAT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const TASK_LEASE_MS = 10 * 60 * 1000;
+const WORKER_ID = `${process.env.HOSTNAME ?? 'host'}-${process.pid}`;
 
 // ---------------------------------------------------------------------------
 // Schema init — exported for startup registration
@@ -70,6 +72,14 @@ export async function initHeartbeatSchema() {
         error_message TEXT,
         metadata      JSONB
       )
+    `);
+
+    await client.query(`
+      ALTER TABLE altus_scheduled_tasks
+        ADD COLUMN IF NOT EXISTS lease_holder VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_error TEXT
     `);
 
     await client.query(`
@@ -139,6 +149,33 @@ export async function listScheduledTasks(beforeMinutes = 0) {
     [cutoff],
   );
   return result.rows;
+}
+
+async function claimDueScheduledTasks(limit = 20) {
+  const { rows } = await pool.query(
+    `WITH due AS (
+       SELECT id FROM altus_scheduled_tasks
+       WHERE due_at <= NOW()
+         AND (
+           status = 'pending'
+           OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+         )
+       ORDER BY due_at ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE altus_scheduled_tasks t
+        SET status = 'running',
+            started_at = NOW(),
+            lease_holder = $2,
+            lease_expires_at = NOW() + ($3 || ' milliseconds')::interval,
+            attempt_count = t.attempt_count + 1
+       FROM due
+      WHERE t.id = due.id
+      RETURNING t.*`,
+    [limit, WORKER_ID, String(TASK_LEASE_MS)],
+  );
+  return rows;
 }
 
 /**
@@ -280,12 +317,27 @@ async function recordAlertSent(alertKey) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — auto-accept stale proposed items
-// Per spec §3.19: items transition proposed → accepted (auto-queued if stale after 24h)
+// Step 3 — queue stale proposed items for human review
 // ---------------------------------------------------------------------------
 
 async function queueStaleProposedItems() {
-  return acceptStaleProposedItems(10);
+  const { rows } = await pool.query(
+    `SELECT id, title, category, signal_source, proposed_at
+       FROM altus_action_items
+      WHERE status = 'proposed'
+        AND proposed_at < NOW() - INTERVAL '24 hours'
+      ORDER BY proposed_at ASC
+      LIMIT 10`,
+  );
+
+  const queue = {
+    queued_at: new Date().toISOString(),
+    count: rows.length,
+    items: rows,
+  };
+
+  await writeAgentMemory('altus', 'altus:heartbeat:review_queue', JSON.stringify(queue));
+  return rows.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,15 +358,10 @@ export async function runAltusHeartbeat() {
 
   try {
     // Step 0 — pick up due scheduled tasks
-    const dueTasks = await listScheduledTasks(0);
+    const dueTasks = await claimDueScheduledTasks(20);
     for (const task of dueTasks) {
       counters.items_evaluated++;
       try {
-        await pool.query(
-          `UPDATE altus_scheduled_tasks SET status = 'running', started_at = NOW() WHERE id = $1`,
-          [task.id],
-        );
-
         if (task.task_type === 'action_item') {
           await createActionItemFromScheduledTask(task);
           counters.items_acted++;
@@ -346,12 +393,24 @@ export async function runAltusHeartbeat() {
         }
 
         await pool.query(
-          `UPDATE altus_scheduled_tasks SET status = 'completed', completed_at = NOW() WHERE id = $1`,
+          `UPDATE altus_scheduled_tasks
+              SET status = 'completed',
+                  completed_at = NOW(),
+                  lease_holder = NULL,
+                  lease_expires_at = NULL
+            WHERE id = $1`,
           [task.id],
         );
       } catch (err) {
         await pool.query(
-          `UPDATE altus_scheduled_tasks SET status = 'failed', error_message = $1, completed_at = NOW() WHERE id = $2`,
+          `UPDATE altus_scheduled_tasks
+              SET status = 'failed',
+                  error_message = $1,
+                  last_error = $1,
+                  completed_at = NOW(),
+                  lease_holder = NULL,
+                  lease_expires_at = NULL
+            WHERE id = $2`,
           [err.message, task.id],
         );
         counters.items_skipped++;

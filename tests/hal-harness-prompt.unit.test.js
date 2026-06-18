@@ -1,14 +1,23 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { queryMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+}));
 
 vi.mock('../lib/altus-db.js', () => ({
   default: {
-    query: vi.fn().mockResolvedValue({ rows: [] }),
+    query: queryMock,
   },
 }));
 
 import { assembleSystemPrompt } from '../hal-harness.js';
 
 describe('Altus Hal harness prompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queryMock.mockResolvedValue({ rows: [] });
+  });
+
   it('guides autonomous sessions through SEO, research, admin email, and portable memory', async () => {
     const prompt = await assembleSystemPrompt(
       'autonomous',
@@ -68,5 +77,23 @@ describe('Altus Hal harness prompt', () => {
     expect(prompt).toContain('use refresh=true for smoke tests or "right now" checks');
     expect(prompt).toContain('"Is there anything in Postgres?"');
     expect(prompt).toContain('-> altus_get_data_health');
+  });
+
+  it('surfaces onboarding required when Altus onboarding state is not complete', async () => {
+    queryMock.mockImplementation(async (sql, params) => {
+      if (String(sql).includes("key = $1") && params?.[0] === 'altus:onboarding_state:Derek') {
+        return { rows: [{ value: 'workload' }] };
+      }
+      return { rows: [] };
+    });
+
+    const prompt = await assembleSystemPrompt(
+      'interactive',
+      { name: 'Derek', interface: 'web', scope: 'full' },
+      { agentContext: 'altwire' },
+    );
+
+    expect(prompt).toContain('## Onboarding Required');
+    expect(prompt).toContain('Derek has not completed onboarding');
   });
 });

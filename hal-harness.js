@@ -132,10 +132,10 @@ async function loadOnboardingState(adminId) {
   try {
     const result = await pool.query(
       `SELECT value FROM agent_memory WHERE agent = 'hal' AND key = $1 LIMIT 1`,
-      [`hal:onboarding_state:${adminId}`]
+      [`altus:onboarding_state:${adminId}`]
     );
     if (result.rows[0]?.value) {
-      return JSON.parse(result.rows[0].value);
+      return result.rows[0].value;
     }
   } catch {
     // fall through
@@ -454,7 +454,7 @@ You are operating under a guest test account (${caller.name}). This is a testing
   // Onboarding note for new admins
   if (caller?.name) {
     const onboarding = await loadOnboardingState(caller.name);
-    if (onboarding && onboarding.status !== 'complete') {
+    if (onboarding && onboarding !== 'complete') {
       parts.push(`## Onboarding Required\n${caller.name} has not completed onboarding. Recommend they run through it for a personalized experience.`);
     }
   }
