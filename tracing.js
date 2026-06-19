@@ -12,7 +12,7 @@
  *   export async function runSession(options) {
  *     return observe({ name: 'altus_session', spanType: 'LLM' }, async () => {
  *       // All code runs inside a Laminar trace
- *     })();
+ *     });
  *   }
  *
  * The Laminar SDK auto-instruments Anthropic API calls globally when
@@ -33,9 +33,12 @@ async function initObserve() {
   }
   try {
     const lmnr = await import('@lmnr-ai/lmnr');
-    _observeFn = lmnr.observe ?? lmnr.default?.Laminar?.observe ?? null;
-    if (_observeFn) {
+    const rawObs = lmnr.observe ?? lmnr.default?.Laminar?.observe ?? null;
+    if (typeof rawObs === 'function' && rawObs.length >= 2) {
+      _observeFn = rawObs;
       logger.info('[tracing] Laminar @observe enabled');
+    } else {
+      logger.warn('[tracing] Laminar SDK loaded but observe is not a callable function:', typeof rawObs);
     }
   } catch (err) {
     logger.warn('[tracing] Failed to load Laminar SDK:', err.message);
@@ -43,8 +46,8 @@ async function initObserve() {
 }
 
 /**
- * Strip PII and sensitive fields from tool params before logging to Laminar.
- * @param {object} params — raw tool parameters
+ * Strip PII and sensitive fields from tool params / root inputs before logging to Laminar.
+ * @param {object} params — raw parameters
  * @returns {object} — sanitized params
  */
 export function sanitizeToolParams(params) {
@@ -66,17 +69,34 @@ export function sanitizeToolParams(params) {
  * observe(options, fn) returns a Promise — await it directly:
  *   return observe({ name: 'altus_heartbeat' }, async () => { ... });
  *
- * @param {{ name: string, spanType?: 'DEFAULT'|'LLM'|'TOOL', metadata?: object }} options
+ * @param {{ name: string, spanType?: 'DEFAULT'|'LLM'|'TOOL', metadata?: object, input?: unknown }} options
  * @param {Function} fn - async function to wrap
- * @param {object} [params] - optional params forwarded to fn
- * @returns {Promise<*>} - result of fn
+ * @param {object} [params] - params to sanitize before logging
+ * @returns {Function} - wrapped function
  */
 export function observe(options, fn, params) {
   initObserve().catch(() => {});
 
   if (_observeFn) {
-    return _observeFn(options, fn, params);
+    let sanitizedInput = options.input;
+    if (sanitizedInput != null) {
+      const wrapped = sanitizeToolParams({ message: sanitizedInput });
+      sanitizedInput = wrapped.message;
+    }
+    const opts = { ...options, input: sanitizedInput };
+    let wrappedFnEntered = false;
+    const wrappedFn = async () => {
+      wrappedFnEntered = true;
+      const result = await fn(params);
+      return sanitizeToolParams(result);
+    };
+    try {
+      return _observeFn(opts, wrappedFn, params);
+    } catch (err) {
+      if (wrappedFnEntered) throw err;
+      logger.warn('[tracing] Laminar observe failed, falling back to passthrough:', err.message);
+      return fn(params);
+    }
   }
-  // Laminar unavailable — call fn directly so the caller still gets a Promise.
-  return params !== undefined ? fn(params) : fn();
+  return fn(params);
 }
