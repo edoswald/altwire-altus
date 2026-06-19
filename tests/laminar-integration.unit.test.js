@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockInfo = vi.fn();
 const mockWarn = vi.fn();
+const mockDebug = vi.fn();
 
 vi.mock('../logger.js', () => ({
   logger: {
     info: mockInfo,
     warn: mockWarn,
+    debug: mockDebug,
   },
 }));
 
@@ -33,7 +35,7 @@ describe('laminar integration', () => {
     expect(mockWarn).not.toHaveBeenCalled();
   });
 
-  it('skips signal registration when the SDK does not expose a signals client', async () => {
+  it('treats signal registration as a UI-configured no-op', async () => {
     const loadLaminar = vi.fn().mockResolvedValue({ Laminar: {} });
 
     const { registerLaminarSignals } = await import('../lib/laminar-integration.js');
@@ -41,10 +43,11 @@ describe('laminar integration', () => {
     await expect(registerLaminarSignals({
       projectApiKey: 'test-key',
       loadLaminar,
-    })).resolves.toBe(false);
+    })).resolves.toBeUndefined();
 
-    expect(mockWarn).toHaveBeenCalledWith(
-      '[altus-signals] Laminar SDK does not expose a signals client; skipping registration'
+    expect(mockWarn).not.toHaveBeenCalled();
+    expect(mockDebug).toHaveBeenCalledWith(
+      '[altus-signals] SDK initialized — signals configured via app.lmnr.ai'
     );
   });
 });
