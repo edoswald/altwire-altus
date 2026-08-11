@@ -24,6 +24,8 @@
  *   stripMentions(text, botUserId) — remove <@BOT_ID> tokens (pure)
  *   getChannels()                — channel ID map from env vars (pure)
  *   getChannelContext(channelId) — channel metadata for system prompt (pure)
+ *   routeToNimbus(...)           — forward an AltWire-channel event to Nimbus,
+ *                                   authenticated with ALTWIRE_WEBHOOK_TOKEN
  */
 
 import crypto from 'node:crypto';
@@ -457,10 +459,19 @@ async function handleSlashCommand(payload) {
 // Route inbound Slack events to nimbus for processing
 // ---------------------------------------------------------------------------
 
-async function routeToNimbus({ message, history, channel, threadTs, isDm, slackUserId, agentContext, ephemeral = false, responseUrl = null }) {
+export async function routeToNimbus({ message, history, channel, threadTs, isDm, slackUserId, agentContext, ephemeral = false, responseUrl = null }) {
   const nimbusUrl = process.env.NIMBUS_SLACK_WEBHOOK_URL;
   if (!nimbusUrl) {
     logger.warn('slack-altus: NIMBUS_SLACK_WEBHOOK_URL not set — cannot route to nimbus');
+    return;
+  }
+
+  // Shared-secret auth expected by Nimbus's handleAltwireInboundRequest, which
+  // fails closed (401) if this header is absent — see hal-layer-strategy.md §3.8
+  // S4. Must match ALTWIRE_WEBHOOK_TOKEN on the Nimbus side.
+  const webhookToken = process.env.ALTWIRE_WEBHOOK_TOKEN;
+  if (!webhookToken) {
+    logger.warn('slack-altus: ALTWIRE_WEBHOOK_TOKEN not set — nimbus will reject this request (401)');
     return;
   }
 
@@ -481,7 +492,7 @@ async function routeToNimbus({ message, history, channel, threadTs, isDm, slackU
   try {
     const nimbusRes = await fetch(nimbusUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Altwire-Token': webhookToken },
       body: JSON.stringify(payload),
     });
     if (!nimbusRes.ok) {
