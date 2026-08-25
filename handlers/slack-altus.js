@@ -463,6 +463,11 @@ async function routeToNimbus({ message, history, channel, threadTs, isDm, slackU
     logger.warn('slack-altus: NIMBUS_SLACK_WEBHOOK_URL not set — cannot route to nimbus');
     return;
   }
+  const altwireToken = process.env.ALTWIRE_WEBHOOK_TOKEN;
+  if (!altwireToken) {
+    logger.warn('slack-altus: ALTWIRE_WEBHOOK_TOKEN not set — cannot route to nimbus');
+    return;
+  }
 
   const channelCtx = getChannelContext(channel);
   const payload = {
@@ -481,7 +486,10 @@ async function routeToNimbus({ message, history, channel, threadTs, isDm, slackU
   try {
     const nimbusRes = await fetch(nimbusUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Altwire-Token': altwireToken,
+      },
       body: JSON.stringify(payload),
     });
     if (!nimbusRes.ok) {
@@ -869,14 +877,17 @@ export async function searchSlackMessages(query, limit = 20, channels = null) {
  * @param {number} postAtTs - Unix timestamp for scheduled delivery
  * @param {string|null} [emoji] - Optional lead emoji
  */
-export async function scheduleSlackMessage(channel, text, postAtTs, emoji = null) {
-  if (!slackApp) return { success: false, reason: 'slack_not_initialized' };
+export async function scheduleSlackMessage(channel, text, postAtTs, emoji = null, { client = slackApp?.client } = {}) {
+  if (!client) return { success: false, reason: 'slack_not_initialized' };
+  if (!Number.isInteger(postAtTs) || postAtTs <= Math.floor(Date.now() / 1_000)) {
+    return { success: false, reason: 'invalid_post_at' };
+  }
   try {
     const messageText = emoji ? `${emoji} ${text}` : text;
-    const result = await slackApp.client.chat.scheduleMessage({
+    const result = await client.chat.scheduleMessage({
       channel,
       text: messageText,
-      post_at: new Date(postAtTs * 1000).toISOString(),
+      post_at: postAtTs,
     });
     return { success: true, scheduled_message_id: result.scheduled_message_id, post_at: result.post_at };
   } catch (err) {
