@@ -176,8 +176,10 @@ describe('Agent memory cache — Property 5: round-trip', () => {
         const result = mem.read(agent, key);
         // The raw stored value should be a string (JSON.stringify'd)
         expect(typeof result.rows[0].value).toBe('string');
-        // And it should parse back to the original
-        expect(JSON.parse(result.rows[0].value)).toEqual(value);
+        // And it should parse back to the JSON-normalized value. JSON has no
+        // negative-zero representation, so comparing to the pre-serialized
+        // object makes valid `{ value: -0 }` cases fail nondeterministically.
+        expect(JSON.parse(result.rows[0].value)).toEqual(JSON.parse(JSON.stringify(value)));
       }),
       { numRuns: 100 }
     );
