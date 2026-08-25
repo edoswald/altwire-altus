@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/altus-db.js', () => ({
+  hasDbConfig: vi.fn(() => true),
   upsertContent: vi.fn(),
   logIngestRun: vi.fn(),
 }));
