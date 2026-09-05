@@ -9,6 +9,7 @@ import pool from '../lib/altus-db.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../logger.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,7 +131,9 @@ async function autoCategorizNote(noteText) {
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 10,
-      system: 'You are a music gear review classifier. Respond with exactly one word: pro, con, or observation.',
+      // The classifier system prompt is identical for every note — cached so
+      // the per-note request bills only the dynamic note text.
+      system: withCachedSystem('You are a music gear review classifier. Respond with exactly one word: pro, con, or observation.'),
       messages: [{ role: 'user', content: `Classify this review note about a music product: "${noteText}"` }],
     });
     const raw = response.content?.[0]?.text?.trim().toLowerCase();
