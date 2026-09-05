@@ -62,4 +62,56 @@ describe('synthesizer.js', () => {
     expect(call.system[call.system.length - 1].cache_control).toEqual({ type: 'ephemeral' });
     delete process.env.ANTHROPIC_API_KEY;
   });
+
+  it('synthesizeGallery skips the Anthropic call for galleries with no synthesizable material', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'should never be reached' }],
+    });
+    vi.doMock('@anthropic-ai/sdk', () => ({
+      default: class Anthropic {
+        constructor() { this.messages = { create: mockCreate }; }
+      },
+    }));
+    const { synthesizeGallery } = await import('../lib/synthesizer.js');
+
+    // Empty description + images with blank alt/caption → nothing to describe
+    const result = await synthesizeGallery({
+      title: 'Festival Photos',
+      description: '',
+      image_count: 40,
+      images: [{ alt: '', caption: '' }, {}, null],
+    });
+
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(result).toContain('Festival Photos');
+    expect(result).toContain('40');
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  describe('hasSynthesizableMaterial', () => {
+    it('returns true when the gallery description is present', async () => {
+      const { hasSynthesizableMaterial } = await import('../lib/synthesizer.js');
+      expect(hasSynthesizableMaterial({ description: 'A great show', images: [] })).toBe(true);
+    });
+
+    it('returns true when any image alt or caption is non-empty', async () => {
+      const { hasSynthesizableMaterial } = await import('../lib/synthesizer.js');
+      expect(hasSynthesizableMaterial({
+        description: '',
+        images: [{ alt: '', caption: '' }, { alt: 'Crowd at dusk', caption: '' }],
+      })).toBe(true);
+      expect(hasSynthesizableMaterial({
+        description: '   ',
+        images: [{ alt: '', caption: 'Opening night' }],
+      })).toBe(true);
+    });
+
+    it('returns false when there is no description and all image text is blank', async () => {
+      const { hasSynthesizableMaterial } = await import('../lib/synthesizer.js');
+      expect(hasSynthesizableMaterial({ description: '', images: [{ alt: '', caption: '' }] })).toBe(false);
+      expect(hasSynthesizableMaterial({ description: null, images: [] })).toBe(false);
+      expect(hasSynthesizableMaterial({ description: '', images: [{ alt: '  ', caption: '' }] })).toBe(false);
+    });
+  });
 });

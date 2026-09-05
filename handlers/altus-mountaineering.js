@@ -460,7 +460,9 @@ export async function scoreClimbIteration({ climb_name, iteration_number }) {
       model: SCORING_MODEL,
       max_tokens: 2048,
       output_config: { effort: 'high' },
-      system: scoringPrompt.system,
+      // The scoring system text is identical across iterations — cached so
+      // batch scoring is billed at the cache-read rate after the first write.
+      system: withCachedSystem(scoringPrompt.system),
       messages: [{ role: 'user', content: scoringPrompt.user }],
     },
   }];

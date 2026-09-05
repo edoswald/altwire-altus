@@ -2,6 +2,10 @@
  * search_altwire_archive handler.
  * Embeds the query via Voyage AI, runs cosine similarity search over altus_content.
  * Results are recency-weighted and re-sorted before returning.
+ *
+ * Callers that fan out over many queries (e.g. topic discovery) may pass:
+ *   embedding      — a precomputed query vector (skips the per-call Voyage call)
+ *   totalSearched  — a precomputed archive count (skips the per-call COUNT(*))
  */
 
 import pool, { hasDbConfig } from '../lib/altus-db.js';
@@ -10,20 +14,24 @@ import { applyRecencyWeight } from '../lib/recency.js';
 import { logger } from '../logger.js';
 
 /**
- * @param {{ query: string, limit: number, content_type: 'post'|'gallery'|'all' }} params
+ * @param {{ query: string, limit: number, content_type: 'post'|'gallery'|'all', embedding?: number[], totalSearched?: number }} params
  * @returns {Promise<object>} results or { error: string }
  */
-export async function searchAltwireArchive({ query, limit, content_type }) {
+export async function searchAltwireArchive({ query, limit, content_type, embedding: precomputedEmbedding, totalSearched }) {
   if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
 
-  const embedding = await embedQuery(query);
-  if (embedding?.error) {
-    return { error: embedding.error };
+  // Embed here only when the caller did not supply a precomputed vector.
+  let vector = precomputedEmbedding;
+  if (!Array.isArray(vector)) {
+    vector = await embedQuery(query);
+    if (vector?.error) {
+      return { error: vector.error };
+    }
   }
 
-  const embeddingStr = `[${embedding.join(',')}]`;
+  const embeddingStr = `[${vector.join(',')}]`;
   const typeFilter = content_type === 'all' ? '' : 'AND content_type = $3';
 
   // Over-fetch so recency re-sort can promote recent candidates
@@ -46,7 +54,11 @@ export async function searchAltwireArchive({ query, limit, content_type }) {
   try {
     const [searchResult, countResult] = await Promise.all([
       pool.query(sql, params),
-      pool.query('SELECT COUNT(*) FROM altus_content WHERE embedding IS NOT NULL'),
+      // Reuse the caller's archive count when provided — avoids a redundant
+      // full-table COUNT(*) on every fan-out search.
+      totalSearched != null
+        ? { rows: [{ count: totalSearched }] }
+        : pool.query('SELECT COUNT(*) FROM altus_content WHERE embedding IS NOT NULL'),
     ]);
 
     // Apply recency weighting, re-sort, trim to requested limit

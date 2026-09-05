@@ -9,6 +9,7 @@ import { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getOpportunityZoneQueries } from './altwire-gsc-client.js';
 import { searchAltwireArchive } from './altus-search.js';
+import { embedQueries } from '../lib/voyage.js';
 import { synthesizePitches } from '../lib/synthesizer.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import { loadEditorialContext, loadTopicTrends, scoreEditorialAffinity } from '../lib/editorial-helpers.js';
@@ -127,12 +128,34 @@ export async function getStoryOpportunities({ days = 28, refresh = false } = {})
   }
 
   const scored = [];
-  // Batch archive searches in chunks of 10 to avoid overwhelming the search service
+  // One full-corpus count for the whole run instead of one per archive search.
+  let totalSearched = null;
+  try {
+    const countResult = await pool.query('SELECT COUNT(*) FROM altus_content WHERE embedding IS NOT NULL');
+    const parsedCount = parseInt(countResult.rows[0]?.count, 10);
+    if (Number.isFinite(parsedCount)) totalSearched = parsedCount;
+  } catch { /* non-fatal — each search falls back to its own count */ }
+
+  // Batch archive searches in chunks of 10 to avoid overwhelming the search
+  // service; queries within a chunk are embedded in a single Voyage call
+  // instead of one call per query.
   const CHUNK_SIZE = 10;
   for (let i = 0; i < gscResult.rows.length; i += CHUNK_SIZE) {
     const chunk = gscResult.rows.slice(i, i + CHUNK_SIZE);
+    const queries = chunk.map((row) => row.keys[0]);
+    let embeddings = null;
+    try {
+      const embedded = await embedQueries(queries);
+      if (Array.isArray(embedded)) embeddings = embedded;
+    } catch { /* fall back to per-query embedding inside the search */ }
     const archiveResults = await Promise.all(
-      chunk.map((row) => searchAltwireArchive({ query: row.keys[0], limit: 3, content_type: 'all' }))
+      chunk.map((row, j) => searchAltwireArchive({
+        query: queries[j],
+        limit: 3,
+        content_type: 'all',
+        embedding: Array.isArray(embeddings?.[j]) ? embeddings[j] : undefined,
+        totalSearched,
+      }))
     );
     for (let j = 0; j < chunk.length; j++) {
       const row = chunk[j];
