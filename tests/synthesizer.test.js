@@ -57,6 +57,9 @@ describe('synthesizer.js', () => {
     const call = mockCreate.mock.calls[0][0];
     expect(call.model).toBe('claude-haiku-4-5-20251001');
     expect(call.max_tokens).toBe(150);
+    // System prompt is cached via cache_control on the last block
+    expect(Array.isArray(call.system)).toBe(true);
+    expect(call.system[call.system.length - 1].cache_control).toEqual({ type: 'ephemeral' });
     delete process.env.ANTHROPIC_API_KEY;
   });
 });

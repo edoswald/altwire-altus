@@ -30,6 +30,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import pool, { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 import {
   getSearchPerformance,
   getNewsSearchPerformance,
@@ -166,10 +167,10 @@ async function analyze(prompt, schemaHint) {
       model: 'claude-sonnet-4-6',
       max_tokens: 3000,
       temperature: 0.3,
-      system: `You are an editorial SEO analyst for AltWire (music & lifestyle publication).
+      system: withCachedSystem(`You are an editorial SEO analyst for AltWire (music & lifestyle publication).
 You analyze 16 months of Google Search Console data and produce concise, actionable summaries.
 Output a single JSON object only — no markdown, no explanation outside the JSON.
-Be specific: cite actual queries, pages, impressions, positions, and trends.`,
+Be specific: cite actual queries, pages, impressions, positions, and trends.`),
       messages: [{ role: 'user', content: `${prompt}\n\nReturn only a JSON object matching: ${schemaHint}` }],
     });
     const text = response.content[0]?.type === 'text' ? response.content[0].text : '';

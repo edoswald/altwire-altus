@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_FILE = path.join(__dirname, '..', 'review-scores.json');
@@ -120,11 +121,12 @@ async function saveOutput(output) {
 // Per-review scoring
 // ---------------------------------------------------------------------------
 
-function buildReviewPrompt(review) {
-  const bodyText = review.raw_text.length > 6000
-    ? review.raw_text.slice(0, 6000) + '\n\n[...truncated for analysis...]'
-    : review.raw_text;
-
+/**
+ * Static, cacheable system prompt for review scoring. Identical for every
+ * review in a run, so Anthropic caches it after the first write and each
+ * later review only bills the dynamic user content.
+ */
+function buildReviewSystemPrompt() {
   const typeDescriptions = [
     'hardware  — physical music gear: instruments, amps, pedals, synths, drum machines, hardware samplers, etc.',
     'software  — DAWs, plugins, virtual instruments, mobile apps, desktop music software',
@@ -138,12 +140,6 @@ function buildReviewPrompt(review) {
   ].join('\n');
 
   return `You are analyzing an AltWire music publication review article. Read the full text carefully before responding.
-
-TITLE: ${review.title}
-WP CATEGORIES: ${(review.categories ?? []).join(', ')}
-
-REVIEW TEXT:
-${bodyText}
 
 ---
 
@@ -211,6 +207,22 @@ Return ONLY a valid JSON object, no markdown fences, no explanation outside the 
 }`;
 }
 
+/**
+ * Build the dynamic user message for review scoring — title, categories, and
+ * the (truncated) review body. Everything static lives in buildReviewSystemPrompt().
+ */
+function buildReviewPrompt(review) {
+  const bodyText = review.raw_text.length > 6000
+    ? review.raw_text.slice(0, 6000) + '\n\n[...truncated for analysis...]'
+    : review.raw_text;
+
+  return `TITLE: ${review.title}
+WP CATEGORIES: ${(review.categories ?? []).join(', ')}
+
+REVIEW TEXT:
+${bodyText}`;
+}
+
 function capArray(arr, max) {
   return Array.isArray(arr) ? arr.slice(0, max) : [];
 }
@@ -221,6 +233,9 @@ async function scoreReview(review) {
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 1500,
+    // Static instructions/schema — identical for every review in a run, so the
+    // first review writes it to cache and each subsequent one reads it back.
+    system: withCachedSystem(buildReviewSystemPrompt()),
     messages: [{ role: 'user', content: prompt }],
   });
 

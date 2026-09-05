@@ -34,6 +34,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import pool from '../lib/altus-db.js';
 import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 import {
   getTrafficSummary,
   getTopArticles,
@@ -362,7 +363,9 @@ async function llmAnalyze(prompt) {
     model: ANALYSIS_FALLBACK_MODEL,
     max_tokens: 4000,
     temperature: 0.3,
-    system: ANALYSIS_SYSTEM_PROMPT,
+    // ANALYSIS_SYSTEM_PROMPT is stable across every 18-month analysis call —
+    // wrapped so repeated sections of this seeded run hit the cache.
+    system: withCachedSystem(ANALYSIS_SYSTEM_PROMPT),
     messages: [{ role: 'user', content: prompt }],
   });
   return response.content[0]?.type === 'text' ? response.content[0].text : '';
@@ -911,11 +914,11 @@ async function sonnetCritic(prompt, context) {
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     temperature: 0.4,
-    system: `You are an editorial strategy expert for AltWire, a music and lifestyle publication.
+    system: withCachedSystem(`You are an editorial strategy expert for AltWire, a music and lifestyle publication.
 You review draft analysis and refine it with deeper editorial judgment, content strategy thinking,
 and industry context. Output only a JSON object — no markdown, no explanation outside the JSON.
 The JSON must use the same schema as the draft provided. Improve the draft with sharper insights,
-more specific recommendations, and clearer editorial framing.`,
+more specific recommendations, and clearer editorial framing.`),
     messages: [{ role: 'user', content: prompt }],
   });
   return response.content[0].type === 'text' ? response.content[0].text : '';

@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 
 export const CLIMB_SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
@@ -315,7 +316,9 @@ async function _startClimbIterationCore(climb_name) {
     response = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 4096,
-      system: systemPrompt,
+      // Stable for the climb lifecycle — the same system prompt is sent for
+      // every proposal iteration, so cache it after the first write.
+      system: withCachedSystem(systemPrompt),
       messages: [{ role: 'user', content: userPrompt }],
     });
     const parsed = JSON.parse(response.content[0].text);
@@ -401,7 +404,9 @@ async function scoreClimbFallback(iter) {
   const response = await anthropic.messages.create({
     model: SCORING_FALLBACK_MODEL,
     max_tokens: 1024,
-    system: prompt.system,
+    // buildScoringPrompt's system text is identical for every fallback scoring
+    // call — cache it so repeat scores skip the full write cost.
+    system: withCachedSystem(prompt.system),
     messages: [{ role: 'user', content: prompt.user }],
   });
   await logAiUsage('altus_score_climb_fallback', response.model ?? SCORING_FALLBACK_MODEL, response.usage);
