@@ -45,10 +45,56 @@ describe('voyage.js', () => {
 
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(callBody.input_type).toBe('document');
-    expect(callBody.model).toBe('voyage-3-lite');
+    expect(callBody.model).toBe('voyage-4');
+    // Matryoshka models request the schema-compatible output dimension
+    expect(callBody.output_dimension).toBe(512);
 
     vi.unstubAllGlobals();
     delete process.env.VOYAGE_API_KEY;
+  });
+
+  it('embedDocuments omits output_dimension for fixed-dim legacy models', async () => {
+    process.env.VOYAGE_API_KEY = 'test-key';
+    process.env.VOYAGE_MODEL = 'voyage-3-lite';
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ embedding: Array(512).fill(0.1) }] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { embedDocuments } = await import('../lib/voyage.js');
+    await embedDocuments(['text']);
+
+    const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(callBody.model).toBe('voyage-3-lite');
+    expect(callBody.output_dimension).toBeUndefined();
+
+    vi.unstubAllGlobals();
+    delete process.env.VOYAGE_API_KEY;
+    delete process.env.VOYAGE_MODEL;
+  });
+
+  it('embedDocuments honors VOYAGE_MODEL and VOYAGE_EMBEDDING_DIMENSION overrides', async () => {
+    process.env.VOYAGE_API_KEY = 'test-key';
+    process.env.VOYAGE_MODEL = 'voyage-4-lite';
+    process.env.VOYAGE_EMBEDDING_DIMENSION = '256';
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ embedding: Array(256).fill(0.1) }] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { embedDocuments } = await import('../lib/voyage.js');
+    await embedDocuments(['text']);
+
+    const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(callBody.model).toBe('voyage-4-lite');
+    expect(callBody.output_dimension).toBe(256);
+
+    vi.unstubAllGlobals();
+    delete process.env.VOYAGE_API_KEY;
+    delete process.env.VOYAGE_MODEL;
+    delete process.env.VOYAGE_EMBEDDING_DIMENSION;
   });
 
   it('embedQuery calls Voyage API with query input_type', async () => {
@@ -88,6 +134,35 @@ describe('voyage.js', () => {
 
     expect(result).toHaveProperty('error');
     expect(result.error).toMatch(/rate limit/i);
+
+    vi.unstubAllGlobals();
+    delete process.env.VOYAGE_API_KEY;
+  });
+
+  it('embedQueries batch-embeds query strings with query input_type', async () => {
+    process.env.VOYAGE_API_KEY = 'test-key';
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { embedding: Array(512).fill(0.3) },
+          { embedding: Array(512).fill(0.4) },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { embedQueries } = await import('../lib/voyage.js');
+    const result = await embedQueries(['query one', 'query two']);
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(2);
+
+    const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(callBody.input_type).toBe('query');
+    expect(callBody.input).toEqual(['query one', 'query two']);
+    expect(callBody.model).toBe('voyage-4');
+    expect(callBody.output_dimension).toBe(512);
 
     vi.unstubAllGlobals();
     delete process.env.VOYAGE_API_KEY;

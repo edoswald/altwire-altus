@@ -5,12 +5,16 @@
  * No database access — callers pass data in and receive results back.
  * Adapted for Altus from cirrusly-nimbus/batch-client.js.
  *
- * Exports: submitBatch, collectBatch, logBatchUsage, isRefusal, extractText
+ * Exports: submitBatch, collectBatch, waitForBatch, logBatchUsage, isRefusal, extractText
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from './logger.js';
 import { logAiUsage } from './lib/ai-cost-tracker.js';
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export function isRefusal(item) {
   return item?.result?.type === 'succeeded'
@@ -70,8 +74,31 @@ export async function collectBatch(batchId) {
 }
 
 /**
+ * Poll a batch until it finishes (used by flows that need the results inline,
+ * e.g. ingestion pipelines). Batch jobs typically complete within ~1 hour.
+ *
+ * @param {string} batchId
+ * @param {object} [opts]
+ * @param {number} [opts.intervalMs=30000] - poll interval
+ * @param {number} [opts.timeoutMs=6h]     - overall deadline
+ * @returns {Promise<Array<{ custom_id: string, result: object }>>}
+ * @throws {Error} on API failure or if the batch does not finish in time
+ */
+export async function waitForBatch(batchId, { intervalMs = 30000, timeoutMs = 6 * 60 * 60 * 1000 } = {}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const results = await collectBatch(batchId);
+    if (results !== null) return results;
+    await sleep(intervalMs);
+  }
+  throw new Error(`Batch ${batchId} did not finish within ${Math.floor(timeoutMs / 1000)}s`);
+}
+
+/**
  * Log aggregated batch usage to ai_usage.
- * Sums input_tokens and output_tokens across all succeeded results.
+ * Sums input_tokens, output_tokens, and cache read/creation tokens across all
+ * succeeded results (batch params ship cached system prompts, so results carry
+ * cache usage that must not be dropped from the cost estimate).
  *
  * @param {string} batchId
  * @param {Array<{ custom_id: string, result: object }>} results
@@ -82,6 +109,8 @@ export async function logBatchUsage(batchId, results, toolName) {
 
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let model = null;
 
   for (const item of results) {
@@ -90,12 +119,24 @@ export async function logBatchUsage(batchId, results, toolName) {
     if (!model && msg?.model) model = msg.model;
     inputTokens += msg?.usage?.input_tokens ?? 0;
     outputTokens += msg?.usage?.output_tokens ?? 0;
+    cacheReadTokens += msg?.usage?.cache_read_input_tokens ?? 0;
+    cacheCreationTokens += msg?.usage?.cache_creation_input_tokens ?? 0;
   }
 
   if (!model) return;
 
   try {
-    await logAiUsage(toolName, model, { input_tokens: inputTokens, output_tokens: outputTokens }, { isBatch: true });
+    await logAiUsage(
+      toolName,
+      model,
+      {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
+      },
+      { isBatch: true },
+    );
   } catch (err) {
     logger.error('logBatchUsage: failed to log AI usage', { batchId, error: err.message });
   }

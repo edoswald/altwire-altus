@@ -80,6 +80,35 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_APP_PASSWORD;
   });
 
+  it('fetchPosts adds after + modified_after when afterDate is provided', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_USER = 'admin';
+    process.env.ALTWIRE_WP_APP_PASSWORD = 'pass';
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => '1' },
+      json: async () => [{
+        id: 1, slug: 'post', link: 'https://altwire.net/post',
+        date: '2024-01-01T00:00:00', title: { rendered: 'Post' },
+        content: { rendered: '<p>Content</p>' }, excerpt: { rendered: '<p>Excerpt</p>' },
+        categories: [], tags: [],
+      }],
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { fetchPosts } = await import('../lib/wp-client.js');
+    await fetchPosts({ categoryCache: new Map(), tagCache: new Map() }, '2024-01-01T00:00:00.000Z');
+
+    const url = mockFetch.mock.calls[0][0];
+    expect(url).toContain('after=2024-01-01T00%3A00%3A00.000Z');
+    expect(url).toContain('modified_after=2024-01-01T00%3A00%3A00.000Z');
+
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_USER;
+    delete process.env.ALTWIRE_WP_APP_PASSWORD;
+  });
+
   it('fetchGalleries paginates until response shorter than per_page', async () => {
     process.env.ALTWIRE_WP_URL = 'https://altwire.net';
     process.env.ALTWIRE_WP_USER = 'admin';

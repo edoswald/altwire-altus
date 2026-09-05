@@ -5,6 +5,7 @@ import { markdownToHtml } from '../lib/markdown.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
+import { withCachedSystem } from '../lib/anthropic-cache.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 
 const MODEL_OPUS = 'claude-opus-4-8';
@@ -101,7 +102,9 @@ export async function sendAltusWeeklyBrief() {
         model: WEEKLY_MODEL,
         max_tokens: 4000,
         output_config: { effort: 'high' },
-        system: prompt.system,
+        // Cached so repeat weekly submissions (and the shared identity prefix)
+        // are billed at the cache-read rate.
+        system: withCachedSystem(prompt.system),
         messages: [{ role: 'user', content: prompt.prompt }],
       },
     }]);

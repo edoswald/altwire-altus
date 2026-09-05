@@ -742,13 +742,15 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
       description: 'Re-runs the AltWire content ingestion pipeline. Pulls all published posts and galleries from WordPress, regenerates embeddings, and upserts to the archive. Use this after publishing new content or to refresh the index. Takes 3-5 minutes to complete.',
       inputSchema: {
         mode: z.enum(['full', 'recent']).default('recent')
-          .describe('full = all 1500+ documents; recent = posts published in the last 30 days only'),
+          .describe('full = all 1500+ documents; recent = posts published or modified in the last 30 days, plus galleries new to the archive'),
         dry_run: z.boolean().default(false)
           .describe('If true, fetches and processes content but does not write to the database'),
+        batch_synthesis: z.boolean().default(false)
+          .describe('If true, routes gallery description synthesis through the Anthropic Batch API (50% discount; results polled inline so the run takes longer but costs less)'),
       },
     },
-    async ({ mode, dry_run }) => {
-      const result = await reIngestHandler({ mode, dry_run });
+    async ({ mode, dry_run, batch_synthesis }) => {
+      const result = await reIngestHandler({ mode, dry_run, batch_synthesis });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

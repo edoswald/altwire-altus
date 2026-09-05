@@ -1,16 +1,21 @@
 /**
  * AltWire content ingestion script.
  *
- * Run once (or on-demand) to populate altus_content with embeddings:
- *   node scripts/ingest.js
+ * Runs on demand or via the daily cron (lib/ingest-cron.js) to populate
+ * altus_content with embeddings.
+ *
+ *   node scripts/ingest.js                 # incremental: since the last successful run
+ *   node scripts/ingest.js --full          # re-embed the entire corpus
+ *   node scripts/ingest.js --recent        # last 30 days of posts + new galleries
+ *   node scripts/ingest.js --after=2026-09-01T00:00:00.000Z   # custom window
+ *   node scripts/ingest.js --batch-synthesis   # route gallery synthesis through Batch API
  *
  * Re-runs are safe — ON CONFLICT DO UPDATE ensures idempotency.
  */
 
-import { initSchema, upsertContent, logIngestRun } from '../lib/altus-db.js';
+import { initSchema, logIngestRun, getLastSuccessfulIngestRun } from '../lib/altus-db.js';
 import { fetchTaxonomies, fetchPosts, fetchGalleries } from '../lib/wp-client.js';
-import { embedDocuments } from '../lib/voyage.js';
-import { synthesizeGallery } from '../lib/synthesizer.js';
+import { embedAndUpsertPosts, embedAndUpsertGalleries, filterGalleriesForWindow } from '../lib/ingest-pipeline.js';
 import { logger } from '../logger.js';
 
 const required = ['DATABASE_URL', 'ALTWIRE_WP_URL', 'ALTWIRE_WP_USER', 'ALTWIRE_WP_APP_PASSWORD', 'VOYAGE_API_KEY', 'ANTHROPIC_API_KEY'];
@@ -21,118 +26,84 @@ for (const key of required) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// CLI parsing
+// ---------------------------------------------------------------------------
+
+const args = process.argv.slice(2);
+const mode = args.includes('--full') ? 'full' : (args.includes('--recent') ? 'recent' : 'incremental');
+const afterArg = args.find((a) => a.startsWith('--after='))?.slice('--after='.length) ?? null;
+const batchSynthesis = args.includes('--batch-synthesis');
+
+function isoDaysAgo(days) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * Resolve the `after` window: explicit --after wins, then --full (all), then
+ * --recent (30d), then incremental (last successful run, falling back to 30d).
+ */
+async function resolveAfterDate() {
+  if (afterArg) return afterArg;
+  if (mode === 'full') return null;
+  if (mode === 'recent') return isoDaysAgo(30);
+
+  const lastRun = await getLastSuccessfulIngestRun();
+  if (lastRun) {
+    logger.info('Incremental run — window since last successful ingest', { since: lastRun });
+    return lastRun;
+  }
+  logger.warn('Incremental run but no previous successful ingest found — falling back to last 30 days');
+  return isoDaysAgo(30);
+}
+
 const startTime = Date.now();
 let postsIngested = 0;
 let galleriesIngested = 0;
+let galleriesSkipped = 0;
 let errors = 0;
 
-async function ingestPosts(caches) {
-  logger.info('Fetching posts from WordPress...');
-  const posts = await fetchPosts(caches);
-  logger.info(`Fetched ${posts.length} posts — embedding in batches of 50...`);
-
-  // Build embed texts
-  const embedTexts = posts.map((p) => {
-    const cats = p.categories.join(', ');
-    const tags = p.tags.join(', ');
-    return `${p.title}\n\n${cats}\n${tags}\n\n${p.raw_text}`.slice(0, 3000);
-  });
-
-  const embeddings = await embedDocuments(embedTexts);
-  if (embeddings?.error) {
-    logger.error('Post embedding failed', { error: embeddings.error });
-    errors += posts.length;
-    return;
-  }
-
-  for (let i = 0; i < posts.length; i++) {
-    try {
-      await upsertContent({ ...posts[i], embedding: embeddings[i] });
-      postsIngested++;
-    } catch (err) {
-      logger.warn('Post upsert failed', { wp_id: posts[i].wp_id, error: err.message });
-      errors++;
-    }
-  }
-  logger.info(`Posts ingested: ${postsIngested}`);
-}
-
-async function ingestGalleries() {
-  logger.info('Fetching galleries from WordPress...');
-  const galleries = await fetchGalleries();
-  logger.info(`Fetched ${galleries.length} galleries — synthesizing...`);
-
-  // Synthesize all galleries first (Claude calls), then batch-embed together
-  const synthesized = [];
-  for (const gallery of galleries) {
-    try {
-      const synthesis = await synthesizeGallery(gallery);
-      const tags = (gallery.tags ?? []).join(', ');
-      const embedText = `${gallery.title}\n\nPhoto gallery\n${tags}\n\n${synthesis}`.slice(0, 8000);
-      synthesized.push({ gallery, synthesis, embedText });
-    } catch (err) {
-      logger.warn('Gallery synthesis failed', { id: gallery.id, error: err.message });
-      errors++;
-    }
-  }
-
-  logger.info(`Synthesized ${synthesized.length} galleries — embedding in batches...`);
-  const embedTexts = synthesized.map((s) => s.embedText);
-  const embeddings = await embedDocuments(embedTexts);
-  if (embeddings?.error) {
-    logger.error('Gallery embedding failed', { error: embeddings.error });
-    errors += synthesized.length;
-    return;
-  }
-
-  for (let i = 0; i < synthesized.length; i++) {
-    const { gallery, synthesis } = synthesized[i];
-    try {
-      await upsertContent({
-        wp_id: gallery.id,
-        content_type: 'gallery',
-        title: gallery.title,
-        slug: gallery.slug ?? null,
-        url: gallery.url ?? null,
-        published_at: null,
-        author: null,
-        categories: [],
-        tags: gallery.tags ?? [],
-        raw_text: synthesis,
-        embedding: embeddings[i],
-      });
-      galleriesIngested++;
-    } catch (err) {
-      logger.warn('Gallery upsert failed', { id: gallery.id, error: err.message });
-      errors++;
-    }
-  }
-  logger.info(`Galleries ingested: ${galleriesIngested}`);
-}
-
 async function main() {
-  logger.info('Starting Altus ingestion run...');
+  const afterDate = await resolveAfterDate();
+  logger.info('Starting Altus ingestion run', { mode, afterDate, batchSynthesis });
 
   await initSchema();
 
   const caches = await fetchTaxonomies();
 
-  await ingestPosts(caches);
-  await ingestGalleries();
+  // --- Posts --------------------------------------------------------------
+  logger.info('Fetching posts from WordPress...');
+  const posts = await fetchPosts(caches, afterDate);
+  logger.info(`Fetched ${posts.length} posts — embedding...`);
+
+  const postResult = await embedAndUpsertPosts(posts);
+  postsIngested = postResult.count;
+  errors += postResult.errors;
+
+  // --- Galleries -----------------------------------------------------------
+  logger.info('Fetching galleries from WordPress...');
+  const allGalleries = await fetchGalleries();
+  const galleries = await filterGalleriesForWindow(allGalleries, afterDate);
+  logger.info(`Fetched ${galleries.length} galleries to process (of ${allGalleries.length} total)`);
+
+  const galleryResult = await embedAndUpsertGalleries(galleries, { useBatch: batchSynthesis });
+  galleriesIngested = galleryResult.count;
+  galleriesSkipped = galleryResult.skipped ?? 0;
+  errors += galleryResult.errors;
 
   const durationMs = Date.now() - startTime;
   await logIngestRun({
-    mode: 'full',
+    mode,
     postsIngested,
     galleriesIngested,
     errors,
     durationMs,
-    notes: `Ingestion complete. Posts: ${postsIngested}, Galleries: ${galleriesIngested}, Errors: ${errors}`,
+    notes: galleriesSkipped > 0 ? `Galleries skipped (no material): ${galleriesSkipped}` : `Ingestion complete. Posts: ${postsIngested}, Galleries: ${galleriesIngested}, Errors: ${errors}`,
   });
 
   console.log(`\nIngestion complete in ${(durationMs / 1000).toFixed(1)}s`);
   console.log(`  Posts:     ${postsIngested}`);
-  console.log(`  Galleries: ${galleriesIngested}`);
+  console.log(`  Galleries: ${galleriesIngested} (${galleriesSkipped} skipped — no synthesizable material)`);
   console.log(`  Errors:    ${errors}`);
   process.exit(errors > 0 ? 1 : 0);
 }
