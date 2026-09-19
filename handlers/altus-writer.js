@@ -8,13 +8,14 @@
  */
 
 import pool from '../lib/altus-db.js';
-import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import { readAgentMemory } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { generate } from '../lib/writer-client.js';
 import { searchAltwireArchive } from './altus-search.js';
 import { buildAuthHeader } from '../lib/wp-client.js';
 import { markdownToHtml } from '../lib/markdown.js';
 import { getDerekAuthorProfile } from '../hal-harness.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 
 // agent_memory namespace for Hal-scoped editorial intelligence (matches the
 // analytics seed keys under hal:altwire:*).
@@ -826,7 +827,12 @@ Return a JSON object: { "directives": ["...", "..."], "rationale": "one sentence
   };
 
   if (!dry_run) {
-    await writeAgentMemory(AGENT_HAL, WRITER_DIRECTIVES_KEY, JSON.stringify(payload));
+    await publishAltwireHalMemory({
+      key: WRITER_DIRECTIVES_KEY,
+      value: payload,
+      memoryType: 'editorial_directives',
+      sourceId: 'altus-writer-directives',
+    });
     logger.info('adjustWriterSystemPrompt: directives updated', { count: directives.length, signals: signals.length });
   }
 

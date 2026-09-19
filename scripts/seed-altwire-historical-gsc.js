@@ -29,7 +29,8 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import pool, { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import pool, { readAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import {
   getSearchPerformance,
@@ -367,7 +368,12 @@ async function main() {
     [KEYS.MONTHLY_BREAKDOWN, JSON.stringify({ months: monthly })],
   ];
   const results = await Promise.allSettled(
-    writes.map(([key, value]) => writeAgentMemory(AGENT, key, value))
+    writes.map(([key, value]) => publishAltwireHalMemory({
+      key,
+      value,
+      memoryType: 'editorial_analytics',
+      sourceId: 'seed-historical-gsc',
+    }))
   );
   const failures = results
     .map((r, i) => ({ key: writes[i][0], status: r.status, reason: r.reason?.message ?? r.value?.error ?? null }))
@@ -381,11 +387,12 @@ async function main() {
 
   // Only mark LAST_REFRESHED once all data keys have been written successfully —
   // otherwise a partial-write would skip retries for 30 days (see shouldRefresh).
-  await writeAgentMemory(
-    AGENT,
-    KEYS.LAST_REFRESHED,
-    JSON.stringify({ timestamp: new Date().toISOString(), startDate: startDateStr, endDate: endDateStr })
-  );
+  await publishAltwireHalMemory({
+    key: KEYS.LAST_REFRESHED,
+    value: { timestamp: new Date().toISOString(), startDate: startDateStr, endDate: endDateStr },
+    memoryType: 'editorial_analytics',
+    sourceId: 'seed-historical-gsc',
+  });
 
   log('Seed complete', {
     summary: !!summary, top_queries: !!topQueries, top_pages: !!topPages,

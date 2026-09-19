@@ -5,7 +5,12 @@ vi.mock('../lib/altus-db.js', () => ({
   hasDbConfig: () => Boolean(process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL),
 }));
 
+vi.mock('../lib/altus-hal-memory-publisher.js', () => ({
+  publishAltwireHalMemory: vi.fn(),
+}));
+
 import pool from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 import {
   isAllowedDocumentKey,
   listDocuments,
@@ -24,7 +29,7 @@ describe('Altus document helper parity', () => {
 
   it('allows editorial workspace keys but excludes analytics payload keys', () => {
     expect(isAllowedDocumentKey('hal:altwire:editorial_context')).toBe(true);
-    expect(isAllowedDocumentKey('reflection:2026-06-04')).toBe(true);
+    expect(isAllowedDocumentKey('reflection:2026-06-04')).toBe(false);
     expect(isAllowedDocumentKey('hal:altwire:analytics:traffic_summary')).toBe(false);
     expect(isAllowedDocumentKey('hal:soul')).toBe(false);
   });
@@ -50,5 +55,23 @@ describe('Altus document helper parity', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('not_found');
+  });
+
+  it('routes editable AltWire documents through the governed publisher', async () => {
+    pool.query.mockResolvedValueOnce({ rows: [{ key: 'hal:altwire:headline_guidelines' }] });
+    publishAltwireHalMemory.mockResolvedValueOnce({
+      status: 'updated',
+      row: { updatedAt: '2026-09-19T00:00:00.000Z' },
+    });
+
+    const result = await saveDocument('hal:altwire:headline_guidelines', 'Keep headlines sharp');
+
+    expect(result).toMatchObject({ success: true, status: 'updated' });
+    expect(publishAltwireHalMemory).toHaveBeenCalledWith({
+      key: 'hal:altwire:headline_guidelines',
+      value: 'Keep headlines sharp',
+      memoryType: 'editorial_context',
+      sourceId: 'altus-documents',
+    });
   });
 });

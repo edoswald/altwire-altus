@@ -17,7 +17,8 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { pool } from '../lib/altus-db.js';
-import { getContentIdeas, listTrackedArticles } from '../handlers/altus-editorial-tools.js';
+import { getContentIdeas, listTrackedArticles, trackArticle } from '../handlers/altus-editorial-tools.js';
+import { writeAgentMemory } from '../lib/altus-db.js';
 
 describe('altus editorial tools list metadata', () => {
   beforeEach(() => {
@@ -52,5 +53,21 @@ describe('altus editorial tools list metadata', () => {
 
     expect(result.ideas).toHaveLength(1);
     expect(result.total).toBe(7);
+  });
+
+  it('stores new editorial tracking state under the Altus agent', async () => {
+    writeAgentMemory.mockResolvedValueOnce({ success: true });
+
+    await trackArticle({
+      url: 'https://altwire.net/reviews/test-camera',
+      title: 'Test Camera',
+      category: 'reviews',
+    });
+
+    expect(writeAgentMemory).toHaveBeenCalledWith(
+      'altus',
+      'altwire:article:reviews/test-camera',
+      expect.stringContaining('Test Camera'),
+    );
   });
 });

@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { poolQueryMock, readAgentMemoryMock, writeAgentMemoryMock } = vi.hoisted(() => ({
+const { poolQueryMock, appendPrimaryReflectionWinMock } = vi.hoisted(() => ({
   poolQueryMock: vi.fn(),
-  readAgentMemoryMock: vi.fn(),
-  writeAgentMemoryMock: vi.fn(),
+  appendPrimaryReflectionWinMock: vi.fn(),
 }));
 
 vi.mock('../lib/altus-db.js', () => ({
@@ -11,8 +10,10 @@ vi.mock('../lib/altus-db.js', () => ({
     query: poolQueryMock,
     connect: vi.fn(),
   },
-  readAgentMemory: (...args) => readAgentMemoryMock(...args),
-  writeAgentMemory: (...args) => writeAgentMemoryMock(...args),
+}));
+
+vi.mock('../lib/altus-primary-reflection-memory.js', () => ({
+  appendPrimaryReflectionWin: (...args) => appendPrimaryReflectionWinMock(...args),
 }));
 
 vi.mock('../logger.js', () => ({
@@ -52,8 +53,7 @@ describe('Altus action-item parity module', () => {
   });
 
   it('records a win when a concrete action item is completed', async () => {
-    readAgentMemoryMock.mockResolvedValue({ success: true, value: '[]' });
-    writeAgentMemoryMock.mockResolvedValue({ success: true });
+    appendPrimaryReflectionWinMock.mockResolvedValue({ success: true, status: 'created' });
     pool.query.mockImplementation(async (sql) => {
       if (String(sql).startsWith('SELECT')) {
         return {
@@ -85,10 +85,9 @@ describe('Altus action-item parity module', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(writeAgentMemoryMock).toHaveBeenCalledWith(
-      'hal',
-      'reflection:wins',
-      expect.stringContaining('Fix artist page SEO'),
-    );
+    expect(appendPrimaryReflectionWinMock).toHaveBeenCalledWith(expect.objectContaining({
+      winText: expect.stringContaining('Fix artist page SEO'),
+      maxItems: 25,
+    }));
   });
 });

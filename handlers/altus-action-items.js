@@ -1,5 +1,6 @@
-import pool, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
+import { appendPrimaryReflectionWin } from '../lib/altus-primary-reflection-memory.js';
 
 const MAX_WINS = 25;
 
@@ -32,21 +33,10 @@ async function appendActionItemWin(item) {
   const winText = formatActionItemWin(item);
   if (!winText) return;
 
-  const existing = await readAgentMemory('hal', 'reflection:wins').catch(() => null);
-  let current = [];
-
-  if (existing?.success && existing.value) {
-    try {
-      current = JSON.parse(existing.value);
-    } catch {
-      current = [];
-    }
+  const result = await appendPrimaryReflectionWin({ winText, maxItems: MAX_WINS });
+  if (!result.success) {
+    logger.warn('altus-action-items: skipped private reflection win', { exit_reason: result.exit_reason });
   }
-
-  if (!Array.isArray(current)) current = [];
-
-  const updated = [...current, winText].slice(-MAX_WINS);
-  await writeAgentMemory('hal', 'reflection:wins', JSON.stringify(updated));
 }
 
 export async function initActionItemsSchema() {

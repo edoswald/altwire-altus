@@ -1,11 +1,8 @@
 import pool, { hasDbConfig } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 
 export const WHITELISTED_PREFIXES = [
-  'reflection:',
-  'hal:research:',
-  'metrics:',
-  'hal:digest_template',
   'hal:altwire:',
 ];
 
@@ -137,18 +134,28 @@ export async function saveDocument(key, value) {
 
   try {
     const { rows } = await pool.query(
-      `UPDATE agent_memory
-          SET value = $1, updated_at = NOW()
-        WHERE agent = 'hal' AND key = $2
-        RETURNING updated_at`,
-      [value, key],
+      `SELECT key
+         FROM agent_memory
+        WHERE agent = 'hal' AND key = $1`,
+      [key],
     );
 
     if (rows.length === 0) {
       return { success: false, error: 'not_found' };
     }
 
-    return { success: true, key, updated_at: rows[0].updated_at };
+    const result = await publishAltwireHalMemory({
+      key,
+      value,
+      memoryType: 'editorial_context',
+      sourceId: 'altus-documents',
+    });
+    return {
+      success: result.status === 'created' || result.status === 'updated',
+      key,
+      status: result.status,
+      updated_at: result.row?.updatedAt ?? null,
+    };
   } catch (err) {
     logger.error('altus-documents: save failed', { error: err.message, key });
     throw err;

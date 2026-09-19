@@ -25,7 +25,8 @@ import { spawn } from 'child_process';
 import { getLagAwareGscWindow, isoDateOffset } from '../lib/gsc-date-window.js';
 import { logger } from '../logger.js';
 import { normalizeTopArticles } from '../lib/matomo-utils.js';
-import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import { readAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 import { getTrafficSummary, getTopArticles, getSiteSearchKeywords } from './altwire-matomo-client.js';
 import {
   getSearchPerformance,
@@ -37,6 +38,15 @@ import { adjustWriterSystemPrompt } from './altus-writer.js';
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const LAST_REFRESHED_KEY = 'hal:altwire:analytics:last_refreshed';
 const GSC_LAST_REFRESHED_KEY = 'hal:altwire:gsc:last_refreshed';
+
+function publishReflectionMemory(key, value) {
+  return publishAltwireHalMemory({
+    key,
+    value,
+    memoryType: 'editorial_analytics',
+    sourceId: 'altus-reflection',
+  });
+}
 
 async function getLastRefreshTimestamp(key) {
   const result = await readAgentMemory('hal', key);
@@ -183,7 +193,7 @@ export async function runAltwireReflection() {
     const traffic7d = await getTrafficSummary('week', 'yesterday');
     const traffic30d = await getTrafficSummary('month', 'yesterday');
 
-    await writeAgentMemory('hal', 'hal:altwire:traffic_summary', JSON.stringify({
+    await publishReflectionMemory('hal:altwire:traffic_summary', JSON.stringify({
       period_7d: traffic7d,
       period_30d: traffic30d,
       generated_at: new Date().toISOString(),
@@ -197,7 +207,7 @@ export async function runAltwireReflection() {
       logger.warn('[altus-reflection] getTopArticles returned an error — skipping write to preserve prior data', { error: topArticles7dRaw.error });
     } else {
       const topArticles7d = normalizeTopArticles(topArticles7dRaw, wpBase);
-      await writeAgentMemory('hal', 'hal:altwire:top_articles', JSON.stringify({
+      await publishReflectionMemory('hal:altwire:top_articles', JSON.stringify({
         period: '7d',
         articles: topArticles7d,
         generated_at: new Date().toISOString(),
@@ -206,7 +216,7 @@ export async function runAltwireReflection() {
 
     // Site search keywords — what readers are searching for on AltWire
     const searchKeywords = await getSiteSearchKeywords('week', 'yesterday');
-    await writeAgentMemory('hal', 'hal:altwire:site_search_keywords', JSON.stringify({
+    await publishReflectionMemory('hal:altwire:site_search_keywords', JSON.stringify({
       keywords: searchKeywords,
       period: '7d',
       generated_at: new Date().toISOString(),
@@ -221,12 +231,12 @@ export async function runAltwireReflection() {
       getSearchPerformance(gscStart28, gscEnd, { rowLimit: 50 }),
       getSearchOpportunities(gscStart28, gscEnd),
     ]);
-    await writeAgentMemory('hal', 'hal:altwire:gsc:fresh_summary', JSON.stringify({
+    await publishReflectionMemory('hal:altwire:gsc:fresh_summary', JSON.stringify({
       period_7d: gscFresh7.status === 'fulfilled' ? gscFresh7.value : { error: gscFresh7.reason?.message },
       period_28d: gscFresh28.status === 'fulfilled' ? gscFresh28.value : { error: gscFresh28.reason?.message },
       generated_at: new Date().toISOString(),
     }));
-    await writeAgentMemory('hal', 'hal:altwire:gsc:fresh_opportunities', JSON.stringify({
+    await publishReflectionMemory('hal:altwire:gsc:fresh_opportunities', JSON.stringify({
       period_28d: gscOpps.status === 'fulfilled' ? gscOpps.value : { error: gscOpps.reason?.message },
       generated_at: new Date().toISOString(),
     }));
@@ -260,7 +270,7 @@ export async function runAltwireReflection() {
           : null,
       };
       if (combined.synthesis) {
-        await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
+        await publishReflectionMemory('hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
         await recordSynthesisFeatures(combined.synthesis, reflectionDate);
 
         // Proposer: turn synthesis content gaps + SEO opportunities into action items

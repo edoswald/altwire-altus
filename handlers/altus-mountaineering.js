@@ -9,6 +9,7 @@ import { logger } from '../logger.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 
 export const CLIMB_SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 const SCORING_MODEL = process.env.ANTHROPIC_CLIMB_SCORING_MODEL || 'claude-opus-4-8';
@@ -146,28 +147,28 @@ export async function seedMountaineeringClimbs() {
   if (!process.env.ALTWIRE_DATABASE_URL && !process.env.DATABASE_URL) return;
 
   // Step 1: hal:altwire:digest_format workspace key
-  const digestKeyExists = await pool.query(
-    `SELECT key FROM agent_memory WHERE agent = 'hal' AND key = 'hal:altwire:digest_format'`
-  );
-  if (digestKeyExists.rows.length === 0) {
-    await pool.query(
-      `INSERT INTO agent_memory (agent, key, value) VALUES ('hal', 'hal:altwire:digest_format', $1) ON CONFLICT (agent, key) DO NOTHING`,
-      [JSON.stringify(DIGEST_FORMAT_SEED)]
-    );
+  const digestSeed = await publishAltwireHalMemory({
+    key: 'hal:altwire:digest_format',
+    value: DIGEST_FORMAT_SEED,
+    memoryType: 'editorial_workspace',
+    sourceId: 'altus-mountaineering-seed',
+    ifAbsent: true,
+  });
+  if (digestSeed.status === 'created') {
     logger.info('[seed] Created workspace key: hal:altwire:digest_format');
   } else {
     logger.info('[seed] Skipped (exists): hal:altwire:digest_format');
   }
 
   // Step 2: hal:altwire:headline_guidelines workspace key
-  const headlineKeyExists = await pool.query(
-    `SELECT key FROM agent_memory WHERE agent = 'hal' AND key = 'hal:altwire:headline_guidelines'`
-  );
-  if (headlineKeyExists.rows.length === 0) {
-    await pool.query(
-      `INSERT INTO agent_memory (agent, key, value) VALUES ('hal', 'hal:altwire:headline_guidelines', $1) ON CONFLICT (agent, key) DO NOTHING`,
-      [JSON.stringify(HEADLINE_GUIDELINES_SEED)]
-    );
+  const headlineSeed = await publishAltwireHalMemory({
+    key: 'hal:altwire:headline_guidelines',
+    value: HEADLINE_GUIDELINES_SEED,
+    memoryType: 'editorial_workspace',
+    sourceId: 'altus-mountaineering-seed',
+    ifAbsent: true,
+  });
+  if (headlineSeed.status === 'created') {
     logger.info('[seed] Created workspace key: hal:altwire:headline_guidelines');
   } else {
     logger.info('[seed] Skipped (exists): hal:altwire:headline_guidelines');
@@ -339,7 +340,15 @@ async function _startClimbIterationCore(climb_name) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`UPDATE agent_memory SET value = $1 WHERE key = $2`, [proposed_change, climb.workspace_key]);
+    const write = await publishAltwireHalMemory({
+      key: climb.workspace_key,
+      value: proposed_change,
+      memoryType: 'editorial_workspace',
+      sourceId: 'altus-mountaineering-iteration',
+    }, { client });
+    if (write.status !== 'updated' && write.status !== 'created') {
+      throw new Error(`Workspace write was ${write.status}`);
+    }
     await client.query(
       `INSERT INTO altus_climb_iterations (climb_id, iteration_number, proposed_change, previous_workspace_value)
        VALUES ($1, $2, $3, $4)`,
@@ -690,12 +699,29 @@ export async function supervisorDecision({ climb_name, iteration_number, decisio
     return { success: false, exit_reason: 'already_decided', message: `Iteration ${iteration_number} already has a decision.` };
   }
 
-  await pool.query(`UPDATE altus_climb_iterations SET decision = $1, decided_at = NOW() WHERE id = $2`, [decision, iteration.id]);
-
   let workspace_restored = false;
-  if (decision === 'revert' || decision === 'plateau') {
-    await pool.query(`UPDATE agent_memory SET value = $1 WHERE key = $2`, [iteration.previous_workspace_value, climb.workspace_key]);
-    workspace_restored = true;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE altus_climb_iterations SET decision = $1, decided_at = NOW() WHERE id = $2`, [decision, iteration.id]);
+    if (decision === 'revert' || decision === 'plateau') {
+      const write = await publishAltwireHalMemory({
+        key: climb.workspace_key,
+        value: iteration.previous_workspace_value,
+        memoryType: 'editorial_workspace',
+        sourceId: 'altus-mountaineering-revert',
+      }, { client });
+      if (write.status !== 'updated' && write.status !== 'created') {
+        throw new Error(`Workspace restore was ${write.status}`);
+      }
+      workspace_restored = true;
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    return { success: false, exit_reason: 'decision_error', message: err.message };
+  } finally {
+    client.release();
   }
 
   logger.info(`altus-mountaineering: decision '${decision}' applied to climb '${climb_name}' iteration ${iteration_number}`);

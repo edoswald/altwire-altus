@@ -11,7 +11,7 @@
  */
 
 import altusDb from '../lib/altus-db.js';
-import { writeAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 const pool = altusDb; // default export is the pool
 import { getTopArticles } from '../handlers/altwire-matomo-client.js';
 
@@ -49,10 +49,12 @@ function computeTopArticles(pageData, posts, limit = 10) {
 }
 
 async function writeTopArticlesKey(key, articles) {
-  await writeAgentMemory('hal', key, JSON.stringify({
-    articles,
-    generated_at: new Date().toISOString(),
-  }));
+  await publishAltwireHalMemory({
+    key,
+    value: { articles, generated_at: new Date().toISOString() },
+    memoryType: 'editorial_analytics',
+    sourceId: 'seed-top-articles',
+  });
 }
 
 async function main() {
