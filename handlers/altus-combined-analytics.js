@@ -20,7 +20,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { normalizeTopArticles } from '../lib/matomo-utils.js';
 import { getLagAwareGscWindow } from '../lib/gsc-date-window.js';
 import { logger } from '../logger.js';
-import pool, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+import pool, { readAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 import { collectBatch, extractText, isRefusal, logBatchUsage, submitBatch } from '../batch-client.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import {
@@ -178,7 +179,12 @@ export async function recordSynthesisFeatures(synthesis, reflectionDate = new Da
       ...entries.filter((e) => e.date !== reflectionDate),
       { date: reflectionDate, urls, queries },
     ];
-    await writeAgentMemory('hal', RECENT_FEATURES_KEY, JSON.stringify(next));
+    await publishAltwireHalMemory({
+      key: RECENT_FEATURES_KEY,
+      value: JSON.stringify(next),
+      memoryType: 'editorial_analytics',
+      sourceId: 'altus-combined-analytics',
+    });
   } catch (err) {
     logger.warn('combined-analytics: failed to record synthesis features', { error: err.message });
   }
@@ -428,7 +434,12 @@ export async function collectSynthesisBatches() {
         : null,
       generated_at: new Date().toISOString(),
     };
-    await writeAgentMemory('hal', 'hal:altwire:combined_synthesis', JSON.stringify(combinedWithNews));
+    await publishAltwireHalMemory({
+      key: 'hal:altwire:combined_synthesis',
+      value: JSON.stringify(combinedWithNews),
+      memoryType: 'editorial_analytics',
+      sourceId: 'altus-combined-analytics',
+    });
 
     const { proposeEditorialActionItems } = await import('./altus-reflection.js');
     const reflectionDate = formatDateOnly(row.reflection_date);

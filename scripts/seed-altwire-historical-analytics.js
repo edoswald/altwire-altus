@@ -33,7 +33,8 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
 import pool from '../lib/altus-db.js';
-import { writeAgentMemory, readAgentMemory } from '../lib/altus-db.js';
+import { readAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import {
   getTrafficSummary,
@@ -1087,14 +1088,14 @@ async function main() {
   // Write all memory keys
   log('Writing memory keys to agent_memory...');
   const writePromises = [
-    writeAgentMemory(AGENT, MEMORY_KEYS.TRAFFIC_SUMMARY,     JSON.stringify(results.traffic_summary)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.TOP_ARTICLES,        JSON.stringify(results.top_articles_18m)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.ARTICLE_TYPE_PERF,   JSON.stringify(results.article_type_perf)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.TOPIC_TRENDS,       JSON.stringify(results.topic_trends)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.REFERRER_SUMMARY,   JSON.stringify(results.referrer_summary)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.SEARCH_KEYWORDS,    JSON.stringify(results.search_keywords_18m)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.SEASONALITY,        JSON.stringify(results.seasonality)),
-    writeAgentMemory(AGENT, MEMORY_KEYS.LAST_REFRESHED,     JSON.stringify({ timestamp: new Date().toISOString() })),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.TRAFFIC_SUMMARY, value: results.traffic_summary, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.TOP_ARTICLES, value: results.top_articles_18m, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.ARTICLE_TYPE_PERF, value: results.article_type_perf, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.TOPIC_TRENDS, value: results.topic_trends, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.REFERRER_SUMMARY, value: results.referrer_summary, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.SEARCH_KEYWORDS, value: results.search_keywords_18m, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.SEASONALITY, value: results.seasonality, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
+    publishAltwireHalMemory({ key: MEMORY_KEYS.LAST_REFRESHED, value: { timestamp: new Date().toISOString() }, memoryType: 'editorial_analytics', sourceId: 'seed-historical-analytics' }),
   ];
 
   await Promise.allSettled(writePromises);

@@ -1,14 +1,16 @@
 /**
  * scripts/seed-hal-soul-altwire.js
  *
- * Seeds the initial Hal soul for AltWire editorial context.
- * Run once on first deployment to give Hal immediate editorial identity.
+ * Legacy protected-memory seed script.
+ *
+ * Direct soul/onboarding writes are intentionally disabled. Hal's protected
+ * identity must now use its reviewed proposal and authenticated onboarding
+ * paths rather than an Altus database script.
  *
  * Usage: node scripts/seed-hal-soul-altwire.js
  */
 
-import altusDb, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
-const pool = altusDb; // default export is the pool
+import { readAgentMemory } from '../lib/altus-db.js';
 
 const SOUL_KEY = 'hal:soul:altwire';
 
@@ -51,39 +53,8 @@ async function seedSoul() {
     process.exit(0);
   }
 
-  // Write initial soul with access_count = 999 (sentinel, same as nimbus)
-  const result = await pool.query(
-    `INSERT INTO agent_memory (agent, key, value, access_count)
-     VALUES ('hal', $1, $2, 999)
-     ON CONFLICT (agent, key) DO NOTHING`,
-    [SOUL_KEY, INITIAL_SOUL]
-  );
-
-  if (result.rowCount === 0) {
-    // Race condition — another process inserted between read and write
-    console.log(`seed-hal-soul-altwire: ${SOUL_KEY} was created by another process — skipping.`);
-  } else {
-    console.log(`seed-hal-soul-altwire: ${SOUL_KEY} seeded successfully.`);
-  }
-
-  // Also seed Derek's onboarding state as complete so Hal skips onboarding wizard
-  const onboardingKey = 'hal:onboarding_state:derek';
-  const existingOnboarding = await readAgentMemory('hal', onboardingKey);
-  if (!existingOnboarding.success) {
-    const now = new Date().toISOString();
-    await pool.query(
-      `INSERT INTO agent_memory (agent, key, value, access_count)
-       VALUES ('hal', $1, $2, 1)
-       ON CONFLICT (agent, key) DO NOTHING`,
-      [onboardingKey, JSON.stringify({ status: 'complete', completed_at: now })]
-    );
-    console.log(`seed-hal-soul-altwire: Derek onboarding state seeded as complete.`);
-  } else {
-    console.log(`seed-hal-soul-altwire: Derek onboarding state already exists — skipping.`);
-  }
-
-  console.log('\nseed-hal-soul-altwire: Done.');
-  process.exit(0);
+  console.error('seed-hal-soul-altwire: direct protected-memory seeding is disabled. Use Hal’s reviewed soul proposal and authenticated onboarding flow.');
+  process.exitCode = 1;
 }
 
 seedSoul().catch((err) => {

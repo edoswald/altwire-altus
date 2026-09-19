@@ -13,7 +13,8 @@
  *   node scripts/analyze-rag-corpus.js --opus    # Opus review only (needs MINIMAX_DRAFT env var)
  */
 
-import altusDb, { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
+import altusDb, { readAgentMemory } from '../lib/altus-db.js';
+import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 const pool = altusDb; // default export is the pool
 
 const EDITORIAL_CONTEXT_KEY = 'hal:altwire:editorial_context';
@@ -545,12 +546,22 @@ async function main() {
 
       // Write to agent_memory
       const value = JSON.stringify(finalContext, null, 2);
-      await writeAgentMemory('hal', EDITORIAL_CONTEXT_KEY, value);
+      await publishAltwireHalMemory({
+        key: EDITORIAL_CONTEXT_KEY,
+        value,
+        memoryType: 'editorial_context',
+        sourceId: 'analyze-rag-corpus',
+      });
       console.log(`\n[Done] Wrote ${EDITORIAL_CONTEXT_KEY} to agent_memory.`);
 
       // If full mode, also save minimax draft as a diagnostic artifact
       if (mode === 'full') {
-        await writeAgentMemory('hal', 'hal:altwire:editorial_context:draft', JSON.stringify(minimaxDraft));
+        await publishAltwireHalMemory({
+          key: 'hal:altwire:editorial_context:draft',
+          value: minimaxDraft,
+          memoryType: 'editorial_draft',
+          sourceId: 'analyze-rag-corpus',
+        });
         console.log('[Done] Also saved Minimax editorial draft to hal:altwire:editorial_context:draft (for diagnostics).');
       }
     } catch (err) {
@@ -574,11 +585,21 @@ async function main() {
 
       // Write to agent_memory
       const derekValue = JSON.stringify(derekProfile, null, 2);
-      await writeAgentMemory('hal', EDITORIAL_VOICE_KEY, derekValue);
+      await publishAltwireHalMemory({
+        key: EDITORIAL_VOICE_KEY,
+        value: derekValue,
+        memoryType: 'editorial_context',
+        sourceId: 'analyze-rag-corpus',
+      });
       console.log(`\n[Done] Wrote ${EDITORIAL_VOICE_KEY} to agent_memory.`);
 
       if (mode === 'full') {
-        await writeAgentMemory('hal', 'hal:altwire:derek_author_profile:draft', JSON.stringify(derekMinimaxDraft));
+        await publishAltwireHalMemory({
+          key: 'hal:altwire:derek_author_profile:draft',
+          value: derekMinimaxDraft,
+          memoryType: 'editorial_draft',
+          sourceId: 'analyze-rag-corpus',
+        });
         console.log('[Done] Also saved Minimax Derek draft to hal:altwire:derek_author_profile:draft (for diagnostics).');
       }
     } catch (err) {

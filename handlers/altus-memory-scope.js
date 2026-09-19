@@ -21,6 +21,7 @@
 import { readAgentMemory, writeAgentMemory, deleteAgentMemory } from '../lib/altus-db.js';
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
+import { isAltwireHalMemoryKey, publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 
 export const SHARED_PREFIXES = [
   'altus:soul',
@@ -55,30 +56,42 @@ export function stripPrefix(admin_id, key) {
 }
 
 export async function scopedWriteMemory(admin_id, key, value) {
-  const scope = classifyKey(key);
-  if (scope === 'shared') {
-    return writeAgentMemory('hal', key, value);
+  if (isAltwireHalMemoryKey(key)) {
+    return publishAltwireHalMemory({
+      key,
+      value,
+      memoryType: 'editorial_context',
+      sourceId: 'altus-memory-scope',
+    });
   }
+  if (key.startsWith('hal:')) return { success: false, exit_reason: 'hal_key_not_publishable' };
+  const scope = classifyKey(key);
+  if (scope === 'shared') return writeAgentMemory('altus', key, value);
   if (!admin_id) return { success: false, exit_reason: 'missing_admin_id' };
-  return writeAgentMemory('hal', transformKey(admin_id, key), value);
+  return writeAgentMemory('altus', transformKey(admin_id, key), value);
 }
 
 export async function scopedReadMemory(admin_id, key) {
-  const scope = classifyKey(key);
-  if (scope === 'shared') {
+  if (isAltwireHalMemoryKey(key) || key.startsWith('hal:')) {
     return readAgentMemory('hal', key);
   }
+  const scope = classifyKey(key);
+  if (scope === 'shared') {
+    const canonical = await readAgentMemory('altus', key);
+    return canonical.success ? canonical : readAgentMemory('hal', key);
+  }
   if (!admin_id) return { success: false, exit_reason: 'missing_admin_id' };
-  return readAgentMemory('hal', transformKey(admin_id, key));
+  const physicalKey = transformKey(admin_id, key);
+  const canonical = await readAgentMemory('altus', physicalKey);
+  return canonical.success ? canonical : readAgentMemory('hal', physicalKey);
 }
 
 export async function scopedDeleteMemory(admin_id, key) {
+  if (isAltwireHalMemoryKey(key) || key.startsWith('hal:')) return { success: false, exit_reason: 'hal_key_not_deletable' };
   const scope = classifyKey(key);
-  if (scope === 'shared') {
-    return deleteAgentMemory('hal', key);
-  }
+  if (scope === 'shared') return deleteAgentMemory('altus', key);
   if (!admin_id) return { success: false, exit_reason: 'missing_admin_id' };
-  return deleteAgentMemory('hal', transformKey(admin_id, key));
+  return deleteAgentMemory('altus', transformKey(admin_id, key));
 }
 
 export async function scopedReadAllMemory(admin_id) {
@@ -87,7 +100,12 @@ export async function scopedReadAllMemory(admin_id) {
   const likeClauses = SHARED_PREFIXES.map((_, i) => `key LIKE $${i + 2}`);
   const likeParams = SHARED_PREFIXES.map(p => p + '%');
 
-  const sharedSql = `SELECT key, value, updated_at FROM agent_memory WHERE agent = 'hal' AND (${likeClauses.join(' OR ')}) ORDER BY updated_at DESC`;
+  const sharedSql = `SELECT key, value, updated_at FROM (
+    SELECT DISTINCT ON (key) key, value, updated_at, agent
+      FROM agent_memory
+     WHERE agent IN ('hal', 'altus') AND (${likeClauses.join(' OR ')})
+     ORDER BY key, (agent = 'altus') DESC, updated_at DESC
+  ) shared_memory ORDER BY updated_at DESC`;
   const { rows: sharedRows } = await pool.query(sharedSql, ['hal', ...likeParams]);
   for (const row of sharedRows) {
     keys.push({ key: row.key, value: row.value, updated_at: row.updated_at, scope: 'shared' });
@@ -96,7 +114,7 @@ export async function scopedReadAllMemory(admin_id) {
   if (admin_id) {
     const scopedPattern = `altus:mem:${admin_id}:%`;
     const { rows: scopedRows } = await pool.query(
-      `SELECT key, value, updated_at FROM agent_memory WHERE agent = 'hal' AND key LIKE $1 ORDER BY updated_at DESC`,
+      `SELECT key, value, updated_at FROM agent_memory WHERE agent = 'altus' AND key LIKE $1 ORDER BY updated_at DESC`,
       [scopedPattern],
     );
     for (const row of scopedRows) {

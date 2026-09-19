@@ -13,7 +13,8 @@
  * until explicitly read or restored.
  */
 
-import { readAgentMemory, writeAgentMemory, deleteAgentMemory } from '../lib/altus-db.js';
+import { readAgentMemory } from '../lib/altus-db.js';
+import { isAltwireHalMemoryKey, publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
 
 /**
  * Read a single memory entry.
@@ -31,7 +32,20 @@ export async function readMemory(key) {
  * @returns {Promise<{success: boolean, key: string}>}
  */
 export async function writeMemory(key, value) {
-  return writeAgentMemory('hal', key, value);
+  if (!isAltwireHalMemoryKey(key)) {
+    return {
+      success: false,
+      exit_reason: 'altwire_hal_memory_key_required',
+      message: 'Altus may publish only canonical hal:altwire:* shared memory keys.',
+    };
+  }
+  const result = await publishAltwireHalMemory({
+    key,
+    value,
+    memoryType: 'editorial_context',
+    sourceId: 'altus-hal-memory-tool',
+  });
+  return { success: result.status === 'created' || result.status === 'updated', ...result };
 }
 
 /**
@@ -50,14 +64,14 @@ export async function listMemory() {
 }
 
 /**
- * Soft-delete a memory entry. Protected keys (hal:soul*, hal:onboarding_state:*)
- * cannot be deleted.
+ * Altus intentionally does not delete shared Hal state. Callers can publish a
+ * governed replacement, while retention remains centrally observable.
  * @param {string} key
  * @returns {{ success: boolean, deleted: boolean, reason?: string }}
  */
 export async function deleteMemory(key) {
-  if (key.startsWith('hal:soul') || key.startsWith('hal:onboarding_state:')) {
-    return { success: true, deleted: false, reason: 'Protected key — cannot delete.' };
+  if (!isAltwireHalMemoryKey(key)) {
+    return { success: false, deleted: false, reason: 'Altus may not delete this Hal memory key.' };
   }
-  return deleteAgentMemory('hal', key);
+  return { success: false, deleted: false, reason: 'Shared AltWire Hal memory is retained; use a governed replacement instead.' };
 }

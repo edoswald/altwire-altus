@@ -12,7 +12,7 @@
  *   altwire:idea:{id}
  */
 
-import { readAgentMemory, writeAgentMemory, pool } from '../lib/altus-db.js';
+import { writeAgentMemory, pool } from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import crypto from 'node:crypto';
 
@@ -40,7 +40,7 @@ export async function trackArticle({ url, title, category, notes = null }) {
     notes,
     tracked_at: new Date().toISOString(),
   });
-  await writeAgentMemory('hal', key, value);
+  await writeAgentMemory('altus', key, value);
   logger.info('altus-editorial: article tracked', { key, title });
   return { success: true, key, slug };
 }
@@ -53,15 +53,19 @@ export async function trackArticle({ url, title, category, notes = null }) {
 export async function listTrackedArticles({ limit = 50 } = {}) {
   const [{ rows }, { rows: totalRows }] = await Promise.all([
     pool.query(
-      `SELECT key, value, updated_at FROM agent_memory
-     WHERE agent = 'hal' AND key LIKE 'altwire:article:%'
-     ORDER BY (value::jsonb->>'tracked_at') DESC
-     LIMIT $1`,
-      [limit]
+      `SELECT key, value, updated_at FROM (
+         SELECT DISTINCT ON (key) key, value, updated_at, agent
+           FROM agent_memory
+          WHERE agent IN ('altus', 'hal') AND key LIKE 'altwire:article:%'
+          ORDER BY key, (agent = 'altus') DESC, updated_at DESC
+       ) editorial_articles
+       ORDER BY (value::jsonb->>'tracked_at') DESC
+       LIMIT $1`,
+      [limit],
     ),
     pool.query(
-      `SELECT COUNT(*) AS count FROM agent_memory
-       WHERE agent = 'hal' AND key LIKE 'altwire:article:%'`
+      `SELECT COUNT(DISTINCT key) AS count FROM agent_memory
+       WHERE agent IN ('altus', 'hal') AND key LIKE 'altwire:article:%'`
     ),
   ]);
   const articles = rows.map((r) => {
@@ -89,7 +93,7 @@ export async function addContentIdea({ topic, angle = null, status = 'idea', not
     notes,
     created_at: new Date().toISOString(),
   });
-  await writeAgentMemory('hal', key, value);
+  await writeAgentMemory('altus', key, value);
   logger.info('altus-editorial: content idea added', { key, topic });
   return { success: true, id, key };
 }
@@ -100,11 +104,13 @@ export async function addContentIdea({ topic, angle = null, status = 'idea', not
  * @returns {Promise<{ success: boolean, ideas: Array, total: number }>}
  */
 export async function getContentIdeas({ status = null, limit = 50 } = {}) {
-  let query = `SELECT key, value FROM agent_memory
-    WHERE agent = 'hal' AND key LIKE 'altwire:idea:%'`;
+  let query = `SELECT key, value FROM (
+    SELECT DISTINCT ON (key) key, value, updated_at, agent
+      FROM agent_memory
+     WHERE agent IN ('altus', 'hal') AND key LIKE 'altwire:idea:%'`;
   const params = [];
-  let countQuery = `SELECT COUNT(*) AS count FROM agent_memory
-    WHERE agent = 'hal' AND key LIKE 'altwire:idea:%'`;
+  let countQuery = `SELECT COUNT(DISTINCT key) AS count FROM agent_memory
+    WHERE agent IN ('altus', 'hal') AND key LIKE 'altwire:idea:%'`;
   const countParams = [];
 
   if (status) {
@@ -114,7 +120,9 @@ export async function getContentIdeas({ status = null, limit = 50 } = {}) {
     countParams.push(status);
   }
 
-  query += ` ORDER BY (value::jsonb->>'created_at') DESC LIMIT $${params.length + 1}`;
+  query += ` ORDER BY key, (agent = 'altus') DESC, updated_at DESC
+  ) editorial_ideas
+  ORDER BY (value::jsonb->>'created_at') DESC LIMIT $${params.length + 1}`;
   params.push(limit);
 
   const [{ rows }, { rows: totalRows }] = await Promise.all([

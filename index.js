@@ -27,6 +27,7 @@ import { createServer } from 'http';
 import { z } from 'zod';
 import { logger } from './logger.js';
 import pool, { initSchema, initMountaineeringSchema, hasDbConfig } from './lib/altus-db.js';
+import { publishAltwireHalMemory } from './lib/altus-hal-memory-publisher.js';
 import {
   seedMountaineeringClimbs,
   collectClimbScores,
@@ -2198,16 +2199,13 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   scopedRegister(
     'hal_write_memory',
     {
-      description: 'Write a Hal agent memory entry. Use to seed or update hal:soul:altwire, hal:altwire:editorial_context, or other Hal memory keys. Protected keys (hal:soul*, hal:onboarding_state:*) cannot be overwritten via this tool.',
+      description: 'Publish a governed shared AltWire editorial memory entry. Only canonical hal:altwire:* keys are accepted; Hal soul, onboarding, and private memory are not writable from Altus.',
       inputSchema: {
-        key: z.string().describe('Memory key — e.g. hal:soul:altwire, hal:altwire:editorial_context'),
+        key: z.string().describe('Canonical AltWire memory key — e.g. hal:altwire:editorial_context'),
         value: z.string().describe('Value to store'),
       },
     },
     async ({ key, value }) => {
-      if (key.startsWith('hal:soul') || key.startsWith('hal:onboarding_state:')) {
-        return { content: [{ type: 'text', text: JSON.stringify({ success: false, exit_reason: 'protected_key', message: 'Protected key — use the seed script to update hal:soul values.' }) }] };
-      }
       const result = await writeMemory(key, value);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
@@ -2359,12 +2357,12 @@ async ({ status, limit }) => {
         obj = obj[parts[i]];
       }
       obj[parts[parts.length - 1]] = value;
-      const key = 'hal:altwire:editorial_voice_profile';
-      await pool.query(
-        `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
-         ON CONFLICT (agent, key) DO UPDATE SET value = $3`,
-        ['hal', key, JSON.stringify(current)]
-      );
+      await publishAltwireHalMemory({
+        key: 'hal:altwire:editorial_voice_profile',
+        value: current,
+        memoryType: 'editorial_context',
+        sourceId: 'altus-author-profile-mcp',
+      });
       return { content: [{ type: 'text', text: JSON.stringify({ success: true, profile: current }) }] };
     }
   );
@@ -3529,11 +3527,12 @@ const httpServer = createServer(async (req, res) => {
           obj = obj[parts[i]];
         }
         obj[parts[parts.length - 1]] = value;
-        await pool.query(
-          `INSERT INTO agent_memory (agent, key, value) VALUES ($1, $2, $3)
-           ON CONFLICT (agent, key) DO UPDATE SET value = $3`,
-          ['hal', 'hal:altwire:editorial_voice_profile', JSON.stringify(current)]
-        );
+        await publishAltwireHalMemory({
+          key: 'hal:altwire:editorial_voice_profile',
+          value: current,
+          memoryType: 'editorial_context',
+          sourceId: 'altus-author-profile-rest',
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, profile: current }));
       } catch (err) {
