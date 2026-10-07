@@ -134,6 +134,7 @@ import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
 import { getHalUiRateLimitBucket } from './lib/hal-ui-rate-limit.js';
 import crypto from 'crypto';
+import { MODEL_HAIKU, resolveModel } from './lib/model-ids.js';
 const PORT = process.env.PORT || 3000;
 
 // Rate limiters
@@ -3928,7 +3929,7 @@ const httpServer = createServer(async (req, res) => {
 
       const { default: Anthropic } = await import('@anthropic-ai/sdk');
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const model = process.env.ALTUS_CHAT_MODEL ?? 'claude-haiku-4-5';
+      const model = resolveModel(process.env.ALTUS_CHAT_MODEL, MODEL_HAIKU);
 
       // Prompt caching — the tools + system-prompt prefix is large and identical
       // on every agentic-loop iteration and every follow-up turn. Render order is
@@ -3981,6 +3982,12 @@ const httpServer = createServer(async (req, res) => {
           if (event.type === 'content_block_start') {
             if (event.content_block.type === 'text') {
               currentContent[event.index] = { type: 'text', text: '' };
+            } else if (event.content_block.type === 'thinking') {
+              // 5.5-generation models think adaptively. Thinking blocks (and
+              // their signatures) must be replayed unchanged in the tool loop.
+              currentContent[event.index] = { type: 'thinking', thinking: '', signature: '' };
+            } else if (event.content_block.type === 'redacted_thinking') {
+              currentContent[event.index] = { type: 'redacted_thinking', data: event.content_block.data };
             } else if (event.content_block.type === 'tool_use') {
               currentContent[event.index] = {
                 type: 'tool_use',
@@ -3999,6 +4006,10 @@ const httpServer = createServer(async (req, res) => {
               send({ token: event.delta.text });
             } else if (event.delta.type === 'input_json_delta' && block?.type === 'tool_use') {
               block._inputJson += event.delta.partial_json;
+            } else if (event.delta.type === 'thinking_delta' && block?.type === 'thinking') {
+              block.thinking += event.delta.thinking;
+            } else if (event.delta.type === 'signature_delta' && block?.type === 'thinking') {
+              block.signature += event.delta.signature;
             }
           }
           if (event.type === 'content_block_stop') {
@@ -4021,6 +4032,11 @@ const httpServer = createServer(async (req, res) => {
         // Push assistant turn into history
         messages.push({ role: 'assistant', content: currentContent.filter(Boolean).map(({ _inputJson: _, ...b }) => b) });
 
+        if (stopReason === 'refusal') {
+          // No server-side refusal fallback on Haiku 5.5 — tell the user.
+          send({ token: "\n\nI can't help with that request." });
+          break;
+        }
         if (stopReason !== 'tool_use') break;
 
         // Execute tool calls and push results

@@ -35,6 +35,7 @@ import {
   getSearchOpportunities,
   getOpportunityZoneQueries,
 } from './altwire-gsc-client.js';
+import { MODEL_SONNET } from '../lib/model-ids.js';
 
 const HISTORICAL_KEYS = [
   'hal:altwire:analytics:traffic_summary',
@@ -305,18 +306,21 @@ const SYNTHESIS_TOOL = {
 
 export function buildSynthesisRequest(payload) {
   return {
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2000,
-    temperature: 0.3,
+    model: MODEL_SONNET,
+    // Sonnet 5.5 rejects temperature and forced tool_choice; thinking counts
+    // toward max_tokens, so leave headroom beyond the ~2K-token tool payload.
+    max_tokens: 8192,
+    output_config: { effort: 'medium' },
     // The system prompt + SYNTHESIS_TOOL schema are stable across every daily
     // synthesis/batch call — one breakpoint after the tool schemas caches them.
     system: withCachedSystem(`You are an editorial analytics strategist for AltWire (a music & lifestyle publication).
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
 Be specific and cite numbers, articles, and queries.
 The payload may include recently_featured — articles and queries highlighted in syntheses from the past ${RECENT_FEATURES_WINDOW_DAYS} days. Do NOT repeat those as top_dual_winners, underperforming_in_search, opportunity_alignments, or content_gaps unless something materially changed for them (and say what changed in the "why"/"rationale"). Prefer fresh articles, emerging queries, and untapped areas of interest so the daily digest stays varied and useful.
-AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.`),
+AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.
+Always deliver your analysis by calling the record_synthesis tool exactly once. Do not answer in plain text.`),
     tools: [SYNTHESIS_TOOL],
-    tool_choice: { type: 'any' },
+    tool_choice: { type: 'auto' },
     messages: [
       {
         role: 'user',

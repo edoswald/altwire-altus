@@ -10,6 +10,7 @@ import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../logger.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
+import { MODEL_HAIKU, getResponseText } from '../lib/model-ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,19 +130,22 @@ async function autoCategorizNote(noteText) {
   const CLASSIFIABLE = ['pro', 'con', 'observation'];
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 10,
+      model: MODEL_HAIKU,
+      // Haiku 5.5 thinks adaptively and thinking counts toward max_tokens —
+      // the old 10-token cap would truncate before the answer.
+      max_tokens: 1024,
+      output_config: { effort: 'low' },
       // The classifier system prompt is identical for every note — cached so
       // the per-note request bills only the dynamic note text.
       system: withCachedSystem('You are a music gear review classifier. Respond with exactly one word: pro, con, or observation.'),
       messages: [{ role: 'user', content: `Classify this review note about a music product: "${noteText}"` }],
     });
-    const raw = response.content?.[0]?.text?.trim().toLowerCase();
+    const raw = getResponseText(response).trim().toLowerCase().replace(/[^a-z]/g, '');
     const category = CLASSIFIABLE.includes(raw) ? raw : 'uncategorized';
     return { category, model: response.model, usage: response.usage };
   } catch (err) {
     logger.error('Auto-categorization failed', { error: err.message });
-    return { category: 'uncategorized', model: 'claude-haiku-4-5-20251001', usage: { input_tokens: 0, output_tokens: 0 } };
+    return { category: 'uncategorized', model: MODEL_HAIKU, usage: { input_tokens: 0, output_tokens: 0 } };
   }
 }
 

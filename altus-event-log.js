@@ -12,7 +12,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import pool from './lib/altus-db.js';
 import { logger } from './logger.js';
 import { logAiUsage } from './lib/ai-cost-tracker.js';
-import { submitBatch, collectBatch } from './batch-client.js';
+import { submitBatch, collectBatch, extractText } from './batch-client.js';
+import { MODEL_HAIKU, MODEL_OPUS, resolveModel, getResponseText } from './lib/model-ids.js';
 
 const MAX_PAYLOAD_BYTES = 10 * 1024;
 
@@ -202,22 +203,24 @@ export async function synthesizeAudit(options = {}) {
   if (hours <= 24) {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 2048,
+      model: MODEL_HAIKU,
+      max_tokens: 4096,
+      output_config: { effort: 'low' },
       messages: [{ role: 'user', content: prompt }],
     });
-    await logAiUsage('synthesize_audit', response.model ?? 'claude-haiku-4-5', response.usage);
-    const narrative = response.content?.[0]?.text ?? '';
+    await logAiUsage('synthesize_audit', response.model ?? MODEL_HAIKU, response.usage);
+    const narrative = getResponseText(response);
     return { success: true, mode: 'direct', narrative, event_count: events.length };
   }
 
-  const model = process.env.ANTHROPIC_BATCH_REVIEW_MODEL ?? 'claude-opus-4-6';
+  const model = resolveModel(process.env.ANTHROPIC_BATCH_REVIEW_MODEL, MODEL_OPUS);
   const requests = [
     {
       custom_id: 'pending',
       params: {
         model,
-        max_tokens: 2048,
+        // Thinking counts toward max_tokens on 5.5-generation models.
+        max_tokens: 8192,
         messages: [{ role: 'user', content: prompt }],
       },
     },
@@ -258,7 +261,7 @@ export async function runAuditBatchCollection() {
       if (results === null) continue;
 
       const succeeded = results.find(r => r.result?.type === 'succeeded');
-      const narrative = succeeded?.result?.message?.content?.[0]?.text ?? '';
+      const narrative = extractText(succeeded) ?? '';
 
       await pool.query(
         `UPDATE altus_audit_batches

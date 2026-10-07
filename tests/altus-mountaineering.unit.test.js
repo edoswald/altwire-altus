@@ -192,8 +192,8 @@ describe('altus-mountaineering — scoreClimbIteration evidence', () => {
 
     expect(submitBatch).toHaveBeenCalledOnce();
     const request = submitBatch.mock.calls[0][0][0];
-    expect(request.params.model).toBe('claude-opus-4-8');
-    expect(request.params.max_tokens).toBe(2048);
+    expect(request.params.model).toBe('claude-opus-5-5');
+    expect(request.params.max_tokens).toBe(8192);
     expect(request.params.output_config).toEqual({ effort: 'high' });
   });
 });

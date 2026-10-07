@@ -55,8 +55,8 @@ describe('altus-weekly-brief batching', () => {
     expect(result).toMatchObject({ success: true, batch_id: 'msgbatch-weekly' });
     expect(submitBatch).toHaveBeenCalledOnce();
     const request = submitBatch.mock.calls[0][0][0];
-    expect(request.params.model).toBe('claude-opus-4-8');
-    expect(request.params.max_tokens).toBe(4000);
+    expect(request.params.model).toBe('claude-opus-5-5');
+    expect(request.params.max_tokens).toBe(16000);
     expect(request.params.output_config).toEqual({ effort: 'high' });
 
     expect(mockQuery).toHaveBeenCalledOnce();

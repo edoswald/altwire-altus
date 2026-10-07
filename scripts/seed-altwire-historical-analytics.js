@@ -332,7 +332,7 @@ function getMinimaxClient() {
 }
 
 const ANALYSIS_MODEL = 'MiniMax-M2.7';
-const ANALYSIS_FALLBACK_MODEL = 'claude-sonnet-4-6';
+const ANALYSIS_FALLBACK_MODEL = 'claude-sonnet-5-5';
 
 const ANALYSIS_SYSTEM_PROMPT = `You are an editorial data analyst for AltWire, a music and lifestyle publication.
 Given structured analytics data about the publication's traffic over 18 months, produce concise, actionable
@@ -362,14 +362,14 @@ async function llmAnalyze(prompt) {
   // Anthropic fallback
   const response = await getAnthropicClient().messages.create({
     model: ANALYSIS_FALLBACK_MODEL,
-    max_tokens: 4000,
-    temperature: 0.3,
+    // Sonnet 5.5: no temperature; thinking counts toward max_tokens.
+    max_tokens: 8000,
     // ANALYSIS_SYSTEM_PROMPT is stable across every 18-month analysis call —
     // wrapped so repeated sections of this seeded run hit the cache.
     system: withCachedSystem(ANALYSIS_SYSTEM_PROMPT),
     messages: [{ role: 'user', content: prompt }],
   });
-  return response.content[0]?.type === 'text' ? response.content[0].text : '';
+  return (response.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
 
 function parseJsonResponse(raw) {
@@ -912,9 +912,8 @@ function getAnthropicClient() {
 
 async function sonnetCritic(prompt, context) {
   const response = await getAnthropicClient().messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 3000,
-    temperature: 0.4,
+    model: 'claude-sonnet-5-5',
+    max_tokens: 8000,
     system: withCachedSystem(`You are an editorial strategy expert for AltWire, a music and lifestyle publication.
 You review draft analysis and refine it with deeper editorial judgment, content strategy thinking,
 and industry context. Output only a JSON object — no markdown, no explanation outside the JSON.
@@ -922,7 +921,7 @@ The JSON must use the same schema as the draft provided. Improve the draft with 
 more specific recommendations, and clearer editorial framing.`),
     messages: [{ role: 'user', content: prompt }],
   });
-  return response.content[0].type === 'text' ? response.content[0].text : '';
+  return (response.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
 
 async function criticTrafficSummary(minimaxOutput) {

@@ -78,7 +78,7 @@ describe('review-scoring: buildReviewBatchRequests', () => {
     expect(requests).toHaveLength(2);
     expect(requests[0].custom_id).toBe('123');
     expect(requests[0].params.model).toBe(MODEL);
-    expect(requests[0].params.max_tokens).toBe(1500);
+    expect(requests[0].params.max_tokens).toBe(4096);
     expect(Array.isArray(requests[0].params.system)).toBe(true);
     expect(requests[0].params.system[requests[0].params.system.length - 1].cache_control)
       .toEqual({ type: 'ephemeral' });
