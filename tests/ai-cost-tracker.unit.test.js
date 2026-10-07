@@ -97,6 +97,33 @@ describe('ai-cost-tracker', () => {
     });
   });
 
+  describe('5.5-generation pricing', () => {
+    it('prices claude-fable-5-1 with its own row and cache-read multiplier', async () => {
+      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValue({ rows: [] });
+      const { logAiUsage } = await import('../lib/ai-cost-tracker.js');
+
+      await logAiUsage('t', 'claude-fable-5-1', {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 1_000_000,
+      });
+
+      // $10/MTok input x 0.025 cache-read multiplier (the old fable-5 row used 0.10).
+      expect(mockQuery.mock.calls[0][1][6]).toBeCloseTo(0.25, 8);
+    });
+
+    it('prices claude-haiku-5-5 at the <=100K-token tier, not the Haiku 4.5 row', async () => {
+      vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');
+      mockQuery.mockResolvedValue({ rows: [] });
+      const { logAiUsage } = await import('../lib/ai-cost-tracker.js');
+
+      await logAiUsage('t', 'claude-haiku-5-5', { input_tokens: 1_000_000, output_tokens: 1_000_000 });
+
+      expect(mockQuery.mock.calls[0][1][6]).toBeCloseTo(0.60, 8);
+    });
+  });
+
   describe('initAiUsageSchema', () => {
     it('calls pool.query with CREATE TABLE IF NOT EXISTS', async () => {
       vi.stubEnv('DATABASE_URL', 'postgres://localhost/test');

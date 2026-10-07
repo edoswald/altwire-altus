@@ -165,16 +165,16 @@ async function analyze(prompt, schemaHint) {
   if (!anthropic) return null;
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 3000,
-      temperature: 0.3,
+      model: 'claude-sonnet-5-5',
+      // Sonnet 5.5: no temperature; thinking counts toward max_tokens.
+      max_tokens: 8000,
       system: withCachedSystem(`You are an editorial SEO analyst for AltWire (music & lifestyle publication).
 You analyze 16 months of Google Search Console data and produce concise, actionable summaries.
 Output a single JSON object only — no markdown, no explanation outside the JSON.
 Be specific: cite actual queries, pages, impressions, positions, and trends.`),
       messages: [{ role: 'user', content: `${prompt}\n\nReturn only a JSON object matching: ${schemaHint}` }],
     });
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+    const text = (response.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
     const trimmed = text.trim();
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');

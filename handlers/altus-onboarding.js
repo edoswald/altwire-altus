@@ -25,6 +25,7 @@ import pool from '../lib/altus-db.js';
 import { readAgentMemory, writeAgentMemory } from '../lib/altus-db.js';
 import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import { logger } from '../logger.js';
+import { MODEL_HAIKU, getResponseText } from '../lib/model-ids.js';
 
 const AGENT = 'hal';
 
@@ -208,12 +209,13 @@ Return a single paragraph describing your identity as Altus for AltWire. Be spec
   try {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 500,
+      model: MODEL_HAIKU,
+      max_tokens: 2048,
+      output_config: { effort: 'low' },
       messages: [{ role: 'user', content: prompt }],
     });
     await logAiUsage('evolve_soul', response.model, response.usage);
-    const newSoul = response.content?.[0]?.text ?? currentSoul;
+    const newSoul = getResponseText(response).trim() || currentSoul;
     await writeAgentMemory(AGENT, 'altus:soul', newSoul);
     logger.info('evolveSoul: soul updated');
     return { success: true };

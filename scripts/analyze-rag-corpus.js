@@ -22,7 +22,7 @@ const EDITORIAL_VOICE_KEY = 'hal:altwire:editorial_voice_profile';
 const RAG_SAMPLE_SIZE = 250; // chunks to sample for analysis
 const DEREK_SAMPLE_SIZE = 100; // Derek's own chunks for author profiling
 const MINIMAX_MODEL = 'MiniMax-M2.7';
-const OPUS_MODEL = 'claude-opus-4-7';
+const OPUS_MODEL = 'claude-opus-5-5';
 const DEREK_AUTHOR_ID = 2; // WordPress author ID for Derek
 
 const SYSTEM_PROMPT = `You are an expert editorial analyst specializing in music publications. You analyze article corpora and produce structured assessments of editorial identity. Your output is precise, specific, and grounded in the texts you analyze — never vague or generic.`;
@@ -373,8 +373,8 @@ async function callLLM({ model, systemPrompt, userPrompt, minimaxSchema }) {
         model,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
-        ...(isMinimax ? { temperature: 0.3 } : {}),
-        max_tokens: 4000,
+        // Thinking counts toward max_tokens on Opus 5.5.
+        max_tokens: 16000,
       }),
     });
 
@@ -384,7 +384,7 @@ async function callLLM({ model, systemPrompt, userPrompt, minimaxSchema }) {
     }
 
     const data = await response.json();
-    const content = data.content?.[0]?.text;
+    const content = (data.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
     if (!content) throw new Error('Anthropic returned empty content');
     return content.trim();
   }

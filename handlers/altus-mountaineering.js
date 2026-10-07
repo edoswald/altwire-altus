@@ -10,10 +10,11 @@ import { logAiUsage } from '../lib/ai-cost-tracker.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
 import { publishAltwireHalMemory } from '../lib/altus-hal-memory-publisher.js';
+import { MODEL_HAIKU, MODEL_OPUS, MODEL_SONNET, resolveModel, getResponseText } from '../lib/model-ids.js';
 
 export const CLIMB_SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
-const SCORING_MODEL = process.env.ANTHROPIC_CLIMB_SCORING_MODEL || 'claude-opus-4-8';
-const SCORING_FALLBACK_MODEL = 'claude-sonnet-4-6';
+const SCORING_MODEL = resolveModel(process.env.ANTHROPIC_CLIMB_SCORING_MODEL, MODEL_OPUS);
+const SCORING_FALLBACK_MODEL = MODEL_SONNET;
 
 // ---------------------------------------------------------------------------
 // Schema init
@@ -315,14 +316,15 @@ async function _startClimbIterationCore(climb_name) {
   try {
     const anthropic = new Anthropic();
     response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 4096,
+      model: MODEL_HAIKU,
+      // Thinking counts toward max_tokens; the proposal is a full workspace value.
+      max_tokens: 8192,
       // Stable for the climb lifecycle — the same system prompt is sent for
       // every proposal iteration, so cache it after the first write.
       system: withCachedSystem(systemPrompt),
       messages: [{ role: 'user', content: userPrompt }],
     });
-    const parsed = JSON.parse(response.content[0].text);
+    const parsed = JSON.parse(getResponseText(response));
     proposed_change = parsed.proposed_change;
     rationale = parsed.rationale;
   } catch (err) {
@@ -333,7 +335,7 @@ async function _startClimbIterationCore(climb_name) {
     return { success: false, exit_reason: 'proposal_error', message: 'Response JSON missing or empty proposed_change field' };
   }
 
-  logAiUsage('mountaineering_proposal', 'claude-haiku-4-5', response.usage);
+  logAiUsage('mountaineering_proposal', response.model ?? MODEL_HAIKU, response.usage);
 
   const iteration_number = climb.iterations + 1;
 
@@ -412,15 +414,15 @@ async function scoreClimbFallback(iter) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const response = await anthropic.messages.create({
     model: SCORING_FALLBACK_MODEL,
-    max_tokens: 1024,
+    max_tokens: 4096,
+    output_config: { effort: 'medium' },
     // buildScoringPrompt's system text is identical for every fallback scoring
     // call — cache it so repeat scores skip the full write cost.
     system: withCachedSystem(prompt.system),
     messages: [{ role: 'user', content: prompt.user }],
   });
   await logAiUsage('altus_score_climb_fallback', response.model ?? SCORING_FALLBACK_MODEL, response.usage);
-  const text = response.content?.find((block) => block.type === 'text')?.text;
-  return parseScoringText(text);
+  return parseScoringText(getResponseText(response));
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +469,8 @@ export async function scoreClimbIteration({ climb_name, iteration_number }) {
     custom_id: String(iteration.id),
     params: {
       model: SCORING_MODEL,
-      max_tokens: 2048,
+      // Thinking counts toward max_tokens; 2048 risked truncating high-effort runs.
+      max_tokens: 8192,
       output_config: { effort: 'high' },
       // The scoring system text is identical across iterations — cached so
       // batch scoring is billed at the cache-read rate after the first write.

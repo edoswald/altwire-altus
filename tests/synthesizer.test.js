@@ -55,8 +55,8 @@ describe('synthesizer.js', () => {
     expect(typeof result).toBe('string');
     expect(result.length).toBeGreaterThan(10);
     const call = mockCreate.mock.calls[0][0];
-    expect(call.model).toBe('claude-haiku-4-5-20251001');
-    expect(call.max_tokens).toBe(150);
+    expect(call.model).toBe('claude-haiku-5-5');
+    expect(call.max_tokens).toBe(1024);
     // System prompt is cached via cache_control on the last block
     expect(Array.isArray(call.system)).toBe(true);
     expect(call.system[call.system.length - 1].cache_control).toEqual({ type: 'ephemeral' });

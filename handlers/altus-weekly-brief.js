@@ -7,9 +7,9 @@ import { sendEmail } from '../lib/ses-client.js';
 import { logger } from '../logger.js';
 import { withCachedSystem } from '../lib/anthropic-cache.js';
 import { extractText, isRefusal, submitBatch, collectBatch, logBatchUsage } from '../batch-client.js';
+import { MODEL_OPUS, resolveModel } from '../lib/model-ids.js';
 
-const MODEL_OPUS = 'claude-opus-4-8';
-const WEEKLY_MODEL = process.env.ALTUS_WEEKLY_MODEL || MODEL_OPUS;
+const WEEKLY_MODEL = resolveModel(process.env.ALTUS_WEEKLY_MODEL, MODEL_OPUS);
 
 function getIsoWeek(date) {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -100,7 +100,8 @@ export async function sendAltusWeeklyBrief() {
       custom_id: `altus-weekly-brief-${getIsoWeek(now)}`,
       params: {
         model: WEEKLY_MODEL,
-        max_tokens: 4000,
+        // Thinking counts toward max_tokens at high effort — leave headroom.
+        max_tokens: 16000,
         output_config: { effort: 'high' },
         // Cached so repeat weekly submissions (and the shared identity prefix)
         // are billed at the cache-read rate.

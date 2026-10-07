@@ -82,7 +82,7 @@ async function main() {
   // 3. Model name validation
   console.log('\n-- Model Names --');
   const MINIMAX_MODEL = 'MiniMax-M2.7';
-  const OPUS_MODEL = 'claude-opus-4-7';
+  const OPUS_MODEL = 'claude-opus-5-5';
 
   check('Minimax model name', MINIMAX_MODEL.startsWith('MiniMax'));
   check('Opus model name', OPUS_MODEL.startsWith('claude'));
@@ -122,7 +122,8 @@ async function main() {
         body: JSON.stringify({
           model: OPUS_MODEL,
           messages: [{ role: 'user', content: 'respond with exactly the word "ok"' }],
-          max_tokens: 5,
+          max_tokens: 1024,
+          output_config: { effort: 'low' },
         }),
       });
       check('Anthropic API reachable', res.ok, `HTTP ${res.status}`);
