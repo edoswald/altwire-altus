@@ -160,6 +160,28 @@ function settledValue(result, warnings, section) {
 const pageRows = (rows) => rows?.pageUrls ?? rows ?? [];
 
 /**
+ * Title lookup for archive content. Matomo reports every URL (listing pages,
+ * /author/, /page/2, year archives) and marks them all as folders because
+ * WordPress URLs end in a slash, so membership in altus_content is what
+ * identifies a real article. Returns null if the lookup fails, so callers can
+ * fall back to unfiltered rows.
+ */
+async function lookupArchiveTitles(urls, warnings) {
+  const normalized = [...new Set(urls.map((u) => normalizeUrl(u)).filter(Boolean))];
+  if (!normalized.length) return new Map();
+  try {
+    const { rows } = await pool.query(
+      `SELECT rtrim(url, '/') AS url, title FROM altus_content WHERE rtrim(url, '/') = ANY($1)`,
+      [normalized],
+    );
+    return new Map(rows.map((r) => [r.url, r.title]));
+  } catch (err) {
+    warnings.push({ section: 'archive_titles', message: err.message });
+    return null;
+  }
+}
+
+/**
  * Build the analytics snapshot comparing the last `days` days with the
  * `days` days before them.
  *
@@ -225,16 +247,29 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
   const traffic = compareTotals(trafficCur, trafficPrev, TRAFFIC_METRICS);
   const yesterdayVsLastWeek = compareTotals(yesterday, sameDayLastWeek, TRAFFIC_METRICS);
 
+  const titles = await lookupArchiveTitles([
+    ...pageRows(pagesCur).map((r) => r.url),
+    ...pageRows(pagesPrev).map((r) => r.url),
+    ...(gscPagesCur?.rows ?? []).map((r) => r.keys?.[0]),
+    ...(gscPagesPrev?.rows ?? []).map((r) => r.keys?.[0]),
+    ...(news?.rows ?? []).map((r) => r.keys?.[0]),
+  ], warnings);
+  const titleOf = (url) => titles?.get(normalizeUrl(url)) ?? null;
+  const articlesOnly = (rows) => (titles ? pageRows(rows).filter((r) => titles.has(normalizeUrl(r.url))) : pageRows(rows));
+
   const page_movers = (pagesCur || pagesPrev)
-    ? computeMovers(pageRows(pagesCur), pageRows(pagesPrev), {
+    ? computeMovers(articlesOnly(pagesCur), articlesOnly(pagesPrev), {
       keyOf: (r) => normalizeUrl(r.url),
-      label: (r) => r.label ?? null,
+      label: (r) => titleOf(r.url) ?? r.label ?? null,
       metric: 'nb_hits',
       minVolume: 20,
     })
     : null;
 
-  const top_pages = pageRows(pagesCur).slice(0, 5).map((r) => ({ url: r.url, label: r.label, pageviews: r.nb_hits ?? 0 }));
+  const top_pages = articlesOnly(pagesCur)
+    .sort((a, b) => (b.nb_hits ?? 0) - (a.nb_hits ?? 0))
+    .slice(0, 5)
+    .map((r) => ({ url: r.url, label: titleOf(r.url) ?? r.label, pageviews: r.nb_hits ?? 0 }));
 
   const totalRow = (r) => (r?.rows?.[0] ? { clicks: r.rows[0].clicks, impressions: r.rows[0].impressions, ctr: r.rows[0].ctr, position: r.rows[0].position } : null);
   const search = {
@@ -243,7 +278,7 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
       ? computeMovers(queriesCur?.rows, queriesPrev?.rows, { keyOf: (r) => r.keys?.[0], metric: 'clicks', minVolume: 5 })
       : null,
     page_movers: (gscPagesCur || gscPagesPrev)
-      ? computeMovers(gscPagesCur?.rows, gscPagesPrev?.rows, { keyOf: (r) => normalizeUrl(r.keys?.[0]), metric: 'clicks', minVolume: 5 })
+      ? computeMovers(gscPagesCur?.rows, gscPagesPrev?.rows, { keyOf: (r) => normalizeUrl(r.keys?.[0]), label: (r) => titleOf(r.keys?.[0]), metric: 'clicks', minVolume: 5 })
       : null,
   };
 
@@ -257,7 +292,7 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
     google_news = {
       total_clicks: rows.reduce((sum, r) => sum + (r.clicks ?? 0), 0),
       total_impressions: rows.reduce((sum, r) => sum + (r.impressions ?? 0), 0),
-      top_pages: rows.slice(0, 5).map((r) => ({ url: r.keys?.[0], clicks: r.clicks ?? 0, impressions: r.impressions ?? 0 })),
+      top_pages: rows.slice(0, 5).map((r) => ({ url: r.keys?.[0], title: titleOf(r.keys?.[0]), clicks: r.clicks ?? 0, impressions: r.impressions ?? 0 })),
     };
   }
 

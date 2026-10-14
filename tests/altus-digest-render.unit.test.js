@@ -70,6 +70,18 @@ describe('digest rendering', () => {
     expect(html).not.toContain('band <tour>');
   });
 
+  it('labels Google News pages by title, falling back to the decoded path', () => {
+    const text = buildDigestText({ ...digest, analytics: { ...digest.analytics, google_news: {
+      total_clicks: 7, total_impressions: 31,
+      top_pages: [
+        { url: 'https://altwire.net/ru/%D0%BB%D0%BE%D1%80%D0%B5/', title: null, clicks: 2, impressions: 5 },
+        { url: 'https://altwire.net/x/', title: 'Real Title', clicks: 5, impressions: 26 },
+      ],
+    } } });
+    expect(text).toContain('• ru/лоре — 2 clicks');
+    expect(text).toContain('• Real Title — 5 clicks');
+  });
+
   it('renders gracefully with no analytics at all', () => {
     const text = buildDigestText({ date: '2026-10-14' });
     expect(text).toContain('STORY OPPORTUNITIES');

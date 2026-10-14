@@ -171,12 +171,12 @@ function formatBounce(rate) {
   return `${String(rate).replace(/%+$/, '')}%`;
 }
 
-/** Readable label for a URL: its path without slashes. */
+/** Readable label for a URL: the article title when known, else its decoded path. */
 function pageLabel(url, fallback) {
   if (fallback && !String(fallback).startsWith('http')) return String(fallback).replace(/^\/+|\/+$/g, '');
   try {
     const path = new URL(url).pathname.replace(/^\/+|\/+$/g, '');
-    return path || url;
+    try { return decodeURIComponent(path) || url; } catch { return path || url; }
   } catch {
     return url ?? 'unknown';
   }
@@ -248,7 +248,7 @@ function searchMoversSection(a) {
   const lines = [];
   const q = moverLines(a?.search?.query_movers, { unit: 'clicks' });
   if (q.length) lines.push({ text: 'Queries', tone: 'strong' }, ...q);
-  const p = moverLines(a?.search?.page_movers, { unit: 'clicks', labelOf: (m) => pageLabel(m.key) });
+  const p = moverLines(a?.search?.page_movers, { unit: 'clicks', labelOf: (m) => pageLabel(m.key, m.label) });
   if (p.length) lines.push({ text: 'Pages', tone: 'strong' }, ...p);
   return lines.length ? { title: 'SEARCH MOVERS', lines } : null;
 }
@@ -272,7 +272,7 @@ function googleNewsSection(a) {
     title: 'GOOGLE NEWS',
     lines: [
       `${fmtNum(n.total_clicks)} clicks · ${fmtNum(n.total_impressions)} impressions in the last ${a.days} days`,
-      ...n.top_pages.slice(0, 3).map((p) => `• ${pageLabel(p.url)} — ${fmtNum(p.clicks)} clicks, ${fmtNum(p.impressions)} impressions`),
+      ...n.top_pages.slice(0, 3).map((p) => `• ${pageLabel(p.url, p.title)} — ${fmtNum(p.clicks)} clicks, ${fmtNum(p.impressions)} impressions`),
     ],
   };
 }
