@@ -1,4 +1,6 @@
 import { getAltwireMorningDigest } from './altus-digest.js';
+import { buildAnalyticsSnapshot } from './altus-digest-analytics.js';
+import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
 import pool from '../lib/altus-db.js';
 import { generate } from '../lib/writer-client.js';
 import { markdownToHtml } from '../lib/markdown.js';
@@ -33,6 +35,8 @@ export async function sendAltusWeeklyBrief() {
 
     const [
       morningDigest,
+      monthAnalytics,
+      storyQueue,
       trafficSummary,
       topArticles,
       siteSearchKw,
@@ -40,6 +44,8 @@ export async function sendAltusWeeklyBrief() {
       priorBrief,
     ] = await Promise.allSettled([
       getAltwireMorningDigest(),
+      buildAnalyticsSnapshot({ days: 28 }),
+      listStoryOpportunityQueue({ status: 'active', limit: 10 }),
       readAgentMemory('hal', 'hal:altwire:traffic_summary'),
       readAgentMemory('hal', 'hal:altwire:top_articles'),
       readAgentMemory('hal', 'hal:altwire:site_search_keywords'),
@@ -50,11 +56,6 @@ export async function sendAltusWeeklyBrief() {
     const newsAlerts = await Promise.allSettled([
       readAgentMemory('altus', `altus:news_alert:${today}`),
       readAgentMemory('altus', `altus:news_alert:${yesterday}`),
-    ]);
-
-    const storyOpps = await Promise.allSettled([
-      readAgentMemory('altus', 'altus:story_opportunities'),
-      readAgentMemory('altus', `altus:story_opportunities:${today}`),
     ]);
 
     const getValue = (result) => result.status === 'fulfilled' && result.value?.success ? result.value.value : null;
@@ -68,9 +69,10 @@ export async function sendAltusWeeklyBrief() {
     const morningDigestVal = morningDigest.status === 'fulfilled' ? morningDigest.value : null;
     const newsAlertToday = getNewsAlert(newsAlerts[0]);
     const newsAlertYesterday = getNewsAlert(newsAlerts[1]);
-    const storyOppsVal =
-      getValue(storyOpps[0]) ||
-      getValue(storyOpps[1]);
+    const monthAnalyticsVal = monthAnalytics.status === 'fulfilled' ? monthAnalytics.value : null;
+    const storyOppsVal = storyQueue.status === 'fulfilled' && storyQueue.value?.success
+      ? JSON.stringify(storyQueue.value.opportunities)
+      : null;
 
     const newsAlertsText = [newsAlertToday, newsAlertYesterday]
       .filter(Boolean)
@@ -93,6 +95,7 @@ export async function sendAltusWeeklyBrief() {
       editorialContext: editorialContextVal,
       priorBrief: priorBriefVal,
       morningDigest: morningDigestVal,
+      monthAnalytics: monthAnalyticsVal,
     });
 
     const weekLabel = `Week of ${formatWeekRange(now)}`;
@@ -124,7 +127,7 @@ export async function sendAltusWeeklyBrief() {
   }
 }
 
-function buildBriefPrompt({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief, morningDigest }) {
+function buildBriefPrompt({ trafficSummary, topArticles, siteSearchKw, newsAlerts, storyOpportunities, editorialContext, priorBrief, morningDigest, monthAnalytics }) {
   const trafficParsed = trafficSummary ? safeParseJson(trafficSummary) : null;
   const topArticlesParsed = topArticles ? safeParseJson(topArticles) : null;
   const siteSearchParsed = siteSearchKw ? safeParseJson(siteSearchKw) : null;
@@ -135,7 +138,7 @@ function buildBriefPrompt({ trafficSummary, topArticles, siteSearchKw, newsAlert
 
   const systemPrompt = 'You are Altus, the AI operations layer for AltWire — an independent music publication covering indie rock, alternative, and emerging artists.';
 
-  const prompt = `You are writing the weekly brief email to Derek, AltWire's editor-in-chief.
+  const prompt = `You are writing the weekly analytics brief email to Derek, AltWire's editor-in-chief.
 
 Derek's preferences:
 - Lead with the headline number (e.g. "Traffic was up 12% this week")
@@ -144,34 +147,39 @@ Derek's preferences:
 - Article-level analytics, not site-wide averages
 - No long preambles, no sign-off
 
+Use only numbers present in the context below. Never invent figures. If a source is missing, say so in one short clause and move on.
+
 Write the brief in these sections:
 
 ## The Week
-2-3 sentences on the character of the week — traffic, editorial output, any incidents. Lead with the most important signal.
+2-3 sentences. Lead with week-over-week traffic (THIS WEEK ANALYTICS.traffic) and search clicks (search.totals), and put them against the 28-day trend (LAST 28 DAYS ANALYTICS).
 
-## What I'm Watching
-2 items maximum. Each: one named signal with a concrete number. What does it mean editorially?
+## What Moved
+The 2-3 most important risers or fallers across pages and search queries, each with its number and change. Say what it means editorially (a story catching on, a seasonal drop, a ranking slip).
 
-## What I Did
-Honest account of autonomous actions this week. If it was light, say so directly. Include: cron runs, alerts sent, story opportunities flagged, any heartbeat interventions.
+## Search & Discovery
+New queries in positions 5-30, Google News pickup, and the biggest search-demand gaps (queries with demand but weak archive coverage). Name the specific queries.
+
+## Recent Articles
+How the last two weeks' articles are performing (recent_articles): which are pulling views or search clicks, and which have stalled.
 
 ## One Recommendation
-The single highest-leverage editorial action Derek should take this week. Be specific — name the article, query, or opportunity. Include why now.
-
-## Open Questions
-Maximum 2 questions for Derek. Only ask if genuinely uncertain and the answer would change what Altus does next.
+The single highest-leverage editorial action for this week: refresh, follow-up, or new piece. Name the article, query, or opportunity, cite the number behind it, and say why now.
 
 ---
 
 Context:
+THIS WEEK ANALYTICS (last 7 days vs prior 7; from the morning digest): ${morningDigestParsed?.analytics ? JSON.stringify(morningDigestParsed.analytics, null, 2) : 'No data available'}
+LAST 28 DAYS ANALYTICS (vs prior 28): ${monthAnalytics ? JSON.stringify(monthAnalytics, null, 2) : 'No data available'}
+EDITORIAL SYNTHESIS: ${morningDigestParsed?.editorial_synthesis ? JSON.stringify(morningDigestParsed.editorial_synthesis, null, 2) : 'No data available'}
+18-MONTH HISTORICAL CONTEXT: ${morningDigestParsed?.historical ? JSON.stringify(morningDigestParsed.historical, null, 2) : 'No data available'}
 TRAFFIC SUMMARY: ${trafficParsed ? JSON.stringify(trafficParsed, null, 2) : 'No data available'}
 TOP ARTICLES: ${topArticlesParsed ? JSON.stringify(topArticlesParsed, null, 2) : 'No data available'}
-SEARCH KEYWORDS: ${siteSearchParsed ? JSON.stringify(siteSearchParsed, null, 2) : 'No data available'}
+SITE SEARCH KEYWORDS: ${siteSearchParsed ? JSON.stringify(siteSearchParsed, null, 2) : 'No data available'}
 NEWS ALERTS THIS WEEK: ${newsAlerts || 'None'}
-STORY OPPORTUNITIES: ${storyOppsParsed ? JSON.stringify(storyOppsParsed, null, 2) : 'No data available'}
+STORY OPPORTUNITY QUEUE: ${storyOppsParsed ? JSON.stringify(storyOppsParsed, null, 2) : 'No data available'}
 EDITORIAL CONTEXT: ${editorialCtxParsed ? JSON.stringify(editorialCtxParsed, null, 2) : 'No data available'}
-PRIOR BRIEF (for continuity): ${priorParsed ? JSON.stringify(priorParsed, null, 2) : 'No prior brief'}
-MORNING DIGEST: ${morningDigestParsed ? JSON.stringify(morningDigestParsed, null, 2) : 'No morning digest available'}
+PRIOR BRIEF (for continuity; don't repeat last week's recommendation unless it still stands): ${priorParsed ? JSON.stringify(priorParsed, null, 2) : 'No prior brief'}
 
 Write only the brief. No preamble, no "Here is your brief:", no sign-off beyond "— Altus".
 Target length: 400–600 words.`;

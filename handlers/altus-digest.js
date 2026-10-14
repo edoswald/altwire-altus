@@ -1,8 +1,10 @@
 /**
  * Morning digest handler.
- * Aggregates 7 data sources into a single daily briefing:
- *   uptime, incidents, news alerts, story opportunities,
- *   review deadlines, overdue loaners, and yesterday's traffic.
+ * Aggregates AltWire analytics into a single daily briefing:
+ *   week-over-week traffic and search deltas, risers/fallers, new
+ *   opportunity-zone queries, Google News pickup, recent-article performance
+ *   (see altus-digest-analytics.js), plus news alerts, story opportunities,
+ *   yesterday's traffic, and the nightly editorial synthesis.
  *
  * Uses Promise.allSettled so individual source failures never block the digest.
  *
@@ -12,10 +14,9 @@
 
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
-import { getAltwireUptime, getAltwireIncidents } from './altus-monitoring.js';
 import { getTrafficSummary } from './altwire-matomo-client.js';
-import { getAiCostSummary } from '../lib/ai-cost-tracker.js';
 import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
+import { buildAnalyticsSnapshot } from './altus-digest-analytics.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -113,38 +114,28 @@ async function buildMorningDigest() {
       test_mode: true,
       date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
       generated_at: new Date().toISOString(),
-      uptime: { site: { status: 'up' }, wp_cron: { status: 'up' } },
-      incidents: { site: [], wp_cron: [] },
+      analytics: null,
       news_alerts: null,
       story_opportunities: null,
-      review_deadlines: { reviews: [], count: 0 },
-      overdue_loaners: { loaners: [], count: 0 },
       traffic: null,
-      ai_costs: null,
     };
   }
 
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-  // Fire all 14 fetches in parallel — failures are isolated per section
+  // Fire all fetches in parallel — failures are isolated per section
   const [
-    uptimeResult,
-    incidentsResult,
+    analyticsResult,
     newsAlertsResult,
     storyOppsResult,
-    reviewsResult,
-    loanersResult,
     trafficResult,
-    aiCostResult,
     freshTrafficResult,
     freshTopArticlesResult,
     freshGscOppsResult,
     editorialSynthesisResult,
     siteSearchKeywordsResult,
-    actionItemsResult,
   ] = await Promise.allSettled([
-    getAltwireUptime(),
-    getAltwireIncidents(),
+    buildAnalyticsSnapshot({ days: 7 }),
     // Most recent available news-alert snapshot. Prefer today's, but fall back to
     // the latest prior day so the count never collapses to 0 just because the
     // 4:30 AM ET news_monitor cron hasn't run yet for the current date.
@@ -155,32 +146,12 @@ async function buildMorningDigest() {
        ORDER BY key DESC LIMIT 1`,
     ),
     listStoryOpportunityQueue({ status: 'active', limit: 50 }),
-    pool.query(
-      `SELECT id, title, reviewer, due_date, status FROM altus_reviews
-       WHERE due_date IS NOT NULL
-         AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-         AND status NOT IN ('published', 'cancelled')
-       ORDER BY due_date ASC`,
-    ),
-    pool.query(
-      `SELECT id, item_name, brand, borrower, expected_return_date, status FROM altus_loaners
-       WHERE expected_return_date < CURRENT_DATE
-         AND actual_return_date IS NULL
-         AND status NOT IN ('returned', 'kept', 'lost')
-       ORDER BY expected_return_date ASC`,
-    ),
     getTrafficSummary('day', 'yesterday'),
-    getAiCostSummary(),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:traffic_summary']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:top_articles']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:gsc:fresh_opportunities']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:combined_synthesis']),
     pool.query('SELECT value FROM agent_memory WHERE agent = $1 AND key = $2 LIMIT 1', ['hal', 'hal:altwire:site_search_keywords']),
-    pool.query(
-      `SELECT id, title, category, signal_source, proposed_at FROM altus_action_items
-       WHERE status = 'proposed'
-       ORDER BY proposed_at DESC LIMIT 5`,
-    ),
   ]);
 
   // Load historical analytics context alongside fresh fetches
@@ -188,22 +159,15 @@ async function buildMorningDigest() {
 
   const warnings = [];
 
-  // --- Uptime ---
-  let uptime = null;
-  if (uptimeResult.status === 'fulfilled') {
-    uptime = uptimeResult.value;
+  // --- Analytics snapshot (7d vs prior 7d) ---
+  let analytics = null;
+  if (analyticsResult.status === 'fulfilled') {
+    analytics = analyticsResult.value;
+    for (const w of analytics.warnings ?? []) {
+      warnings.push({ section: `analytics_${w.section}`, message: w.message });
+    }
   } else {
-    uptime = null;
-    warnings.push({ section: 'uptime', message: `Uptime fetch failed: ${uptimeResult.reason?.message || uptimeResult.reason}` });
-  }
-
-  // --- Incidents ---
-  let incidents = null;
-  if (incidentsResult.status === 'fulfilled') {
-    incidents = incidentsResult.value;
-  } else {
-    incidents = null;
-    warnings.push({ section: 'incidents', message: `Incidents fetch failed: ${incidentsResult.reason?.message || incidentsResult.reason}` });
+    warnings.push({ section: 'analytics', message: `Analytics snapshot failed: ${analyticsResult.reason?.message || analyticsResult.reason}` });
   }
 
   // --- News Alerts (agent memory) ---
@@ -239,7 +203,7 @@ async function buildMorningDigest() {
       if (opportunities.length > 0) {
         story_opportunities = {
           count: opportunities.length,
-          top: opportunities.slice(0, 3),
+          top: opportunities.slice(0, 5),
           pitches: null,
         };
       }
@@ -249,34 +213,6 @@ async function buildMorningDigest() {
     }
   } else {
     warnings.push({ section: 'story_opportunities', message: `Story opportunities fetch failed: ${storyOppsResult.reason?.message || storyOppsResult.reason}` });
-  }
-
-  // --- Review Deadlines ---
-  let review_deadlines = null;
-  let review_deadlines_warning = null;
-  if (reviewsResult.status === 'fulfilled') {
-    const rows = reviewsResult.value.rows;
-    review_deadlines = { reviews: rows, count: rows.length };
-  } else {
-    review_deadlines = null;
-    review_deadlines_warning = `Review deadlines fetch failed: ${reviewsResult.reason?.message || reviewsResult.reason}`;
-  }
-  if (review_deadlines_warning) {
-    warnings.push({ section: 'review_deadlines', message: review_deadlines_warning });
-  }
-
-  // --- Overdue Loaners ---
-  let overdue_loaners = null;
-  let overdue_loaners_warning = null;
-  if (loanersResult.status === 'fulfilled') {
-    const rows = loanersResult.value.rows;
-    overdue_loaners = { loaners: rows, count: rows.length };
-  } else {
-    overdue_loaners = null;
-    overdue_loaners_warning = `Overdue loaners fetch failed: ${loanersResult.reason?.message || loanersResult.reason}`;
-  }
-  if (overdue_loaners_warning) {
-    warnings.push({ section: 'overdue_loaners', message: overdue_loaners_warning });
   }
 
   // --- Traffic (Matomo) ---
@@ -298,19 +234,6 @@ async function buildMorningDigest() {
     warnings.push({ section: 'traffic', message: traffic_warning });
   }
 
-  // --- AI Costs ---
-  let ai_costs = null;
-  let ai_costs_warning = null;
-  if (aiCostResult.status === 'fulfilled') {
-    ai_costs = aiCostResult.value;
-  } else {
-    ai_costs = null;
-    ai_costs_warning = `AI cost summary failed: ${aiCostResult.reason?.message || aiCostResult.reason}`;
-  }
-  if (ai_costs_warning) {
-    warnings.push({ section: 'ai_costs', message: ai_costs_warning });
-  }
-
   // --- Fresh reflection data (written by 4 AM cron) ---
   const parseMemoryRow = (result) => {
     if (result.status !== 'fulfilled') return null;
@@ -324,12 +247,6 @@ async function buildMorningDigest() {
   const fresh_gsc_opps       = parseMemoryRow(freshGscOppsResult);
   const editorial_synthesis  = parseMemoryRow(editorialSynthesisResult);
   const site_search_keywords = parseMemoryRow(siteSearchKeywordsResult);
-
-  // --- Open action items (proposed, most recent first) ---
-  let open_action_items = null;
-  if (actionItemsResult.status === 'fulfilled') {
-    open_action_items = { items: actionItemsResult.value.rows, count: actionItemsResult.value.rows.length };
-  }
 
   // --- Build historical analytics context ---
   let historical = null;
@@ -429,14 +346,10 @@ async function buildMorningDigest() {
   const digest = {
     date: today,
     generated_at: new Date().toISOString(),
-    uptime,
-    incidents,
+    analytics,
     news_alerts,
     story_opportunities,
-    review_deadlines,
-    overdue_loaners,
     traffic,
-    ai_costs,
     historical,
     providers,
     fresh_traffic,
@@ -444,7 +357,6 @@ async function buildMorningDigest() {
     fresh_gsc_opps,
     editorial_synthesis,
     site_search_keywords,
-    open_action_items,
   };
 
   // Include per-section warning fields for failed sections
@@ -464,7 +376,7 @@ async function buildMorningDigest() {
     has_fresh_articles: !!fresh_top_articles,
     has_editorial_synthesis: !!editorial_synthesis,
     has_site_search: !!site_search_keywords,
-    open_action_items: open_action_items?.count ?? 0,
+    has_analytics: !!analytics,
   });
 
   return digest;

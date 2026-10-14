@@ -18,6 +18,12 @@ describe('altus-weekly-brief batching', () => {
     vi.doMock('../handlers/altus-digest.js', () => ({
       getAltwireMorningDigest: vi.fn().mockResolvedValue({ highlights: [] }),
     }));
+    vi.doMock('../handlers/altus-digest-analytics.js', () => ({
+      buildAnalyticsSnapshot: vi.fn().mockResolvedValue({ days: 28, traffic: null }),
+    }));
+    vi.doMock('../handlers/altus-opportunity-queue.js', () => ({
+      listStoryOpportunityQueue: vi.fn().mockResolvedValue({ success: true, opportunities: [] }),
+    }));
     vi.doMock('../lib/altus-db.js', () => ({
       default: { query: mockQuery },
       hasDbConfig: vi.fn().mockReturnValue(true),
