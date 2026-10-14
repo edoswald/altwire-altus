@@ -12,6 +12,8 @@
 | Email digests | **Keep both** (5:15 AM weekday digest, Sunday brief), **re-weighted toward analytics** | See Phase 3b |
 | Shared DB / Nimbus | **Give Altus its own Postgres** | New Phase 4a. This removes the Nimbus `agent_memory` cross-dependency and the `HAL_SESSION_SECRET` coupling |
 | First client | **Claude in Slack** (claude.ai connector, OAuth) | Phase 0 is mandatory and is done first |
+| Uptime in digest | **Drop entirely**, no footer | Phase 3b removes the Better Stack blocks; `get_altwire_uptime` and incident tools stay out of core |
+| SEO write-back / link evaluator | Not yet answered. Default applied: SEO tools **in** core (writes), `evaluate_link_fitness` **out** | Revisit if wanted |
 | Laminar tracing | **Remove.** No longer needed | **Done:** `tracing.js`, `hal-signals.js`, `lib/laminar-integration.js` and `@lmnr-ai/lmnr` removed; all `observe()` wrappers unwrapped. Delete `LMNR_PROJECT_API_KEY` from Railway |
 **Goal:** Turn Altus from "Hal's backend" into a small, well-described MCP server that any agent can use (Claude in Slack / Claude Tag, a Managed Agent, Claude Desktop/Code), keeping the **RAG archive**, **Matomo + GSC analytics**, and **story ideas / editorial intelligence**. Remove the agent-runtime pieces that Claude now provides for us.
 
@@ -129,7 +131,15 @@ Original notes:
 - Default dynamically registered clients to the **read-only** tool set. Write tools require an explicit allowlist entry.
 - Audit `OAUTH_CLIENT_TOOLS`: unlisted clients currently get full access.
 
-### Phase 1: Feature-flag the core profile (no deletions yet)
+### Phase 1: Feature-flag the core profile (no deletions yet). **Done**
+
+Implemented in `lib/altus-profile.js` (tested in `tests/altus-profile.unit.test.js`):
+- `ALTUS_PROFILE=core` registers the 33 tools in `CORE_TOOLS`. It returns 404 for `/hal/*`, `/events/*`, `/slack/*` and `/altwire/*`, skips the Slack bot and the mountaineering seed, ignores `X-Agent-Context`, and skips the heartbeat, chat-presence and mountaineering crons. `audit_batch` still runs, because it collects synthesis and weekly-brief batches, but it skips the Hal audit step.
+- `ALTUS_RUN_CRONS=false` disables every background job, including ingest.
+- The default (`legacy`) is unchanged: 120 tools.
+- **Remaining ops step:** create the second Railway service (same repo, `ALTUS_PROFILE=core`, `ALTUS_RUN_CRONS=false`, `ALTUS_OAUTH_CONSENT_PASSPHRASE`, and its own `MCP_BASE_URL` and domain), then add it as a claude.ai connector for Claude in Slack.
+
+Original notes:
 - Add `ALTUS_PROFILE=core|legacy` (default `legacy`). In `core`:
   - Register only the Keep tools (plus whichever Decide tools are approved).
   - Skip Hal routes, the Slack bot init, Hal-only crons (heartbeat, chat-presence cleanup, audit batch, mountaineering, weekly-brief batch if mailers are dropped), and `registerSignals()`.
@@ -192,8 +202,7 @@ Original notes:
 
 ## 6. Open questions
 Resolved 2026-10-14; see **Decisions** at the top. Remaining:
-1. Better Stack uptime: keep a one-line footer in the digest, or drop it entirely?
-2. `evaluate_link_fitness` and `update_altwire_seo_fields`: still wanted? (Their answers decide the `openai` dependency and whether core has any WordPress write tools.)
+1. `evaluate_link_fitness` and `update_altwire_seo_fields`: still wanted? (Defaults applied in core: SEO in, link evaluator out.) (Their answers decide the `openai` dependency and whether core has any WordPress write tools.)
 
 ## 7. Rough size
 | Phase | Effort | Net lines |

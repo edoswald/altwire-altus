@@ -56,6 +56,7 @@ import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-searc
 import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRegistered } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
+import { getAltusProfile, isCoreProfile, isCronEnabled, isPathEnabled, isToolEnabled, shouldRunCrons } from './lib/altus-profile.js';
 import { initAiUsageSchema, logAiUsage } from './lib/ai-cost-tracker.js';
 import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
 import { initChatHistorySchema, saveSession as saveChatSession, listSessions as listChatSessions, getSession as getChatSession, deleteSession as deleteChatSession } from './lib/altus-chat-history.js';
@@ -400,6 +401,14 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   // Each logs errors rather than crashing so the MCP server can start regardless.
   // ---------------------------------------------------------------------------
   const altusDbUrl = process.env.ALTWIRE_DATABASE_URL || process.env.DATABASE_URL;
+
+  // Schedule a background job unless ALTUS_RUN_CRONS=false or the job is
+  // legacy-only and this instance runs ALTUS_PROFILE=core.
+  function scheduleCron(name, expression, fn, options) {
+    if (!isCronEnabled(name)) return;
+    cron.schedule(expression, fn, options);
+  }
+
   if (altusDbUrl) {
     initSchema().catch((err) => {
       logger.error('Schema init failed', { error: err.message, code: err.code });
@@ -433,7 +442,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     initMountaineeringSchema().catch((err) => {
       logger.error('Mountaineering schema init failed', { error: err.message, code: err.code });
     });
-    seedMountaineeringClimbs().catch((err) => {
+    if (!isCoreProfile()) seedMountaineeringClimbs().catch((err) => {
       logger.error('seedMountaineeringClimbs failed', { error: err.message });
     });
 
@@ -470,21 +479,21 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       .catch(err => logger.error('altus-skill-library: import failed', { error: err.message }));
 
     // Slack schema init (non-blocking)
-    import('./handlers/slack-altus.js')
+    if (!isCoreProfile()) import('./handlers/slack-altus.js')
       .then(({ initSlackAltusSchema, initSlackAltus }) => {
         return initSlackAltusSchema().then(() => initSlackAltus());
       })
       .catch(err => logger.error('slack-altus: init import failed', { error: err.message, code: err.code, stack: err.stack }));
 
-  startIngestCron();
+  if (shouldRunCrons()) startIngestCron();
 
   // News Monitor — 4:30 AM ET daily (after 4 AM reflection so fresh GSC data is available)
-  cron.schedule('30 4 * * *', async () => {
+  scheduleCron('news_monitor', '30 4 * * *', async () => {
     await runNewsMonitorCron();
   }, { timezone: 'America/New_York' });
 
   // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; upserts the altus_story_opportunities queue the digest reads)
-  cron.schedule('0 5 * * 1-5', async () => {
+  scheduleCron('story_opportunities', '0 5 * * 1-5', async () => {
     try {
       await logAltusEvent('cron_trigger', { payload: { cron_name: 'story_opportunities', phase: 'started' } });
       const result = await refreshOpportunityQueue({ days: 28, includeNews: true });
@@ -528,12 +537,12 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Performance Snapshot — 6 AM ET daily
-  cron.schedule('0 6 * * *', async () => {
+  scheduleCron('performance_snapshot', '0 6 * * *', async () => {
     await runPerformanceSnapshotCron();
   }, { timezone: 'America/New_York' });
 
   // AltWire Nightly Reflection — 4 AM ET daily
-  cron.schedule('0 4 * * *', async () => {
+  scheduleCron('altwire_reflection', '0 4 * * *', async () => {
     try {
       const { runAltwireReflection } = await import('./handlers/altus-reflection.js');
       await runAltwireReflection();
@@ -543,7 +552,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Altus Heartbeat — every 2 hours
-  cron.schedule('0 */2 * * *', async () => {
+  scheduleCron('altus_heartbeat', '0 */2 * * *', async () => {
     try {
       const { runAltusHeartbeat } = await import('./handlers/altus-heartbeat.js');
       await runAltusHeartbeat();
@@ -553,7 +562,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Chat presence cleanup — hourly
-  cron.schedule('15 * * * *', async () => {
+  scheduleCron('chat_presence_cleanup', '15 * * * *', async () => {
     try {
       const result = await cleanupChatPresence();
       if (result?.deleted > 0) {
@@ -565,7 +574,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Altus Event Log Retention — 3 AM ET daily
-  cron.schedule('0 3 * * *', async () => {
+  scheduleCron('event_retention', '0 3 * * *', async () => {
     try {
       const { runRetentionCron } = await import('./altus-event-log.js');
       await runRetentionCron();
@@ -575,12 +584,12 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Altus Audit Batch Collection — every 2 hours, staggered 30 min from heartbeat
-  cron.schedule('30 */2 * * *', async () => {
+  scheduleCron('audit_batch', '30 */2 * * *', async () => {
     try {
       const { runAuditBatchCollection } = await import('./altus-event-log.js');
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
       const { collectAltusWeeklyBriefBatches } = await import('./handlers/altus-weekly-brief.js');
-      await runAuditBatchCollection();
+      if (!isCoreProfile()) await runAuditBatchCollection();
       await collectSynthesisBatches();
       await collectAltusWeeklyBriefBatches();
     } catch (err) {
@@ -589,7 +598,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // AltWire synthesis focused early poll — helps land before the 5:15 AM digest.
-  cron.schedule('15,30,45 4 * * *', async () => {
+  scheduleCron('synthesis_batch_early', '15,30,45 4 * * *', async () => {
     try {
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
       await collectSynthesisBatches();
@@ -598,7 +607,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     }
   }, { timezone: 'America/New_York' });
 
-  cron.schedule('0 5 * * *', async () => {
+  scheduleCron('synthesis_batch_late', '0 5 * * *', async () => {
     try {
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
       await collectSynthesisBatches();
@@ -608,7 +617,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Mountaineering Batch Collection — every 2 hours, staggered 45 min from heartbeat
-  cron.schedule('45 */2 * * *', async () => {
+  scheduleCron('mountaineering_batch', '45 */2 * * *', async () => {
     try {
       await collectClimbScores();
     } catch (err) {
@@ -617,7 +626,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   });
 
   // Daily morning digest email — Mon-Fri 5:15 AM ET
-  cron.schedule('15 5 * * 1-5', async () => {
+  scheduleCron('morning_digest', '15 5 * * 1-5', async () => {
     try {
       const { sendMorningDigestEmail } = await import('./handlers/altus-digest-mailer.js');
       await sendMorningDigestEmail();
@@ -627,7 +636,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Weekly prose brief email — Sundays 8 AM ET
-  cron.schedule('0 8 * * 0', async () => {
+  scheduleCron('weekly_brief', '0 8 * * 0', async () => {
     try {
       const { sendAltusWeeklyBrief } = await import('./handlers/altus-weekly-brief.js');
       await sendAltusWeeklyBrief();
@@ -636,7 +645,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     }
   }, { timezone: 'America/New_York' });
 
-  cron.schedule('*/10 8-13 * * 0', async () => {
+  scheduleCron('weekly_brief_batch', '*/10 8-13 * * 0', async () => {
     try {
       const { collectAltusWeeklyBriefBatches } = await import('./handlers/altus-weekly-brief.js');
       await collectAltusWeeklyBriefBatches();
@@ -670,6 +679,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
    * @param {function} handler
    */
   function scopedRegister(toolName, inputSchema, handler) {
+    if (!isToolEnabled(toolName)) return;
     const allowed = TOOL_CONTEXTS[toolName];
     if (!allowed || allowed.length === 0 || (agentContext && allowed.includes(agentContext))) {
       server.registerTool(toolName, inputSchema, safeToolHandler(toolName, handler));
@@ -2954,6 +2964,13 @@ const httpServer = createServer(async (req, res) => {
     }
   }
 
+  // Core profile serves only MCP, OAuth, and health — no Hal UI, Slack bot, or Hal REST.
+  if (!isPathEnabled(url.pathname)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+    return;
+  }
+
   const halUiRateLimitBucket = getHalUiRateLimitBucket(req.method, url.pathname);
   if (halUiRateLimitBucket === 'chat') {
     if (!halChatLimiter.check(req, res)) return;
@@ -4204,7 +4221,8 @@ const httpServer = createServer(async (req, res) => {
     }
 
     const allowedTools = OAUTH_CLIENT_TOOLS.get(clientId);
-    const agentContext = req.headers['x-agent-context'] || null;
+    // Agent contexts (altwire/weather/nimbus) are a Hal-era concept; core ignores them.
+    const agentContext = isCoreProfile() ? null : (req.headers['x-agent-context'] || null);
 
     // Reject agentContext claims that this clientId is not authorized to make
     if (!isContextAllowed(clientId, agentContext)) {
@@ -4264,6 +4282,8 @@ const httpServer = createServer(async (req, res) => {
 
 httpServer.listen(PORT, () => {
   logger.info(`Altus MCP server listening on port ${PORT}`, {
+    profile: getAltusProfile(),
+    crons: shouldRunCrons(),
     healthEndpoint: `http://localhost:${PORT}/health`,
     mcpEndpoint: `http://localhost:${PORT}/`,
   });

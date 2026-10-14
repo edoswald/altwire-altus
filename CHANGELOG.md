@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ALTUS_PROFILE=core`** (`lib/altus-profile.js`): 33-tool AltWire MCP (archive RAG, Matomo + GSC analytics, story ideas) for Claude in Slack and other agents. Serves only MCP, OAuth and health routes; no Slack bot or Hal-only crons. The default `legacy` profile is unchanged.
+- **`ALTUS_RUN_CRONS=false`** disables all background jobs, so two services can share one database without double-running crons.
+
 ### Security
 
 - **OAuth consent required** (`lib/oauth-consent.js`): `/authorize` now shows a consent page and issues a code only after `ALTUS_OAUTH_CONSENT_PASSPHRASE` is entered (503 when unset). Dynamic Client Registration only accepts Claude hosted callbacks, loopback, or `OAUTH_ALLOWED_REDIRECT_URIS`.

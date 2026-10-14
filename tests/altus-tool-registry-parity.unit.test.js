@@ -38,7 +38,7 @@ describe('Altus shared Hal registry parity', () => {
   });
 
   it('wires the story opportunities cron through the unified queue refresh path', () => {
-    const storyCronBlock = indexSource.match(/cron\.schedule\(\s*'0 5 \* \* 1-5'[\s\S]+?\}, \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
+    const storyCronBlock = indexSource.match(/scheduleCron\(\s*'story_opportunities',\s*'0 5 \* \* 1-5'[\s\S]+?\}, \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
 
     expect(storyCronBlock).toContain('refreshOpportunityQueue({ days: 28, includeNews: true })');
     expect(storyCronBlock).not.toContain('getStoryOpportunities({ days: 28 })');
