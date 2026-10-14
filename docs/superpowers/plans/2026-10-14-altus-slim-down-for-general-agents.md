@@ -163,7 +163,7 @@ Original notes:
 - Leave the `hal:altwire:*` key prefix alone in this phase. A key rename touches seeds, reads and a data migration, and buys nothing yet.
 
 ### Phase 3b: Re-weight the digests toward analytics
-- **Remove:** review deadlines, overdue loaners, Writer/assignment content, AI cost, and the Better Stack uptime/incident blocks. Uptime can stay as a one-line footer if wanted.
+- **Remove:** review deadlines, overdue loaners, Writer/assignment content, AI cost, and the Better Stack uptime/incident blocks (no footer; decided 2026-10-14).
 - **Add or expand** (all from data Altus already collects):
   - Week-over-week and day-over-day traffic deltas (Matomo), with the top 5 risers and fallers by page.
   - GSC movers: queries and pages whose clicks or position changed most over 7d vs the prior 7d, plus new entries into the 5–30 opportunity zone.
