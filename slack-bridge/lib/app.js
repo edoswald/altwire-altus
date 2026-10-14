@@ -15,6 +15,7 @@ import {
 } from './mcp-oauth.js';
 import { buildPersonalOverride, personalServersFromCredentials } from './personal-servers.js';
 import { scheduledPrompt } from './schedules.js';
+import { downloadFile, findNewSessionFiles } from './session-files.js';
 
 /**
  * @param {object} deps
@@ -24,8 +25,9 @@ import { scheduledPrompt } from './schedules.js';
  * @param {import('./slack.js').SlackClient} deps.slack
  * @param {object} [deps.log]
  * @param {Function} [deps.fetchImpl] fetch used for OAuth discovery and token calls
+ * @param {Function} [deps.sleep]     delay used while waiting for output files (tests pass a no-op)
  */
-export function createBridge({ config, store, anthropic, slack, log = console, fetchImpl = fetch }) {
+export function createBridge({ config, store, anthropic, slack, log = console, fetchImpl = fetch, sleep }) {
   const redirectUri = `${config.publicUrl}/oauth/callback`;
   let botUserId = config.botUserId ?? null;
 
@@ -43,15 +45,41 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
   // ---------------------------------------------------------------------------
   // Conversations
   // ---------------------------------------------------------------------------
+  /** Post (or fill in the placeholder with) the reply; returns the first message's ts. */
   async function postReply({ channel, threadTs, placeholderTs, text }) {
     const chunks = chunkText(toSlackMrkdwn(text));
+    let firstTs = placeholderTs;
     if (placeholderTs) {
       await slack.update({ channel, ts: placeholderTs, text: chunks[0] });
     } else {
-      await slack.post({ channel, text: chunks[0], thread_ts: threadTs ?? undefined });
+      firstTs = (await slack.post({ channel, text: chunks[0], thread_ts: threadTs ?? undefined })).ts;
     }
     for (const chunk of chunks.slice(1)) {
       await slack.post({ channel, text: chunk, thread_ts: threadTs ?? undefined });
+    }
+    return firstTs;
+  }
+
+  /** Attach files the agent created during the turn (reports, spreadsheets, decks). */
+  async function deliverFiles({ sessionId, channel, threadTs }) {
+    let files;
+    try {
+      files = await findNewSessionFiles(anthropic, sessionId, await store.getSentFiles(sessionId), sleep ? { sleep } : {});
+    } catch (err) {
+      log.warn('Listing session files failed', { sessionId, error: err.message });
+      return;
+    }
+    for (const file of files) {
+      try {
+        const bytes = await downloadFile(anthropic, file.id);
+        await slack.uploadFile({ channel, thread_ts: threadTs ?? undefined, filename: file.filename, bytes, title: file.filename });
+        await store.markFileSent(sessionId, file.id);
+        log.info('File attached', { sessionId, filename: file.filename, bytes: bytes.length });
+      } catch (err) {
+        log.error('Attaching file failed', { sessionId, filename: file.filename, error: err.message });
+        await store.markFileSent(sessionId, file.id).catch(() => {});
+        await slack.post({ channel, thread_ts: threadTs ?? undefined, text: `_Couldn't attach ${file.filename}: ${err.message}_` }).catch(() => {});
+      }
     }
   }
 
@@ -124,6 +152,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       }
       log.info('Turn complete', { sessionKey: route.sessionKey, stopReason: outcome.result.stopReason, toolCalls: outcome.result.toolCalls });
       await postReply({ channel: route.channel, threadTs: route.replyThreadTs, placeholderTs: placeholder.ts, text: outcome.result.text });
+      await deliverFiles({ sessionId: outcome.session.sessionId, channel: route.channel, threadTs: route.replyThreadTs });
     } catch (err) {
       log.error('Conversation failed', { sessionKey: route.sessionKey, error: err.message });
       await slack.update({ channel: route.channel, ts: placeholder.ts, text: '_Something went wrong reaching the agent. Try again in a minute._' })
@@ -398,7 +427,8 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
         log.warn('Scheduled job did not finish cleanly; not posting', { job: job.name, stopReason: result.stopReason });
         return;
       }
-      await postReply({ channel: job.channel, text: result.text });
+      const postTs = await postReply({ channel: job.channel, text: result.text });
+      await deliverFiles({ sessionId, channel: job.channel, threadTs: postTs });
       log.info('Scheduled job posted', { job: job.name, channel: job.channel });
     } catch (err) {
       log.error('Scheduled job failed', { job: job.name, error: err.message });

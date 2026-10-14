@@ -101,6 +101,39 @@ export class SlackClient {
     return data;
   }
 
+  /** Form-encoded Web API call (some file methods don't accept JSON bodies). */
+  async callForm(method, params) {
+    const body = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null) body.set(k, String(v));
+    const res = await this.fetch(`https://slack.com/api/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Bearer ${this.token}` },
+      body: body.toString(),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(`Slack ${method} failed: ${data.error}`);
+    return data;
+  }
+
+  /**
+   * Upload a file into a channel or thread (files.getUploadURLExternal →
+   * upload → files.completeUploadExternal). Needs the files:write scope.
+   */
+  async uploadFile({ channel, thread_ts, filename, bytes, title }) {
+    const { upload_url: uploadUrl, file_id: fileId } = await this.callForm('files.getUploadURLExternal', {
+      filename,
+      length: bytes.length,
+    });
+    const put = await this.fetch(uploadUrl, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+    if (!put.ok) throw new Error(`Slack file upload failed (${put.status})`);
+    await this.callForm('files.completeUploadExternal', {
+      files: JSON.stringify([{ id: fileId, title: title ?? filename }]),
+      channel_id: channel,
+      thread_ts,
+    });
+    return fileId;
+  }
+
   authTest() {
     return this.call('auth.test', {});
   }

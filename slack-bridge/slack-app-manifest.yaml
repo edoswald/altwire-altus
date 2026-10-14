@@ -19,6 +19,7 @@ oauth_config:
       - app_mentions:read   # @mentions in channels it has been invited to
       - channels:history    # follow-up replies in threads it is already part of
       - chat:write          # post and update its own replies
+      - files:write         # attach reports and spreadsheets the agent creates
       - im:history          # DMs sent to it
       - im:read
       - im:write            # open a DM to send sign-in results

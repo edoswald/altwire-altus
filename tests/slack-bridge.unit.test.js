@@ -291,3 +291,44 @@ describe('personal servers', async () => {
     expect(twice.mcp_servers.map((s) => s.name)).toEqual(['altus', 'personal_zoho', 'personal_zoho_2']);
   });
 });
+
+describe('Slack file upload and file selection', async () => {
+  const { SlackClient } = await import('../slack-bridge/lib/slack.js');
+  const { selectNewFiles } = await import('../slack-bridge/lib/session-files.js');
+
+  it('uploads via getUploadURLExternal, the upload URL, then completeUploadExternal', async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith('files.getUploadURLExternal')) return { json: async () => ({ ok: true, upload_url: 'https://files.slack.com/up/1', file_id: 'F123' }) };
+      if (url === 'https://files.slack.com/up/1') return { ok: true, status: 200 };
+      return { json: async () => ({ ok: true }) };
+    };
+    const slack = new SlackClient({ token: 'xoxb-1', fetchImpl });
+    const id = await slack.uploadFile({ channel: 'C1', thread_ts: '1.1', filename: 'r.pdf', bytes: Buffer.from('pdf!') });
+    expect(id).toBe('F123');
+    expect(calls.map((c) => c.url)).toEqual(['https://slack.com/api/files.getUploadURLExternal', 'https://files.slack.com/up/1', 'https://slack.com/api/files.completeUploadExternal']);
+    expect(Object.fromEntries(new URLSearchParams(calls[0].init.body))).toEqual({ filename: 'r.pdf', length: '4' });
+    expect(calls[1].init.body.toString()).toBe('pdf!');
+    const complete = Object.fromEntries(new URLSearchParams(calls[2].init.body));
+    expect(complete).toEqual({ files: JSON.stringify([{ id: 'F123', title: 'r.pdf' }]), channel_id: 'C1', thread_ts: '1.1' });
+  });
+
+  it('surfaces Slack errors such as a missing scope', async () => {
+    const slack = new SlackClient({ token: 'x', fetchImpl: async () => ({ json: async () => ({ ok: false, error: 'missing_scope' }) }) });
+    await expect(slack.uploadFile({ channel: 'C1', filename: 'a', bytes: Buffer.from('a') })).rejects.toThrow(/missing_scope/);
+  });
+
+  it('selects unsent, downloadable files within limits, oldest first', () => {
+    const files = [
+      { id: 'b', created_at: '2', size_bytes: 10 },
+      { id: 'a', created_at: '1', size_bytes: 10 },
+      { id: 'sent', created_at: '0' },
+      { id: 'hidden', created_at: '3', downloadable: false },
+      { id: 'huge', created_at: '4', size_bytes: 60 * 1024 * 1024 },
+    ];
+    expect(selectNewFiles(files, new Set(['sent'])).map((f) => f.id)).toEqual(['a', 'b']);
+    const many = Array.from({ length: 15 }, (_, i) => ({ id: `f${i}`, created_at: String(i).padStart(2, '0') }));
+    expect(selectNewFiles(many, new Set())).toHaveLength(10);
+  });
+});

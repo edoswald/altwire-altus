@@ -27,6 +27,8 @@ class MemoryStore {
   async saveUserVault(user, id) { this.vaults.set(user, id); }
   async saveOAuthState(state, data) { this.states.set(state, data); }
   async takeOAuthState(state) { const s = this.states.get(state) ?? null; this.states.delete(state); return s; }
+  async getSentFiles(sessionId) { return new Set([...(this.sent ??= new Set())].filter((k) => k.startsWith(`${sessionId}:`)).map((k) => k.split(':')[1])); }
+  async markFileSent(sessionId, fileId) { (this.sent ??= new Set()).add(`${sessionId}:${fileId}`); }
 }
 
 function fakeSlack() {
@@ -36,10 +38,15 @@ function fakeSlack() {
     calls,
     async post(args) { calls.push({ method: 'post', ...args }); n += 1; return { ts: `ts${n}` }; },
     async update(args) { calls.push({ method: 'update', ...args }); return {}; },
+    async uploadFile(args) {
+      if (args.filename === 'broken.pdf') throw new Error('missing_scope');
+      calls.push({ method: 'upload', channel: args.channel, thread_ts: args.thread_ts, filename: args.filename, text: args.bytes.toString() });
+      return 'F1';
+    },
   };
 }
 
-function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = false, credentials = {} } = {}) {
+function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = false, credentials = {}, sessionFiles = {} } = {}) {
   const log = { sessions: [], sent: [], vaults: [], creds: [], archived: [] };
   let replyIndex = 0;
   let failed = false;
@@ -48,6 +55,10 @@ function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = fa
     log,
     credentials,
     beta: {
+      files: {
+        list: ({ scope_id: scopeId }) => asyncIter(sessionFiles[scopeId] ?? []),
+        download: async (id) => ({ arrayBuffer: async () => new TextEncoder().encode(`bytes of ${id}`).buffer }),
+      },
       agents: {
         retrieve: async (id) => ({ id, version: 4, mcp_servers: [{ type: 'url', name: 'altus', url: 'https://altus.example/' }], tools: [{ type: 'mcp_toolset', mcp_server_name: 'altus' }] }),
       },
@@ -101,6 +112,7 @@ function makeBridge(overrides = {}) {
     slack,
     log: { info() {}, warn() {}, error() {} },
     fetchImpl: overrides.fetchImpl,
+    sleep: async () => {},
   });
   return { bridge, store, slack, anthropic };
 }
@@ -297,5 +309,39 @@ describe('scheduled jobs', () => {
     expect(anthropic.log.sessions[0]).toMatchObject({ agent: 'agent_1', vault_ids: ['vlt_shared'], title: 'Scheduled: weekly-recap' });
     expect(anthropic.log.sent[0].content[0].text).toMatch(/^Recap the week\./);
     expect(slack.calls).toEqual([{ method: 'post', channel: TEAM, text: 'Traffic is *up* 5%.', thread_ts: undefined }]);
+  });
+});
+
+describe('file attachments', () => {
+  const report = { id: 'file_1', filename: 'top-pages.xlsx', size_bytes: 2048, created_at: '2026-10-14T20:00:00Z', downloadable: true };
+
+  it('attaches files the agent created to the thread, once', async () => {
+    const anthropic = fakeAnthropic({ sessionFiles: { sesn_1: [report] } });
+    const { bridge, slack } = makeBridge({ anthropic });
+    await deliver(bridge, mention('spreadsheet of top pages please'));
+    expect(slack.calls.filter((c) => c.method === 'upload')).toEqual([
+      { method: 'upload', channel: TEAM, thread_ts: '100.1', filename: 'top-pages.xlsx', text: 'bytes of file_1' },
+    ]);
+    await deliver(bridge, envelope({ type: 'message', channel_type: 'channel', user: 'U2', channel: TEAM, ts: '101.0', thread_ts: '100.1', text: 'thanks' }));
+    expect(slack.calls.filter((c) => c.method === 'upload')).toHaveLength(1);
+  });
+
+  it('skips oversized and non-downloadable files and reports upload failures', async () => {
+    const anthropic = fakeAnthropic({ sessionFiles: { sesn_1: [
+      { id: 'file_big', filename: 'huge.zip', size_bytes: 80 * 1024 * 1024, created_at: '1' },
+      { id: 'file_hidden', filename: 'input.csv', downloadable: false, created_at: '2' },
+      { id: 'file_bad', filename: 'broken.pdf', size_bytes: 10, created_at: '3' },
+    ] } });
+    const { bridge, slack } = makeBridge({ anthropic });
+    await deliver(bridge, mention('make a pdf'));
+    expect(slack.calls.filter((c) => c.method === 'upload')).toHaveLength(0);
+    expect(slack.calls.at(-1)).toMatchObject({ method: 'post', thread_ts: '100.1', text: "_Couldn't attach broken.pdf: missing_scope_" });
+  });
+
+  it('threads a scheduled job\'s files under its post', async () => {
+    const anthropic = fakeAnthropic({ sessionFiles: { sesn_1: [report] } });
+    const { bridge, slack } = makeBridge({ anthropic });
+    await bridge.runScheduledJob({ name: 'weekly-recap', channel: TEAM, prompt: 'Recap.', timezone: 'America/New_York' });
+    expect(slack.calls.map((c) => [c.method, c.thread_ts])).toEqual([['post', undefined], ['upload', 'ts1']]);
   });
 });

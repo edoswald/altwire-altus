@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS bridge_oauth_states (
   expires_at     TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bridge_sent_files (
+  session_id TEXT NOT NULL,
+  file_id    TEXT NOT NULL,
+  sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (session_id, file_id)
+);
+
 CREATE TABLE IF NOT EXISTS bridge_seen_events (
   event_id   TEXT PRIMARY KEY,
   seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -95,6 +102,15 @@ export class Store {
   /** Forget a person's DM sessions (keys start with their DM channel, which begins with D). */
   async forgetDmSessions(slackUserId) {
     await this.pool.query(`DELETE FROM bridge_sessions WHERE slack_user_id = $1 AND session_key LIKE 'D%'`, [slackUserId]);
+  }
+
+  async getSentFiles(sessionId) {
+    const { rows } = await this.pool.query('SELECT file_id FROM bridge_sent_files WHERE session_id = $1', [sessionId]);
+    return new Set(rows.map((r) => r.file_id));
+  }
+
+  async markFileSent(sessionId, fileId) {
+    await this.pool.query('INSERT INTO bridge_sent_files (session_id, file_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [sessionId, fileId]);
   }
 
   async getUserVault(slackUserId) {

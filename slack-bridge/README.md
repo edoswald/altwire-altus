@@ -12,6 +12,7 @@ Slack ── AltWire Insights app ──► this bridge ──► Claude Managed
 - **@mention in an allowed channel** → the bridge replies in a thread; one agent session per thread, and follow-ups in that thread continue it.
 - **DM the app** → a private conversation. Your linked accounts (Canva, your Zoho Mail server) are added **only** here, never in channels.
 - **The agent has no Slack access.** The bridge posts every reply itself, and only to DMs or the channels in `BRIDGE_ALLOWED_CHANNELS`, so the agent cannot post anywhere else.
+- **Files the agent creates** (reports, spreadsheets, slide decks from its document skills) are attached to the same thread after the reply, each one once. Needs the `files:write` scope.
 - **Scheduled jobs** start a fresh session and post the result to their channel.
 - Altus stays a plain MCP server. Nothing here depends on Anthropic's own Claude Slack app.
 
