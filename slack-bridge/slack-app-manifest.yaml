@@ -1,0 +1,34 @@
+# Slack app manifest for the AltWire Insights bridge.
+# Create at https://api.slack.com/apps → Create New App → From an app manifest.
+# Replace BRIDGE_URL with the bridge's public URL before pasting.
+display_information:
+  name: AltWire Insights
+  description: AltWire analytics, search data and story ideas, on request.
+  background_color: "#1d1d1b"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: AltWire Insights
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read   # @mentions in channels it has been invited to
+      - channels:history    # follow-up replies in threads it is already part of
+      - chat:write          # post and update its own replies
+      - im:history          # DMs sent to it
+      - im:read
+      - im:write            # open a DM to send sign-in results
+settings:
+  event_subscriptions:
+    request_url: https://BRIDGE_URL/slack/events
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.im
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

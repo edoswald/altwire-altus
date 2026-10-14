@@ -1,0 +1,19 @@
+{
+  "name": "altwire-slack-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slack app for the AltWire Insights managed agent: routes Slack messages to Claude Managed Agents sessions, posts replies, runs scheduled jobs, and connects personal MCP accounts into per-user vaults.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.133.0",
+    "node-cron": "4.6.0",
+    "pg": "8.23.1"
+  }
+}

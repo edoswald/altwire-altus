@@ -14,6 +14,7 @@
 | First client | **Claude in Slack** (claude.ai connector, OAuth) | Phase 0 is mandatory and is done first |
 | Uptime in digest | **Drop entirely**, no footer | Phase 3b removes the Better Stack blocks; `get_altwire_uptime` and incident tools stay out of core |
 | SEO write-back / link evaluator | Not yet answered. Default applied: SEO tools **in** core (writes), `evaluate_link_fitness` **out** | Revisit if wanted |
+| Slack front end | **One custom Slack app** (AltWire Insights) in front of the managed agent, not Anthropic's Claude app, so Altus and the agent keep working if that app is removed | `slack-bridge/` (see its README): one agent session per thread, personal vaults (Canva, Zoho) attached only in the owner's DMs, sign-in links sent in Slack, scheduled jobs, and channel allowlist enforced by the bridge. The agent has no Slack tools |
 | Laminar tracing | **Remove.** No longer needed | **Done:** `tracing.js`, `hal-signals.js`, `lib/laminar-integration.js` and `@lmnr-ai/lmnr` removed; all `observe()` wrappers unwrapped. Delete `LMNR_PROJECT_API_KEY` from Railway |
 **Goal:** Turn Altus from "Hal's backend" into a small, well-described MCP server that any agent can use (Claude in Slack / Claude Tag, a Managed Agent, Claude Desktop/Code), keeping the **RAG archive**, **Matomo + GSC analytics**, and **story ideas / editorial intelligence**. Remove the agent-runtime pieces that Claude now provides for us.
 

@@ -1,0 +1,9 @@
+# Railway config for the Slack bridge service (set the service's Root Directory to /slack-bridge).
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "node --no-deprecation index.js"
+healthcheckPath = "/health"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
