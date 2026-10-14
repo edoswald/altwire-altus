@@ -134,6 +134,15 @@ import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
 import { getHalUiRateLimitBucket } from './lib/hal-ui-rate-limit.js';
 import crypto from 'crypto';
+import {
+  AUTHORIZE_PARAMS,
+  CONSENT_PAGE_HEADERS,
+  isConsentConfigured,
+  isLoopbackRedirect,
+  renderConsentPage,
+  validateRegistrationRedirects,
+  verifyConsentPassphrase,
+} from './lib/oauth-consent.js';
 import { MODEL_HAIKU, resolveModel } from './lib/model-ids.js';
 const PORT = process.env.PORT || 3000;
 
@@ -182,6 +191,22 @@ const OAUTH_ALLOWED_REDIRECT_URIS = new Set([
     .map(u => u.trim())
     .filter(Boolean),
 ]);
+
+// Read an application/x-www-form-urlencoded body. Resolves null if it exceeds maxBytes.
+function readFormBody(req, maxBytes) {
+  return new Promise((resolve) => {
+    let body = '';
+    let size = 0;
+    let exceeded = false;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) { exceeded = true; req.destroy(); return; }
+      body += chunk;
+    });
+    req.on('end', () => resolve(exceeded ? null : new URLSearchParams(body)));
+    req.on('close', () => { if (exceeded) resolve(null); });
+  });
+}
 
 function generateAuthCode() {
   return crypto.randomBytes(32).toString('hex');
@@ -2996,8 +3021,18 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'invalid_client_metadata' }));
         return;
       }
+      // Only Claude's hosted callbacks, loopback callbacks, and explicitly
+      // allowlisted URIs may be registered — otherwise a code could be
+      // delivered to an arbitrary third-party host.
+      const redirectCheck = validateRegistrationRedirects(meta?.redirect_uris, OAUTH_ALLOWED_REDIRECT_URIS);
+      if (!redirectCheck.ok) {
+        logger.warn('OAuth dynamic registration rejected', { rejected: redirectCheck.rejected, clientName: meta?.client_name });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must be Claude callbacks, loopback, or allowlisted' }));
+        return;
+      }
       const clientId = `dyn_${crypto.randomBytes(16).toString('hex')}`;
-      const redirectUris = Array.isArray(meta.redirect_uris) ? meta.redirect_uris : [];
+      const redirectUris = redirectCheck.redirectUris;
       const { storeClient } = await import('./lib/oauth-store.js');
       await storeClient(clientId, {
         redirectUris,
@@ -3017,16 +3052,32 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === '/authorize' && req.method === 'GET') {
+  // /authorize — GET renders a consent page; POST verifies the operator's
+  // passphrase and only then issues an authorization code. Previously GET
+  // issued a code to any registered client with no human check.
+  if (url.pathname === '/authorize' && (req.method === 'GET' || req.method === 'POST')) {
     if (!authLimiter.check(req, res, { errorMessage: 'Too many authentication attempts, please try again later.' })) return;
 
-    const clientId = url.searchParams.get('client_id');
-    const redirectUri = url.searchParams.get('redirect_uri');
-    const responseType = url.searchParams.get('response_type');
-    const scope = url.searchParams.get('scope') || 'read';
-    const state = url.searchParams.get('state');
+    let params;
+    let passphrase = null;
+    if (req.method === 'GET') {
+      params = Object.fromEntries(AUTHORIZE_PARAMS.map((k) => [k, url.searchParams.get(k)]));
+    } else {
+      const form = await readFormBody(req, 16384);
+      if (!form) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large' }));
+        return;
+      }
+      params = Object.fromEntries(AUTHORIZE_PARAMS.map((k) => [k, form.get(k)]));
+      passphrase = form.get('passphrase');
+    }
 
-    if (responseType !== 'code') {
+    const clientId = params.client_id;
+    const redirectUri = params.redirect_uri;
+    const scope = params.scope || 'read';
+
+    if (params.response_type !== 'code') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unsupported_response_type' }));
       return;
@@ -3051,11 +3102,35 @@ const httpServer = createServer(async (req, res) => {
     // without this check they fail here with 'redirect_uri not allowed'.
     // Loopback (localhost/127.0.0.1) ports vary per session and are only
     // reachable on the user's own machine, so they are matched port-agnostically.
-    const isLocalhostRedirect = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(redirectUri);
     const isRegisteredRedirect = !!dynamicClient && dynamicClient.redirectUris.includes(redirectUri);
-    if (!isLocalhostRedirect && !isRegisteredRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
+    if (!isLoopbackRedirect(redirectUri) && !isRegisteredRedirect && !OAUTH_ALLOWED_REDIRECT_URIS.has(redirectUri)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri not allowed' }));
+      return;
+    }
+
+    // Fail closed: without a configured passphrase nobody can approve.
+    if (!isConsentConfigured()) {
+      logger.error('OAuth /authorize refused: ALTUS_OAUTH_CONSENT_PASSPHRASE is not set');
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'temporarily_unavailable', error_description: 'OAuth consent is not configured on this server' }));
+      return;
+    }
+
+    let redirectHost = redirectUri;
+    try { redirectHost = new URL(redirectUri).host; } catch { /* show raw value */ }
+    const clientName = dynamicClient?.clientName || (isStaticClient ? `Altus client (${OAUTH_CLIENTS.get(clientId)})` : null);
+
+    if (req.method === 'GET') {
+      res.writeHead(200, CONSENT_PAGE_HEADERS);
+      res.end(renderConsentPage({ params, clientName, redirectHost }));
+      return;
+    }
+
+    if (!verifyConsentPassphrase(passphrase)) {
+      logger.warn('OAuth consent rejected: bad passphrase', { clientId });
+      res.writeHead(401, CONSENT_PAGE_HEADERS);
+      res.end(renderConsentPage({ params, clientName, redirectHost, error: 'Incorrect passphrase.' }));
       return;
     }
 
@@ -3065,15 +3140,17 @@ const httpServer = createServer(async (req, res) => {
       clientId,
       redirectUri,
       scope,
-      state,
-      codeChallenge: url.searchParams.get('code_challenge'),
-      codeChallengeMethod: url.searchParams.get('code_challenge_method'),
+      state: params.state,
+      codeChallenge: params.code_challenge,
+      codeChallengeMethod: params.code_challenge_method,
     });
+    logger.info('OAuth consent granted', { clientId, clientName });
 
     const redirectUrl = new URL(redirectUri);
     redirectUrl.searchParams.set('code', authCode);
-    if (state) redirectUrl.searchParams.set('state', state);
-    res.writeHead(302, { Location: redirectUrl.toString() });
+    if (params.state) redirectUrl.searchParams.set('state', params.state);
+    // 303 so the browser follows the redirect with GET after the form POST.
+    res.writeHead(303, { Location: redirectUrl.toString() });
     res.end();
     return;
   }

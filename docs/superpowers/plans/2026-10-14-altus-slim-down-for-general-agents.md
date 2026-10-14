@@ -1,7 +1,17 @@
 # Altus Slim-Down: From Hal Backend to General-Purpose AltWire MCP
 
 **Date:** 2026-10-14
-**Status:** Proposed
+**Status:** Approved. Phase 0 implemented (see §4)
+
+## Decisions (2026-10-14, Ed)
+
+| Question | Decision | Effect on plan |
+|---|---|---|
+| AI Writer pipeline | **Drop.** Never used | Remove all 12 Writer tools, `/hal/writer/*`, author profile and `get_writer_summary`. The opportunity queue's "approve" becomes a status change |
+| Review / loaner tracker | **Drop.** Never used | Remove 16 tools and `review-tracker-handler.js`. Digest loses its review/loaner sections |
+| Email digests | **Keep both** (5:15 AM weekday digest, Sunday brief), **re-weighted toward analytics** | See Phase 3b |
+| Shared DB / Nimbus | **Give Altus its own Postgres** | New Phase 4a. This removes the Nimbus `agent_memory` cross-dependency and the `HAL_SESSION_SECRET` coupling |
+| First client | **Claude in Slack** (claude.ai connector, OAuth) | Phase 0 is mandatory and is done first |
 **Goal:** Turn Altus from "Hal's backend" into a small, well-described MCP server that any agent can use (Claude in Slack / Claude Tag, a Managed Agent, Claude Desktop/Code), keeping the **RAG archive**, **Matomo + GSC analytics**, and **story ideas / editorial intelligence**. Remove the agent-runtime pieces that Claude now provides for us.
 
 ---
@@ -105,7 +115,15 @@ Background jobs: `runNewsMonitorCron` (4:30 AM) and `refreshOpportunityQueue` (5
 
 Each phase ships on its own and is independently revertible.
 
-### Phase 0: Security precondition (before exposing to more agents)
+### Phase 0: Security precondition (before exposing to more agents). **Done**
+
+Implemented in `lib/oauth-consent.js`, wired into `index.js`, and tested in `tests/oauth-consent.unit.test.js`:
+- `GET /authorize` renders a consent page. `POST /authorize` issues a code only after `ALTUS_OAUTH_CONSENT_PASSPHRASE` is entered. If the passphrase is unset, the server answers 503 (fails closed).
+- `/oauth/register` rejects any `redirect_uri` that isn't a Claude hosted callback, loopback, or on `OAUTH_ALLOWED_REDIRECT_URIS`.
+- Existing tokens and static bearer secrets keep working.
+- Still open, folded into Phase 2: read-only default tool set for dynamically registered clients, once tools carry `readOnlyHint`.
+
+Original notes:
 - **`/authorize` currently auto-approves every client.** Combined with open Dynamic Client Registration (`/oauth/register`), anyone who finds the URL can register, get a code, and receive a token for the full tool set, including `update_altwire_seo_fields`, `post_to_wordpress`, Slack DMs and admin email. Add a consent step that authenticates the human first (a simple admin passphrase or Google sign-in restricted to the AltWire domain), or restrict DCR to known redirect hosts (`claude.ai`, `claude.com`, loopback).
 - Default dynamically registered clients to the **read-only** tool set. Write tools require an explicit allowlist entry.
 - Audit `OAUTH_CLIENT_TOOLS`: unlisted clients currently get full access.
@@ -133,6 +151,26 @@ Each phase ships on its own and is independently revertible.
 - `altus-digest.js`: make monitoring and AI cost sections optional, per the Decide outcome.
 - Leave the `hal:altwire:*` key prefix alone in this phase. A key rename touches seeds, reads and a data migration, and buys nothing yet.
 
+### Phase 3b: Re-weight the digests toward analytics
+- **Remove:** review deadlines, overdue loaners, Writer/assignment content, AI cost, and the Better Stack uptime/incident blocks. Uptime can stay as a one-line footer if wanted.
+- **Add or expand** (all from data Altus already collects):
+  - Week-over-week and day-over-day traffic deltas (Matomo), with the top 5 risers and fallers by page.
+  - GSC movers: queries and pages whose clicks or position changed most over 7d vs the prior 7d, plus new entries into the 5–30 opportunity zone.
+  - Google News search performance for the past 7 days and which recent articles got News pickup (`get_news_performance_patterns`).
+  - Performance of articles published in the last 14 days against their tracking baseline (`altus_article_performance`).
+  - Search-demand gaps: opportunity-zone queries with no matching archive coverage (from combined analytics).
+  - Story opportunities stay, ranked by the analytics signal behind each one.
+- Sunday brief: the same blocks over 28 days, plus the combined-analytics narrative and the month's trend direction from the historical baselines.
+- Keep SES as the delivery path. A Slack copy can come later as a scheduled Claude routine that calls `get_altwire_morning_digest`.
+
+### Phase 4a: Move Altus to its own Postgres
+- Provision a new Railway Postgres with **pgvector** (`altus_content.embedding vector(512)`, ivfflat index).
+- Tables to copy (`pg_dump -t … | psql`): `altus_content`, `altus_ingest_log`, `altus_search_queries`, `altus_search_feedback`, `altus_article_performance`, `altus_story_opportunities`, `altus_watch_list`, `altus_synthesis_batches`, `altus_weekly_brief_batches`, `altus_events` (last 30 days is enough), `ai_usage` (Altus rows), `oauth_*` (so existing connector tokens survive), plus the content-ideas and tracked-articles tables.
+- From `agent_memory`, copy only `agent = 'hal' AND key LIKE 'hal:altwire:%'`. These are the 16- and 18-month analytics baselines and the synthesis outputs. Re-seeding them instead is possible (`scripts/seed-altwire-historical-*.js`) but costs LLM calls.
+- Rename that store to an Altus-owned table (`altus_kv`, with the `hal:` prefix stripped) during the copy, and update the readers in `altus-combined-analytics.js`, `altus-digest.js` and `altus-reflection.js`. The new DB has no other consumers, so this is the cheap moment to do it.
+- Cut over by pointing `ALTWIRE_DATABASE_URL` at the new DB. Freeze crons (`ALTUS_RUN_CRONS=false`) during the copy, then re-enable.
+- Leave the Altus tables in the shared DB untouched for 2 weeks, then drop them in a reviewed migration (confirm Nimbus doesn't read them first).
+
 ### Phase 4: Cutover
 - Move crons to the core service (`ALTUS_RUN_CRONS=true` on core, `false` on legacy).
 - Retire the Hal UI deployment and the legacy service once the team has used Claude in Slack for about 2 weeks without falling back.
@@ -151,12 +189,10 @@ Each phase ships on its own and is independently revertible.
 - Smoke test from each client type: a claude.ai connector (OAuth), a Managed Agent (bearer), and Claude Code (`claude mcp add --transport http`). Run one read per tool group.
 - Cron parity: for one week on core, compare `altus_story_opportunities` upserts and `altus_article_performance` snapshots against the legacy service's history.
 
-## 6. Open questions for Ed/Derek
-1. **Writer pipeline:** is Derek still drafting through it? (It decides about 1,100 lines and the `openai` dependency.)
-2. **Review/loaner tracker:** in active use?
-3. **Email digests:** keep the 5:15 AM digest and the Sunday brief, or replace them with a Slack routine (a scheduled Managed Agent or a Claude routine that calls `get_altwire_morning_digest` and posts)?
-4. **Nimbus:** does Nimbus still call Altus with `X-Agent-Context: nimbus`, or read `agent_memory` rows Altus writes? If yes, that contract must survive Phase 5.
-5. **Which client first:** Claude in Slack (claude.ai connector, OAuth) or a Managed Agent (bearer)? Phase 0 is mandatory for the former and optional for the latter.
+## 6. Open questions
+Resolved 2026-10-14; see **Decisions** at the top. Remaining:
+1. Better Stack uptime: keep a one-line footer in the digest, or drop it entirely?
+2. `evaluate_link_fitness` and `update_altwire_seo_fields`: still wanted? (Their answers decide the `openai` dependency and whether core has any WordPress write tools.)
 
 ## 7. Rough size
 | Phase | Effort | Net lines |
