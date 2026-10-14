@@ -1873,7 +1873,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   scopedRegister(
     'get_altwire_morning_digest',
     {
-      description: 'Full AltWire morning briefing — site uptime, open incidents, today\'s news alerts, story opportunities, upcoming review deadlines, overdue loaners, and yesterday\'s traffic. Use at the start of a session or when Derek asks for a status overview.',
+      description: 'AltWire morning analytics briefing (the same data as the 5:15 AM digest email). Returns: last 7 days vs the prior 7 for Matomo traffic and Google Search Console clicks/impressions/position; yesterday vs the same weekday last week; article risers and fallers by pageviews and search clicks; search queries rising and falling; queries newly ranking in positions 5–30; Google News pickup; performance of articles published in the last 14 days; top articles this week; the nightly editorial synthesis (search-demand gaps, articles strong or weak in search); reader site-search terms; watch-list news alerts; and the top story opportunities. Use for "how are we doing", "what moved this week", or any broad status question before reaching for narrower analytics tools.',
     },
     async () => {
       const result = await getAltwireMorningDigest();
