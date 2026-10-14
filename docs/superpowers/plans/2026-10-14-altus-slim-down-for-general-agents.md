@@ -137,7 +137,8 @@ Implemented in `lib/altus-profile.js` (tested in `tests/altus-profile.unit.test.
 - `ALTUS_PROFILE=core` registers the 33 tools in `CORE_TOOLS`. It returns 404 for `/hal/*`, `/events/*`, `/slack/*` and `/altwire/*`, skips the Slack bot and the mountaineering seed, ignores `X-Agent-Context`, and skips the heartbeat, chat-presence and mountaineering crons. `audit_batch` still runs, because it collects synthesis and weekly-brief batches, but it skips the Hal audit step.
 - `ALTUS_RUN_CRONS=false` disables every background job, including ingest.
 - The default (`legacy`) is unchanged: 120 tools.
-- **Remaining ops step:** create the second Railway service (same repo, `ALTUS_PROFILE=core`, `ALTUS_RUN_CRONS=false`, `ALTUS_OAUTH_CONSENT_PASSPHRASE`, and its own `MCP_BASE_URL` and domain), then add it as a claude.ai connector for Claude in Slack.
+- **Deployed 2026-10-14:** Railway service `Altus Core` (project *AltWire Altus*) at `https://altus-core-production.up.railway.app/mcp`, tracking this branch with `ALTUS_PROFILE=core` and `ALTUS_RUN_CRONS=false`. Shared settings are Railway references to `Altus (Admin MCP)`. Verified: OAuth consent flow, 33 tools, live archive and Matomo reads.
+- Original ops step: create the second Railway service (same repo, `ALTUS_PROFILE=core`, `ALTUS_RUN_CRONS=false`, `ALTUS_OAUTH_CONSENT_PASSPHRASE`, and its own `MCP_BASE_URL` and domain), then add it as a claude.ai connector for Claude in Slack.
 
 Original notes:
 - Add `ALTUS_PROFILE=core|legacy` (default `legacy`). In `core`:
