@@ -12,6 +12,7 @@
 | Email digests | **Keep both** (5:15 AM weekday digest, Sunday brief), **re-weighted toward analytics** | See Phase 3b |
 | Shared DB / Nimbus | **Give Altus its own Postgres** | New Phase 4a. This removes the Nimbus `agent_memory` cross-dependency and the `HAL_SESSION_SECRET` coupling |
 | First client | **Claude in Slack** (claude.ai connector, OAuth) | Phase 0 is mandatory and is done first |
+| Laminar tracing | **Remove.** No longer needed | **Done:** `tracing.js`, `hal-signals.js`, `lib/laminar-integration.js` and `@lmnr-ai/lmnr` removed; all `observe()` wrappers unwrapped. Delete `LMNR_PROJECT_API_KEY` from Railway |
 **Goal:** Turn Altus from "Hal's backend" into a small, well-described MCP server that any agent can use (Claude in Slack / Claude Tag, a Managed Agent, Claude Desktop/Code), keeping the **RAG archive**, **Matomo + GSC analytics**, and **story ideas / editorial intelligence**. Remove the agent-runtime pieces that Claude now provides for us.
 
 ---
@@ -95,7 +96,7 @@ Background jobs: `runNewsMonitorCron` (4:30 AM) and `refreshOpportunityQueue` (5
 | Proactive loop | `handlers/altus-heartbeat.js` + scheduled tasks, `handlers/altus-action-items.js` (3 tools), Hal parts of `handlers/altus-reflection.js` |
 | Self-optimization | `handlers/altus-mountaineering.js` (7 tools + seed + batch cron), `handlers/altus-skill-library.js` |
 | Own Slack bot | `handlers/slack-altus.js`, `/slack/events`, 12 Slack tools, `hal_slack_posts`, `NIMBUS_SLACK_WEBHOOK_URL` forwarding |
-| Observability-about-Hal | `query_altus_events`, `get_altus_audit_log`, `altus_get_session_trace`, `altus_get_data_health`, audit batch cron, `hal-signals.js`. Keep `altus-event-log.js` internally for cron logging, and keep Laminar tracing as optional |
+| Observability-about-Hal | `query_altus_events`, `get_altus_audit_log`, `altus_get_session_trace`, `altus_get_data_health`, audit batch cron, `hal-signals.js`. Keep `altus-event-log.js` internally for cron logging. Laminar has been removed entirely |
 | Redundant with Claude built-ins | `altus_web_research` (Claude has web search/fetch), `generate_chart` + `hal-chart.js` (Claude renders charts), `altus_search_skills` |
 | Docs store | `altus_list_documents` / `get_document` / `save_document` (Claude/Slack canvases cover this) |
 | Multi-agent scoping | `X-Agent-Context`, `TOOL_CONTEXTS`, `nimbus`/`weather` contexts. Replace with the per-client allowlist that already exists (`OAUTH_CLIENT_TOOLS`) |

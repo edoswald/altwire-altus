@@ -22,10 +22,6 @@ vi.mock('../altus-event-log.js', () => ({
   logAltusEvent: mockLogAltusEvent,
 }));
 
-vi.mock('../tracing.js', () => ({
-  observe: async (_meta, fn) => fn(),
-}));
-
 vi.mock('../logger.js', () => ({
   logger: {
     info: vi.fn(),

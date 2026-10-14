@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **OAuth consent required** (`lib/oauth-consent.js`): `/authorize` now shows a consent page and issues a code only after `ALTUS_OAUTH_CONSENT_PASSPHRASE` is entered (503 when unset). Dynamic Client Registration only accepts Claude hosted callbacks, loopback, or `OAUTH_ALLOWED_REDIRECT_URIS`.
+
+### Removed
+
+- **Laminar tracing**: removed `tracing.js`, `hal-signals.js`, `lib/laminar-integration.js`, the `@lmnr-ai/lmnr` dependency, and every `observe()` span wrapper. `LMNR_PROJECT_API_KEY` is no longer read.
+
 ### Fixed
 
 - **`get_altwire_combined_analytics` top_articles label fallback** (`handlers/altus-combined-analytics.js`): Changed `label: a.label ?? a.url` to `label: a.label ?? a.title ?? a.url` — `normalizeTopArticles()` returns objects with `title` (not `label`), so synthesis payload was always receiving URLs instead of human-readable article titles.

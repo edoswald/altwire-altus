@@ -11,15 +11,7 @@
  * Health: GET /health
  */
 
-import { initializeLaminar } from './lib/laminar-integration.js';
-
-// ---------------------------------------------------------------------------
-// Laminar initialization — must run before any other imports
-// ---------------------------------------------------------------------------
-await initializeLaminar();
-
 import { sessionIdStorage, oauthClientStorage } from './lib/safe-tool-handler.js';
-import { observe } from './tracing.js';
 import { logAltusEvent } from './altus-event-log.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -487,12 +479,12 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   startIngestCron();
 
   // News Monitor — 4:30 AM ET daily (after 4 AM reflection so fresh GSC data is available)
-  cron.schedule('30 4 * * *', () => observe({ name: 'news_monitor', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('30 4 * * *', async () => {
     await runNewsMonitorCron();
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; upserts the altus_story_opportunities queue the digest reads)
-  cron.schedule('0 5 * * 1-5', () => observe({ name: 'story_opportunities', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 5 * * 1-5', async () => {
     try {
       await logAltusEvent('cron_trigger', { payload: { cron_name: 'story_opportunities', phase: 'started' } });
       const result = await refreshOpportunityQueue({ days: 28, includeNews: true });
@@ -533,22 +525,22 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       });
       logger.error('story_opportunities cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Performance Snapshot — 6 AM ET daily
-  cron.schedule('0 6 * * *', () => observe({ name: 'performance_snapshot', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 6 * * *', async () => {
     await runPerformanceSnapshotCron();
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // AltWire Nightly Reflection — 4 AM ET daily
-  cron.schedule('0 4 * * *', () => observe({ name: 'altwire_reflection', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 4 * * *', async () => {
     try {
       const { runAltwireReflection } = await import('./handlers/altus-reflection.js');
       await runAltwireReflection();
     } catch (err) {
       logger.error('AltWire reflection cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Altus Heartbeat — every 2 hours
   cron.schedule('0 */2 * * *', async () => {
@@ -573,17 +565,17 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Altus Event Log Retention — 3 AM ET daily
-  cron.schedule('0 3 * * *', () => observe({ name: 'event_retention', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 3 * * *', async () => {
     try {
       const { runRetentionCron } = await import('./altus-event-log.js');
       await runRetentionCron();
     } catch (err) {
       logger.error('Altus event retention cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Altus Audit Batch Collection — every 2 hours, staggered 30 min from heartbeat
-  cron.schedule('30 */2 * * *', () => observe({ name: 'audit_batch', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('30 */2 * * *', async () => {
     try {
       const { runAuditBatchCollection } = await import('./altus-event-log.js');
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
@@ -594,76 +586,67 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     } catch (err) {
       logger.error('Altus audit batch collection cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // AltWire synthesis focused early poll — helps land before the 5:15 AM digest.
-  cron.schedule('15,30,45 4 * * *', () => observe({ name: 'synthesis_batch_early', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('15,30,45 4 * * *', async () => {
     try {
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
       await collectSynthesisBatches();
     } catch (err) {
       logger.error('AltWire synthesis early collection cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
-  cron.schedule('0 5 * * *', () => observe({ name: 'synthesis_batch_early', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 5 * * *', async () => {
     try {
       const { collectSynthesisBatches } = await import('./handlers/altus-combined-analytics.js');
       await collectSynthesisBatches();
     } catch (err) {
       logger.error('AltWire synthesis early collection cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Mountaineering Batch Collection — every 2 hours, staggered 45 min from heartbeat
-  cron.schedule('45 */2 * * *', () => observe({ name: 'mountaineering_batch', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('45 */2 * * *', async () => {
     try {
       await collectClimbScores();
     } catch (err) {
       logger.error('altus mountaineering batch cron failed', { error: err.message });
     }
-  }));
+  });
 
   // Daily morning digest email — Mon-Fri 5:15 AM ET
-  cron.schedule('15 5 * * 1-5', () => observe({ name: 'morning_digest', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('15 5 * * 1-5', async () => {
     try {
       const { sendMorningDigestEmail } = await import('./handlers/altus-digest-mailer.js');
       await sendMorningDigestEmail();
     } catch (err) {
       logger.error('altus-digest-mailer cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
   // Weekly prose brief email — Sundays 8 AM ET
-  cron.schedule('0 8 * * 0', () => observe({ name: 'weekly_brief', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('0 8 * * 0', async () => {
     try {
       const { sendAltusWeeklyBrief } = await import('./handlers/altus-weekly-brief.js');
       await sendAltusWeeklyBrief();
     } catch (err) {
       logger.error('altus-weekly-brief cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 
-  cron.schedule('*/10 8-13 * * 0', () => observe({ name: 'weekly_brief_batch', spanType: 'DEFAULT' }, async () => {
+  cron.schedule('*/10 8-13 * * 0', async () => {
     try {
       const { collectAltusWeeklyBriefBatches } = await import('./handlers/altus-weekly-brief.js');
       await collectAltusWeeklyBriefBatches();
     } catch (err) {
       logger.error('altus-weekly-brief batch cron failed', { error: err.message });
     }
-  }), { timezone: 'America/New_York' });
+  }, { timezone: 'America/New_York' });
 } else {
   logger.warn('No database URL set — ALTWIRE_DATABASE_URL and DATABASE_URL are both empty — skipping schema init and cron');
 }
-
-// ---------------------------------------------------------------------------
-// Laminar Signals — register on startup (idempotent, 409 = already exists)
-// ---------------------------------------------------------------------------
-
-import { registerSignals } from './hal-signals.js';
-registerSignals().catch((err) => {
-  logger.warn('[altus-signals] Registration failed:', err.message);
-});
 
 // ---------------------------------------------------------------------------
 // MCP Server factory — new instance per stateless request
@@ -3394,10 +3377,8 @@ const httpServer = createServer(async (req, res) => {
 
   // Slack events — signature verification handled by slack-altus.js
   if (url.pathname === '/slack/events' && req.method === 'POST') {
-    await observe({ name: 'slack_webhook', spanType: 'DEFAULT' }, async () => {
-      const { handleSlackRequest } = await import('./handlers/slack-altus.js');
-      handleSlackRequest(req, res);
-    });
+    const { handleSlackRequest } = await import('./handlers/slack-altus.js');
+    handleSlackRequest(req, res);
     return;
   }
 
@@ -4261,23 +4242,18 @@ const httpServer = createServer(async (req, res) => {
     await server.connect(transport);
 
     const clientCtx = { clientId, allowedTools };
-    const sessionMeta = { client_id: clientId, ...(agentContext && { agent_context: agentContext }) };
     if (sessionId) {
       // Register session so SSE stream can authenticate the owner
       registerSession(sessionId, clientId);
       await oauthClientStorage.run(clientCtx, async () =>
-        sessionIdStorage.run(sessionId, async () =>
-          observe({ name: 'altus_session', spanType: 'DEFAULT', metadata: sessionMeta }, async () => {
-            await transport.handleRequest(req, res, parsedBody);
-          })
-        )
-      );
-    } else {
-      await oauthClientStorage.run(clientCtx, async () =>
-        observe({ name: 'altus_session', spanType: 'DEFAULT', metadata: sessionMeta }, async () => {
+        sessionIdStorage.run(sessionId, async () => {
           await transport.handleRequest(req, res, parsedBody);
         })
       );
+    } else {
+      await oauthClientStorage.run(clientCtx, async () => {
+        await transport.handleRequest(req, res, parsedBody);
+      });
     }
     return;
   }
