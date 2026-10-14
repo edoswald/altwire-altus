@@ -56,6 +56,7 @@ import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-searc
 import { emitEvent, getEvents, clearBus, hasEvents, registerSession, isSessionRegistered } from './lib/altus-event-bus.js';
 import { startIngestCron } from './lib/ingest-cron.js';
 import cron from 'node-cron';
+import { applyToolDocs, SERVER_INSTRUCTIONS } from './lib/altus-tool-docs.js';
 import { getAltusProfile, isCoreProfile, isCronEnabled, isPathEnabled, isToolEnabled, shouldRunCrons } from './lib/altus-profile.js';
 import { initAiUsageSchema, logAiUsage } from './lib/ai-cost-tracker.js';
 import { identifyCompatibleHalClient, isAllowedAltusRestToken, authenticateHalWebToken, signHalWebSessionToken } from './lib/altus-auth-compat.js';
@@ -665,7 +666,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   const server = new McpServer({
     name: 'altwire-altus',
     version: '1.0.0',
-  });
+  }, isCoreProfile() ? { instructions: SERVER_INSTRUCTIONS } : undefined);
 
 
   /**
@@ -683,7 +684,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     if (!isToolEnabled(toolName)) return;
     const allowed = TOOL_CONTEXTS[toolName];
     if (!allowed || allowed.length === 0 || (agentContext && allowed.includes(agentContext))) {
-      server.registerTool(toolName, inputSchema, safeToolHandler(toolName, handler));
+      server.registerTool(toolName, applyToolDocs(toolName, inputSchema), safeToolHandler(toolName, handler));
     }
   }
 
@@ -968,7 +969,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
         }).refine((value) => Object.keys(value).length > 0, {
           message: 'At least one SEO field must be provided.',
         }).describe('Allowlisted content-level SEO patch'),
-        reason: z.string().optional().describe('Why Hal is making this SEO change. Required if the WordPress plugin enforces write reasons.'),
+        reason: z.string().optional().describe('Short reason for the change, recorded by the WordPress plugin (e.g. "raise CTR: title matched to top query"). Required if the plugin enforces write reasons.'),
       },
     },
     async ({ object_type, object_id, fields, reason }) => {

@@ -35,7 +35,7 @@ describe('altus profile', () => {
   });
 
   it('core drops Hal runtime, Writer, review tracker, Slack, and link evaluator tools', () => {
-    for (const name of ['hal_read_memory', 'create_article_assignment', 'altus_create_review', 'send_slack_dm', 'evaluate_link_fitness', 'altus_create_climb', 'altus_web_research', 'generate_chart']) {
+    for (const name of ['hal_read_memory', 'create_article_assignment', 'altus_create_review', 'send_slack_dm', 'evaluate_link_fitness', 'altus_create_climb', 'altus_web_research', 'generate_chart', 'altus_topic_synthesis']) {
       expect(isToolEnabled(name, core)).toBe(false);
     }
   });
