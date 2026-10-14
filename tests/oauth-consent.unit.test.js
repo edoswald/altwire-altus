@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bearerChallenge,
   escapeHtml,
   isConsentConfigured,
   isLoopbackRedirect,
@@ -75,5 +76,13 @@ describe('renderConsentPage', () => {
     });
     expect(html).toContain('name="code_challenge" value="abc"');
     expect(html).not.toContain('name="state"');
+  });
+});
+
+describe('bearerChallenge', () => {
+  it('points at the protected-resource metadata, ignoring trailing slashes', () => {
+    expect(bearerChallenge('https://altus.example/')).toBe(
+      'Bearer resource_metadata="https://altus.example/.well-known/oauth-protected-resource"',
+    );
   });
 });

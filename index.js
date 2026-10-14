@@ -129,6 +129,7 @@ import { getHalUiRateLimitBucket } from './lib/hal-ui-rate-limit.js';
 import crypto from 'crypto';
 import {
   AUTHORIZE_PARAMS,
+  bearerChallenge,
   CONSENT_PAGE_HEADERS,
   isConsentConfigured,
   isLoopbackRedirect,
@@ -2956,7 +2957,7 @@ const httpServer = createServer(async (req, res) => {
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, X-Agent-Context, Accept');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, WWW-Authenticate');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -4215,7 +4216,12 @@ const httpServer = createServer(async (req, res) => {
 
     const clientId = await identifyClient(req);
     if (!clientId) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
+      // RFC 9728 / MCP auth spec: point the client at the protected-resource
+      // metadata so it can discover the authorization server from the 401.
+      res.writeHead(401, {
+        'Content-Type': 'application/json',
+        'WWW-Authenticate': bearerChallenge(MCP_BASE_URL),
+      });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
     }
