@@ -59,7 +59,7 @@ function normalizeUrl(u) {
  * Cross-reference Matomo top articles with GSC top pages.
  * Returns articles ranked by combined visibility (pageviews + impressions).
  */
-function buildCrossReference(matomoTopArticles, gscPagePerformance) {
+export function buildCrossReference(matomoTopArticles, gscPagePerformance) {
   const byUrl = new Map();
 
   for (const a of matomoTopArticles || []) {
@@ -79,10 +79,12 @@ function buildCrossReference(matomoTopArticles, gscPagePerformance) {
   for (const row of gscPagePerformance || []) {
     const url = normalizeUrl(row.keys?.[0]);
     if (!url) continue;
+    // Not among the Matomo pages fetched: its pageviews are unknown (low),
+    // not zero. Reporting 0 made pages look broken in the synthesis.
     const existing = byUrl.get(url) ?? {
       url: row.keys[0],
       title: row.keys[0],
-      pageviews: 0,
+      pageviews: null,
     };
     existing.impressions = row.impressions ?? 0;
     existing.clicks = row.clicks ?? 0;
@@ -317,6 +319,7 @@ export function buildSynthesisRequest(payload) {
 You synthesize Matomo on-site behavior and Google Search Console organic visibility into a unified, actionable picture.
 Be specific and cite numbers, articles, and queries.
 The payload may include recently_featured — articles and queries highlighted in syntheses from the past ${RECENT_FEATURES_WINDOW_DAYS} days. Do NOT repeat those as top_dual_winners, underperforming_in_search, opportunity_alignments, or content_gaps unless something materially changed for them (and say what changed in the "why"/"rationale"). Prefer fresh articles, emerging queries, and untapped areas of interest so the daily digest stays varied and useful.
+In cross_reference, pageviews: null means the page was not among the most-viewed on-site pages for the period, so its pageviews are low and unknown. Never describe it as 0 pageviews or as missing tracking.
 AltWire publishes content in multiple languages — URLs containing /de/, /fr/, /ru/ etc. are localized versions targeting non-English audiences. Treat their traffic as a distinct international readership signal, not as duplicates of English originals.
 Always deliver your analysis by calling the record_synthesis tool exactly once. Do not answer in plain text.`),
     tools: [SYNTHESIS_TOOL],
@@ -513,7 +516,7 @@ export async function getCombinedAnalytics(opts = {}) {
     gscPagePerfResult,
   ] = await Promise.allSettled([
     getTrafficSummary('range', matomoDate),
-    getTopArticles('range', matomoDate, 20),
+    getTopArticles('range', matomoDate, 500),
     getReferrerBreakdown('range', matomoDate),
     getSiteSearchKeywords('range', matomoDate),
     getSearchPerformance(startDate, endDate, { rowLimit: 50, dimensions: ['query'] }),

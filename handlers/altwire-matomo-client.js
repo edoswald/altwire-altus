@@ -116,7 +116,10 @@ export async function getTopArticles(period, date, limit = 20) {
   const cfg = getConfig();
   if (!cfg.configured) return { error: cfg.error };
 
-  const result = await callApi('Actions.getPageUrls', period, date);
+  // Matomo returns 100 rows unless told otherwise; ask for enough that the
+  // exclusion filter below still leaves `limit` articles.
+  const filterLimit = Math.min(Math.max(limit * 2, 100), 1000);
+  const result = await callApi('Actions.getPageUrls', period, date, { filter_limit: String(filterLimit) });
   if (result.error) return result;
 
   // Client-side exclusion filter: remove homepage, language redirects, root, system pages.

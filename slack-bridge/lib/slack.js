@@ -20,12 +20,41 @@ export function verifySlackSignature({ signingSecret, timestamp, signature, body
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function tableCells(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim().replace(/\*\*(.+?)\*\*/g, '$1'));
+}
+
+/**
+ * Slack has no tables. Render a Markdown pipe table as an aligned
+ * monospace block so its columns still line up.
+ */
+export function tablesToCodeBlocks(text) {
+  const lines = String(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const isRow = (l) => /^\s*\|.*\|\s*$/.test(l ?? '');
+    const isSeparator = (l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l ?? '');
+    if (!(isRow(lines[i]) && isSeparator(lines[i + 1]))) {
+      out.push(lines[i]);
+      continue;
+    }
+    const rows = [tableCells(lines[i])];
+    i += 2;
+    while (i < lines.length && isRow(lines[i])) rows.push(tableCells(lines[i++]));
+    i -= 1;
+    const widths = rows[0].map((_, col) => Math.max(...rows.map((r) => (r[col] ?? '').length)));
+    const render = (r) => widths.map((w, col) => (r[col] ?? '').padEnd(w)).join('  ').trimEnd();
+    out.push('```', render(rows[0]), widths.map((w) => '-'.repeat(w)).join('  '), ...rows.slice(1).map(render), '```');
+  }
+  return out.join('\n');
+}
+
 /**
  * Convert the Markdown Claude writes into Slack mrkdwn. Handles the common
  * cases (bold, headings, links, bullets); leaves code blocks untouched.
  */
 export function toSlackMrkdwn(markdown) {
-  const parts = String(markdown ?? '').split(/(```[\s\S]*?```)/g);
+  const parts = tablesToCodeBlocks(String(markdown ?? '')).split(/(```[\s\S]*?```)/g);
   return parts.map((part, i) => {
     if (i % 2 === 1) return part; // fenced code block
     return part

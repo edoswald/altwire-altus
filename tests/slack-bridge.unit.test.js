@@ -32,6 +32,21 @@ describe('toSlackMrkdwn and chunkText', () => {
     expect(toSlackMrkdwn(md)).toBe('*Top stories*\n• *Bold* item\n• other\n<https://altwire.net|AltWire>\n```\n**not bold**\n```');
   });
 
+  it('renders Markdown tables as aligned monospace blocks and leaves pipes in prose alone', () => {
+    const md = 'Numbers\n| Metric | This week | Change |\n|---|:---:|---:|\n| Visits | 2,433 | **−23.2%** |\n| Clicks | 243 | −19.5% |\nDone | ok';
+    expect(toSlackMrkdwn(md)).toBe([
+      'Numbers',
+      '```',
+      'Metric  This week  Change',
+      '------  ---------  ------',
+      'Visits  2,433      −23.2%',
+      'Clicks  243        −19.5%',
+      '```',
+      'Done | ok',
+    ].join('\n'));
+    expect(toSlackMrkdwn('| not a table |')).toBe('| not a table |');
+  });
+
   it('splits long text on paragraph breaks', () => {
     const para = 'x'.repeat(60);
     const chunks = chunkText([para, para, para].join('\n\n'), 130);
