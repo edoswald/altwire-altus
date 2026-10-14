@@ -147,6 +147,11 @@ function fmtNum(n) {
   return Math.round(Number(n)).toLocaleString('en-US');
 }
 
+/** "1 click", "2,400 clicks". */
+function plural(n, noun) {
+  return `${fmtNum(n)} ${noun}${Number(n) === 1 ? '' : 's'}`;
+}
+
 function fmtPct(p) {
   if (p === null || p === undefined) return null;
   if (p === 0) return '0%';
@@ -259,7 +264,7 @@ function opportunityZoneSection(a) {
     title: 'NEW IN SEARCH POSITIONS 5–30',
     lines: [
       { text: 'Queries that started ranking within reach this week; a refresh or follow-up could push them onto page one.', tone: 'muted' },
-      ...a.opportunity_zone_new.map((e) => `• ${e.query} — position ${e.position ?? '—'}, ${fmtNum(e.impressions)} impressions${e.page ? ` → ${pageLabel(e.page)}` : ''}`),
+      ...a.opportunity_zone_new.map((e) => `• ${e.query} — position ${e.position ?? '—'}, ${plural(e.impressions, 'impression')}${e.page ? ` → ${pageLabel(e.page)}` : ''}`),
     ],
   };
 }
@@ -271,8 +276,8 @@ function googleNewsSection(a) {
   return {
     title: 'GOOGLE NEWS',
     lines: [
-      `${fmtNum(n.total_clicks)} clicks · ${fmtNum(n.total_impressions)} impressions in the last ${a.days} days`,
-      ...n.top_pages.slice(0, 3).map((p) => `• ${pageLabel(p.url, p.title)} — ${fmtNum(p.clicks)} clicks, ${fmtNum(p.impressions)} impressions`),
+      `${plural(n.total_clicks, 'click')} · ${plural(n.total_impressions, 'impression')} in the last ${a.days} days`,
+      ...n.top_pages.slice(0, 3).map((p) => `• ${pageLabel(p.url, p.title)} — ${plural(p.clicks, 'click')}, ${plural(p.impressions, 'impression')}`),
     ],
   };
 }
@@ -282,7 +287,7 @@ function recentArticlesSection(a) {
   return {
     title: 'RECENT ARTICLES (last 14 days)',
     lines: a.recent_articles.slice(0, 6).map((r) => {
-      const parts = [`${fmtNum(r.pageviews)} views`, `${fmtNum(r.search_clicks)} search clicks`];
+      const parts = [`${plural(r.pageviews, 'view')}`, `${fmtNum(r.search_clicks)} search clicks`];
       if (r.avg_position != null) parts.push(`position ${r.avg_position}`);
       return `• ${r.title} — ${parts.join(' · ')}`;
     }),
@@ -293,7 +298,7 @@ function topPagesSection(a) {
   if (!a?.top_pages?.length) return null;
   return {
     title: 'TOP ARTICLES THIS WEEK',
-    lines: a.top_pages.map((p, i) => `${i + 1}. ${pageLabel(p.url, p.label)} — ${fmtNum(p.pageviews)} views`),
+    lines: a.top_pages.map((p, i) => `${i + 1}. ${pageLabel(p.url, p.label)} — ${plural(p.pageviews, 'view')}`),
   };
 }
 
@@ -322,7 +327,7 @@ function synthesisSections(digest) {
       title: 'SEARCH DEMAND GAPS',
       lines: [
         { text: 'Queries people search for that the archive does not cover well.', tone: 'muted' },
-        ...gaps.slice(0, 4).map((g) => `• ${g.query}${g.impressions ? ` (${fmtNum(g.impressions)} impressions)` : ''}`),
+        ...gaps.slice(0, 4).map((g) => `• ${g.query}${g.impressions ? ` (${plural(g.impressions, 'impression')})` : ''}`),
       ],
     });
   }
@@ -335,12 +340,12 @@ function newsAlertLines(alerts) {
   if (alerts.watch_list_matches?.length) {
     return alerts.watch_list_matches.slice(0, 5).map((m) => {
       const who = m.name ?? (Array.isArray(m.matched_items) ? m.matched_items.join(', ') : null);
-      const imp = m.impressions ? ` — ${fmtNum(m.impressions)} impressions` : '';
+      const imp = m.impressions ? ` — ${plural(m.impressions, 'impression')}` : '';
       return `⚡ ${m.query}${who ? ` [${who}]` : ''}${imp}`;
     });
   }
   if (alerts.news_queries?.length) {
-    return alerts.news_queries.slice(0, 5).map((q) => `• ${q.keys?.[0] || 'unknown'}${q.impressions ? ` (${fmtNum(q.impressions)} impressions)` : ''}`);
+    return alerts.news_queries.slice(0, 5).map((q) => `• ${q.keys?.[0] || 'unknown'}${q.impressions ? ` (${plural(q.impressions, 'impression')})` : ''}`);
   }
   if (alerts.note) return [{ text: alerts.note, tone: 'muted' }];
   return none;
@@ -352,7 +357,7 @@ function storyOpportunityLines(opps) {
   const lines = [{ text: `${count} opportunit${count !== 1 ? 'ies' : 'y'} in the queue`, tone: 'strong' }];
   for (const o of opps.top.slice(0, 5)) {
     const signal = [
-      o.impressions ? `${fmtNum(o.impressions)} impressions` : null,
+      o.impressions ? `${plural(o.impressions, 'impression')}` : null,
       o.position != null ? `position ${Number(o.position).toFixed(1)}` : null,
       o.coverage_status ? o.coverage_status.replace(/_/g, ' ') : null,
     ].filter(Boolean).join(', ');
