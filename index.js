@@ -47,6 +47,7 @@ import {
   getPagePerformance,
 } from './handlers/altwire-gsc-client.js';
 import { getCombinedAnalytics } from './handlers/altus-combined-analytics.js';
+import { annotatePagesWithTitles } from './lib/archive-titles.js';
 import { generateChart } from './hal-chart.js';
 import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
@@ -879,6 +880,7 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ period, date }) => {
       const result = await getTopPages(period, date);
+      if (Array.isArray(result?.pageUrls)) result.pageUrls = await annotatePagesWithTitles(result.pageUrls);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

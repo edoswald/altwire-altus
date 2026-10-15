@@ -24,6 +24,7 @@ import {
   normalizeUrl,
 } from './altwire-gsc-client.js';
 import { isoDateOffset } from '../lib/gsc-date-window.js';
+import { lookupArchiveTitles } from '../lib/archive-titles.js';
 
 // GSC data settles ~2–3 days behind real time.
 const GSC_LAG_DAYS = 3;
@@ -159,22 +160,9 @@ function settledValue(result, warnings, section) {
 
 const pageRows = (rows) => rows?.pageUrls ?? rows ?? [];
 
-/**
- * Title lookup for archive content. Matomo reports every URL (listing pages,
- * /author/, /page/2, year archives) and marks them all as folders because
- * WordPress URLs end in a slash, so membership in altus_content is what
- * identifies a real article. Returns null if the lookup fails, so callers can
- * fall back to unfiltered rows.
- */
-async function lookupArchiveTitles(urls, warnings) {
-  const normalized = [...new Set(urls.map((u) => normalizeUrl(u)).filter(Boolean))];
-  if (!normalized.length) return new Map();
+async function archiveTitlesOrNull(urls, warnings) {
   try {
-    const { rows } = await pool.query(
-      `SELECT rtrim(url, '/') AS url, title FROM altus_content WHERE rtrim(url, '/') = ANY($1)`,
-      [normalized],
-    );
-    return new Map(rows.map((r) => [r.url, r.title]));
+    return await lookupArchiveTitles(urls);
   } catch (err) {
     warnings.push({ section: 'archive_titles', message: err.message });
     return null;
@@ -247,7 +235,7 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
   const traffic = compareTotals(trafficCur, trafficPrev, TRAFFIC_METRICS);
   const yesterdayVsLastWeek = compareTotals(yesterday, sameDayLastWeek, TRAFFIC_METRICS);
 
-  const titles = await lookupArchiveTitles([
+  const titles = await archiveTitlesOrNull([
     ...pageRows(pagesCur).map((r) => r.url),
     ...pageRows(pagesPrev).map((r) => r.url),
     ...(gscPagesCur?.rows ?? []).map((r) => r.keys?.[0]),
