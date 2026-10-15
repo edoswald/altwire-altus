@@ -27,6 +27,7 @@ Slack ── AltWire Insights app ──► this bridge ──► Claude Managed
 | `disconnect <canva or URL>` | Unlinks it |
 | `connections` | Lists your linked accounts |
 | `memory` | Lists the files in your personal memory and the team memory |
+| `run <job>` | Admins only: run a scheduled job now (it posts and emails for real) |
 
 Only Slack users in `BRIDGE_CONNECT_USERS` can link accounts. Gmail can't be linked: it has no public MCP server that supports this sign-in, so forward the mail you want the agent to see into Zoho.
 
@@ -74,6 +75,9 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 | `BRIDGE_DM_SESSION_IDLE_MINUTES` | no | A DM conversation restarts after this much quiet (default 120) |
 | `BRIDGE_MEMORY_STORE_ID` | no | `memstore_…`: shared team memory mounted in every session (below) |
 | `BRIDGE_MEMORY_DM_ACCESS` | no | `read_only` (default) or `read_write`: the shared memory's access in DMs |
+| `BRIDGE_ADMIN_USERS` | no | Slack user IDs that may run a scheduled job now with `run <job>` in a DM |
+| `BRIDGE_EMAIL_FROM` | for email jobs | Sender address for scheduled-job email (SES), e.g. `${{Altus Core.ALTUS_FROM_EMAIL}}` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | for email jobs | SES credentials; reference Altus Core's |
 | `BRIDGE_PERSONAL_MEMORY` | no | `false` turns off per-person memory (on by default) |
 | `BRIDGE_USER_NAMES` | no | `U0B0T1RH5SL=ed,U0B0UF0QHKJ=derek`: names personal stores (`altwire-ed`) instead of using Slack IDs |
 
@@ -92,6 +96,24 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 ```
 
 To run a job only part of the year, use the cron month field. The live holiday check-in posts Mondays at 8:50 ET from October through December (`"cron": "50 8 * 10-12 1"`, channel `C0C8DSN1BP0`), and its prompt asks for a season wrap-up after December 25.
+
+**Digest-style jobs** deliver a detailed email and route short Slack action items to several channels from one run:
+
+```json
+{
+  "name": "daily-digest",
+  "cron": "30 6 * * 1-5",
+  "channel": "C0AVAMXP17Y",
+  "prompt": "Write today's AltWire daily digest following the altwire-digest skill.",
+  "email": { "to": ["$DEREK_EMAIL"], "cc": ["$ALTUS_CC_EMAILS"], "subject": "AltWire daily digest" },
+  "routes": {
+    "team":    { "channel": "C0AVAMXP17Y", "about": "general AltWire work: SEO fixes, pages to update, stories to assign" },
+    "holiday": { "channel": "C0C8DSN1BP0", "about": "holiday gift guides and seasonal content" }
+  }
+}
+```
+
+The bridge tells the agent to answer in labelled sections (`=== EMAIL SUBJECT ===`, `=== EMAIL ===`, `=== SLACK <route> ===`), emails the Markdown as HTML through SES, and posts each route that isn't `none`. Addresses written `$NAME` come from that environment variable. `"preview": true` posts nothing and appends the Slack items to the email, for trying a job out. If the agent ignores the format, the whole reply is posted to `channel` so nothing is lost.
 
 Each job's channel must be in `BRIDGE_ALLOWED_CHANNELS`. A run that doesn't finish cleanly is logged and not posted.
 

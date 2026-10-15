@@ -99,12 +99,14 @@ export function canPostIn(channel, { isDm, allowedChannels }) {
  */
 export function parseCommand(text) {
   const trimmed = String(text ?? '').trim();
-  const m = trimmed.match(/^(help|connections|new|connect|disconnect|memory)\b\s*(.*)$/i);
+  const m = trimmed.match(/^(help|connections|new|connect|disconnect|memory|run)\b\s*(.*)$/i);
   if (!m) return null;
   const name = m[1].toLowerCase();
   const arg = m[2].trim().replace(/^<(https?:\/\/[^|>]+)(\|[^>]*)?>$/, '$1'); // Slack wraps URLs as <url|label>
-  if ((name === 'connect' || name === 'disconnect') && !arg) return { name: 'help' };
-  if (name !== 'connect' && name !== 'disconnect' && arg) return null; // "new album ideas?" is a question, not a command
+  const takesArg = name === 'connect' || name === 'disconnect' || name === 'run';
+  if (takesArg && !arg) return name === 'run' ? null : { name: 'help' };
+  if (name === 'run' && !/^[\w-]+$/.test(arg)) return null; // "run the numbers for me" is a question
+  if (!takesArg && arg) return null; // "new album ideas?" is a question, not a command
   return arg ? { name, arg } : { name };
 }
 

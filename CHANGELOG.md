@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Agent-written daily digest** (`slack-bridge`, `agent-skills/altwire-digest`): scheduled jobs can email a detailed digest (Markdown → HTML through SES) and route short Slack action items to several channels from one run, with a preview mode and an admin `run <job>` DM command. Replaces the legacy service's code-built digest email once enabled.
+
 - **Slack bridge memory**: a shared team memory store (`BRIDGE_MEMORY_STORE_ID`; read-write in channels and scheduled jobs, read-only in DMs by default) seeded with a 2026 holiday tracker and a decisions file, and a personal store per Slack user, created on first DM and mounted only in their DMs. New DM command `memory`.
 
 - **Archive filters and browse** (`search_altwire_archive`, `get_archive_stats`): `published_after` / `published_before`, `categories`, and `tags` filters (case-insensitive, applied to both semantic and keyword search; a date range drops the recency boost), `sort` (relevance, newest, oldest), and a browse mode with no query that lists matching items in date order with `total_matching` and `next_offset`. `get_archive_stats` adds item counts per year and category names with counts.

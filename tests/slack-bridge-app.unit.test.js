@@ -127,6 +127,7 @@ function makeBridge(overrides = {}) {
     log: { info() {}, warn() {}, error() {} },
     fetchImpl: overrides.fetchImpl,
     sleep: async () => {},
+    mailer: overrides.mailer,
   });
   return { bridge, store, slack, anthropic };
 }
@@ -434,6 +435,78 @@ describe('personal memory', () => {
     const off = makeBridge({ config: { ...config, personalMemory: false } });
     await deliver(off.bridge, dm('hello'));
     expect(off.anthropic.log.memoryStores).toEqual([]);
+  });
+});
+
+describe('digest jobs (email + routed Slack action items)', () => {
+  const HOLIDAY = 'C0HOLIDAY';
+  const job = {
+    name: 'daily-digest', channel: TEAM, prompt: 'Write the digest.', timezone: 'America/New_York',
+    email: { to: ['derek@altwire.net'], cc: ['ed@example.com'], subject: 'AltWire daily digest' },
+    routes: [{ name: 'team', channel: TEAM, about: 'general' }, { name: 'holiday', channel: HOLIDAY, about: 'gift guides' }],
+  };
+  const reply = [
+    '=== EMAIL SUBJECT ===',
+    'Search clicks up 18%',
+    '=== EMAIL ===',
+    '## The short version',
+    '- Clicks **up 18%**',
+    '=== SLACK team ===',
+    '- Update the [Deftones review](https://altwire.net/deftones/) title',
+    '=== SLACK holiday ===',
+    'none',
+  ].join('\n');
+  const fakeMailer = () => { const sent = []; return { sent, send: async (m) => { sent.push(m); } }; };
+
+  it('emails the detailed digest and posts only channels with action items', async () => {
+    const mailer = fakeMailer();
+    const { bridge, slack, anthropic } = makeBridge({ mailer, anthropic: fakeAnthropic({ replies: [reply] }), config: { allowedChannels: new Set([TEAM, HOLIDAY]) } });
+    const result = await bridge.runScheduledJob(job);
+
+    expect(anthropic.log.sent[0].content[0].text).toMatch(/=== SLACK holiday ===/);
+    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent[0]).toMatchObject({ to: ['derek@altwire.net'], cc: ['ed@example.com'], subject: 'AltWire daily digest: Search clicks up 18%' });
+    expect(mailer.sent[0].html).toContain('<strong>up 18%</strong>');
+    expect(mailer.sent[0].html).not.toContain('Slack action items');
+    expect(slack.calls.filter((c) => c.method === 'post')).toEqual([
+      expect.objectContaining({ channel: TEAM, text: expect.stringContaining('<https://altwire.net/deftones/|Deftones review>') }),
+    ]);
+    expect(result).toEqual({ emailed: true, posted: [TEAM] });
+  });
+
+  it('in preview, emails the Slack items instead of posting them', async () => {
+    const mailer = fakeMailer();
+    const { bridge, slack } = makeBridge({ mailer, anthropic: fakeAnthropic({ replies: [reply] }), config: { allowedChannels: new Set([TEAM, HOLIDAY]) } });
+    await bridge.runScheduledJob({ ...job, preview: true });
+    expect(slack.calls).toEqual([]);
+    expect(mailer.sent[0].text).toMatch(/## Slack action items \(preview, not posted\)[\s\S]*### Slack: team \(general\)[\s\S]*Deftones review[\s\S]*### Slack: holiday \(gift guides\)\n\n_Nothing for this channel today._/);
+  });
+
+  it('posts the whole reply when the agent ignores the sections, and survives a failed email', async () => {
+    const plain = makeBridge({ mailer: fakeMailer(), anthropic: fakeAnthropic({ replies: ['Just a summary.'] }) });
+    expect(await plain.bridge.runScheduledJob(job)).toEqual({ emailed: false, posted: [TEAM] });
+    expect(plain.slack.calls[0]).toMatchObject({ channel: TEAM, text: 'Just a summary.' });
+
+    const failing = makeBridge({ mailer: { send: async () => { throw new Error('MessageRejected'); } }, anthropic: fakeAnthropic({ replies: [reply] }), config: { allowedChannels: new Set([TEAM, HOLIDAY]) } });
+    expect(await failing.bridge.runScheduledJob(job)).toEqual({ emailed: false, posted: [TEAM] });
+  });
+
+  it('lets admins run a job from a DM and refuses everyone else', async () => {
+    const mailer = fakeMailer();
+    const { bridge, slack } = makeBridge({
+      mailer,
+      anthropic: fakeAnthropic({ replies: [reply] }),
+      config: { allowedChannels: new Set([TEAM, HOLIDAY]), adminUsers: new Set(['U_ED']), jobs: [{ ...job, preview: true }] },
+    });
+    await deliver(bridge, dm('run daily-digest'));
+    expect(slack.calls.at(-1).text).toMatch(/limited to admins/);
+
+    const edDm = (text) => envelope({ type: 'message', channel_type: 'im', user: 'U_ED', channel: 'D2', ts: `${Date.now()}.1`, text });
+    await deliver(bridge, edDm('run nope'));
+    expect(slack.calls.at(-1).text).toMatch(/No scheduled job called `nope`. Jobs: `daily-digest`/);
+    await deliver(bridge, edDm('run daily-digest'));
+    expect(mailer.sent).toHaveLength(1);
+    expect(slack.calls.at(-1).text).toBe('`daily-digest` done: emailed.');
   });
 });
 

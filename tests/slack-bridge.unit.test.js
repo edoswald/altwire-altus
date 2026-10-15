@@ -6,7 +6,8 @@ import { replyText, runTurn } from '../slack-bridge/lib/agent-session.js';
 import {
   buildAuthorizeUrl, buildVaultAuth, discover, exchangeCode, normalizeServerUrl, registerClient, resolveServer,
 } from '../slack-bridge/lib/mcp-oauth.js';
-import { parseSchedules, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
+import { parseJobOutput, parseSchedules, resolveAddresses, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
+import { emailText, markdownToEmailHtml } from '../slack-bridge/lib/email.js';
 import {
   HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, PERSONAL_INSTRUCTIONS, memoryResourcesFor, parseDmAccess, parseUserNames, personalStoreName, seedMemoryStore,
 } from '../slack-bridge/lib/memory.js';
@@ -391,6 +392,72 @@ describe('personal memory helpers', () => {
   it('recognizes the memory command but not questions starting with "memory"', () => {
     expect(parseCommand('memory')).toEqual({ name: 'memory' });
     expect(parseCommand('memory of the 2019 tour?')).toBeNull();
+  });
+});
+
+describe('multi-output schedules', () => {
+  const allowedChannels = new Set(['C1', 'C2']);
+  const env = { DEREK_EMAIL: 'derek@altwire.net', CC: 'ed@example.com, derek@altwire.net,bad' };
+  const base = { name: 'daily-digest', cron: '30 6 * * 1-5', channel: 'C1', prompt: 'Digest.' };
+
+  it('parses email recipients from env and routes on the allowlist', () => {
+    const { jobs, errors } = parseSchedules(JSON.stringify([{
+      ...base,
+      email: { to: ['$DEREK_EMAIL'], cc: ['$CC'] },
+      routes: { Team: 'C1', holiday: { channel: 'C2', about: 'gift guides' } },
+      preview: true,
+    }]), { allowedChannels, env });
+    expect(errors).toEqual([]);
+    expect(jobs[0].email).toEqual({ to: ['derek@altwire.net'], cc: ['ed@example.com'], subject: 'AltWire: daily-digest' });
+    expect(jobs[0].routes).toEqual([{ name: 'team', channel: 'C1', about: null }, { name: 'holiday', channel: 'C2', about: 'gift guides' }]);
+    expect(jobs[0].preview).toBe(true);
+  });
+
+  it('rejects routes off the allowlist and email with no recipients', () => {
+    const bad = parseSchedules(JSON.stringify([
+      { ...base, routes: { x: 'C9' } },
+      { ...base, name: 'b', email: { to: ['$MISSING'] } },
+    ]), { allowedChannels, env });
+    expect(bad.jobs).toEqual([]);
+    expect(bad.errors).toEqual([
+      'schedule daily-digest: route x channel C9 is not in BRIDGE_ALLOWED_CHANNELS',
+      'schedule b: email.to resolves to no addresses',
+    ]);
+    expect(resolveAddresses('a@b.co')).toEqual(['a@b.co']);
+  });
+
+  it('tells the agent the section format, including each route', () => {
+    const prompt = scheduledPrompt({ ...base, timezone: 'America/New_York', email: { to: ['a@b.co'] }, routes: [{ name: 'holiday', channel: 'C2', about: 'gift guides' }] }, new Date('2026-10-19T13:00:00Z'));
+    expect(prompt).toMatch(/=== EMAIL SUBJECT ===[\s\S]*=== EMAIL ===[\s\S]*=== SLACK holiday ===\nAction items for the holiday channel \(gift guides\)/);
+    expect(prompt).not.toMatch(/posted to Slack as-is/);
+  });
+
+  it('splits a reply into sections and drops channels marked none', () => {
+    const job = { routes: [{ name: 'team', channel: 'C1' }, { name: 'holiday', channel: 'C2' }] };
+    const out = parseJobOutput('intro ignored\n=== EMAIL SUBJECT ===\nBig day\nextra\n===EMAIL===\nBody\n\n=== SLACK TEAM ===\n- Fix it\n=== SLACK holiday ===\n*None.*', job);
+    expect(out).toEqual({ subject: 'Big day', email: 'Body', slack: [{ route: 'team', channel: 'C1', text: '- Fix it' }], found: true });
+    expect(parseJobOutput('plain text', job).found).toBe(false);
+  });
+});
+
+describe('email rendering', () => {
+  it('renders headings, tables, lists, and links, and escapes raw HTML', () => {
+    const html = markdownToEmailHtml([
+      '## Traffic (Matomo)',
+      '| Metric | Yesterday | Change |',
+      '|---|---:|---|',
+      '| Visits | **1,204** | +8% |',
+      '',
+      '1. Update [the review](https://altwire.net/r/)',
+      '2. Pitch <script>x</script>',
+      '',
+      'A *quiet* day.',
+    ].join('\n'));
+    expect(html).toMatch(/<h2[^>]*>Traffic \(Matomo\)<\/h2>/);
+    expect(html).toMatch(/<th[^>]*>Metric<\/th>[\s\S]*<td[^>]*><strong>1,204<\/strong><\/td>/);
+    expect(html).toMatch(/<ol[^>]*><li>Update <a href="https:\/\/altwire.net\/r\/"[^>]*>the review<\/a><\/li><li>Pitch &lt;script&gt;x&lt;\/script&gt;<\/li><\/ol>/);
+    expect(html).toMatch(/<p[^>]*>A <em>quiet<\/em> day.<\/p>/);
+    expect(emailText('See [this](https://x.co/a)')).toBe('See this (https://x.co/a)');
   });
 });
 

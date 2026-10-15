@@ -17,7 +17,8 @@ import {
   normalizeServerUrl, registerClient, resolveServer,
 } from './mcp-oauth.js';
 import { buildPersonalOverride, personalServersFromCredentials } from './personal-servers.js';
-import { scheduledPrompt } from './schedules.js';
+import { isMultiOutput, parseJobOutput, scheduledPrompt } from './schedules.js';
+import { emailDocument, emailText } from './email.js';
 import { downloadFile, findNewSessionFiles } from './session-files.js';
 
 /**
@@ -30,7 +31,7 @@ import { downloadFile, findNewSessionFiles } from './session-files.js';
  * @param {Function} [deps.fetchImpl] fetch used for OAuth discovery and token calls
  * @param {Function} [deps.sleep]     delay used while waiting for output files (tests pass a no-op)
  */
-export function createBridge({ config, store, anthropic, slack, log = console, fetchImpl = fetch, sleep }) {
+export function createBridge({ config, store, anthropic, slack, log = console, fetchImpl = fetch, sleep, mailer = null }) {
   const redirectUri = `${config.publicUrl}/oauth/callback`;
   let botUserId = config.botUserId ?? null;
 
@@ -254,6 +255,23 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
     }
 
     if (command.name === 'memory') return reply(await describeMemory(route.user));
+
+    if (command.name === 'run') {
+      if (!config.adminUsers?.has(route.user)) return reply('Running scheduled jobs by hand is limited to admins.');
+      const job = (config.jobs ?? []).find((j) => j.name === command.arg);
+      if (!job) {
+        const names = (config.jobs ?? []).map((j) => `\`${j.name}\``).join(', ') || 'none configured';
+        return reply(`No scheduled job called \`${command.arg}\`. Jobs: ${names}.`);
+      }
+      await reply(`Running \`${job.name}\` now. It posts and emails for real, the same as a scheduled run; this takes a few minutes.`);
+      const result = await runScheduledJob(job);
+      if (result?.error) return reply(`\`${job.name}\` failed: ${result.error}`);
+      if (!result) return reply(`\`${job.name}\` didn't finish cleanly, so nothing was sent. Check the bridge logs.`);
+      const parts = [];
+      if (result.emailed) parts.push('emailed');
+      if (result.posted?.length) parts.push(`posted to ${result.posted.map((c) => `<#${c}>`).join(', ')}`);
+      return reply(`\`${job.name}\` done: ${parts.join('; ') || 'nothing to deliver'}.`);
+    }
 
     if (command.name === 'connect' || command.name === 'disconnect') {
       if (!config.connectUsers.has(route.user)) {
@@ -495,12 +513,80 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
         log.warn('Scheduled job did not finish cleanly; not posting', { job: job.name, stopReason: result.stopReason });
         return;
       }
+      if (isMultiOutput(job)) return await deliverJobOutputs(job, sessionId, result.text);
       const postTs = await postReply({ channel: job.channel, text: result.text });
       await deliverFiles({ sessionId, channel: job.channel, threadTs: postTs });
       log.info('Scheduled job posted', { job: job.name, channel: job.channel });
+      return { posted: [job.channel] };
     } catch (err) {
       log.error('Scheduled job failed', { job: job.name, error: err.message });
+      return { error: err.message };
     }
+  }
+
+  /**
+   * Deliver a multi-output job: the email, then each Slack route that has
+   * action items. If the agent ignored the section format, nothing is lost:
+   * the whole reply goes to the job's channel.
+   */
+  async function deliverJobOutputs(job, sessionId, text) {
+    const out = parseJobOutput(text, job);
+    const delivered = { emailed: false, posted: [] };
+
+    if (!out.found) {
+      log.warn('Scheduled job reply had no sections; posting it whole', { job: job.name });
+      const ts = await postReply({ channel: job.channel, text });
+      await deliverFiles({ sessionId, channel: job.channel, threadTs: ts });
+      delivered.posted.push(job.channel);
+      return delivered;
+    }
+
+    // Preview: show the Slack action items in the email instead of posting them.
+    let emailBody = out.email;
+    if (job.preview && out.email) {
+      const routeName = (name) => job.routes.find((r) => r.name === name);
+      const previews = (job.routes ?? []).map((r) => {
+        const item = out.slack.find((x) => x.route === r.name);
+        return `### Slack: ${r.name}${routeName(r.name)?.about ? ` (${routeName(r.name).about})` : ''}\n\n${item ? item.text : '_Nothing for this channel today._'}`;
+      });
+      if (previews.length) emailBody = `${out.email}\n\n---\n\n## Slack action items (preview, not posted)\n\n${previews.join('\n\n')}`;
+    }
+
+    if (job.email) {
+      if (!out.email) {
+        log.warn('Scheduled job wrote no email section', { job: job.name });
+      } else if (!mailer) {
+        log.error('Scheduled job has an email but no mailer is configured (BRIDGE_EMAIL_FROM / AWS credentials)', { job: job.name });
+      } else {
+        try {
+          await mailer.send({
+            to: job.email.to,
+            cc: job.email.cc,
+            subject: out.subject ? `${job.email.subject}: ${out.subject}` : job.email.subject,
+            html: emailDocument(emailBody, { footer: `Written by AltWire Insights (scheduled job "${job.name}"). Reply in Slack to ask follow-up questions.` }),
+            text: emailText(emailBody),
+          });
+          delivered.emailed = true;
+          log.info('Scheduled job emailed', { job: job.name, to: job.email.to.length, cc: job.email.cc.length });
+        } catch (err) {
+          log.error('Scheduled job email failed', { job: job.name, error: err.message });
+        }
+      }
+    }
+
+    let firstPost = null;
+    for (const item of job.preview ? [] : out.slack) {
+      try {
+        const ts = await postReply({ channel: item.channel, text: item.text });
+        firstPost ??= { channel: item.channel, ts };
+        delivered.posted.push(item.channel);
+      } catch (err) {
+        log.error('Scheduled job Slack post failed', { job: job.name, route: item.route, error: err.message });
+      }
+    }
+    if (firstPost) await deliverFiles({ sessionId, channel: firstPost.channel, threadTs: firstPost.ts });
+    log.info('Scheduled job delivered', { job: job.name, emailed: delivered.emailed, posted: delivered.posted });
+    return delivered;
   }
 
   return {
