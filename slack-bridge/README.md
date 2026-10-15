@@ -113,7 +113,7 @@ To run a job only part of the year, use the cron month field. The live holiday c
 }
 ```
 
-The bridge tells the agent to answer in labelled sections (`=== EMAIL SUBJECT ===`, `=== EMAIL ===`, `=== SLACK <route> ===`), emails the Markdown as HTML through SES, and posts each route that isn't `none`. Addresses written `$NAME` come from that environment variable. `"manual": true` (no `cron`) makes a job that only runs with `run <job>`. `"preview": true` posts nothing and appends the Slack items to the email, for trying a job out. If the agent ignores the format, the whole reply is posted to `channel` so nothing is lost.
+The bridge tells the agent to answer in labelled sections (`=== EMAIL SUBJECT ===`, `=== EMAIL ===`, `=== SLACK <route> ===`), emails the Markdown as HTML through SES, and posts each route that isn't `none`. Addresses written `$NAME` come from that environment variable. `"log": { "path": "/digest-log.md", "keep": 30 }` records what each run sent (subject and action items, or the post) in the team memory, newest first, so later runs can follow up and judge what earlier recommendations did; the bridge writes it, previews aren't logged. `"manual": true` (no `cron`) makes a job that only runs with `run <job>`. `"preview": true` posts nothing and appends the Slack items to the email, for trying a job out. If the agent ignores the format, the whole reply is posted to `channel` so nothing is lost.
 
 Each job's channel must be in `BRIDGE_ALLOWED_CHANNELS`. A run that doesn't finish cleanly is logged and not posted.
 

@@ -10,7 +10,7 @@ The digest has two readers. The **email** is for the editor reading over coffee:
 ## Gather (in this order)
 
 1. `get_altwire_morning_digest`: the numbers snapshot. Yesterday vs. the same weekday last week (Matomo), page movers, Search Console totals and query/page movers, new opportunity-zone queries, Google News, articles from the last 14 days, and story opportunities. **This is the source of truth for every figure in the digest.**
-2. The team memory, if mounted: `decisions.md` (standing preferences) and `holiday-2026.md` (from October to December: guides in progress, last week's priority).
+2. The team memory, if mounted: `decisions.md` (standing preferences), `holiday-2026.md` (from October to December: guides in progress, last week's priority), and `digest-log.md` (what recent digests recommended; the bridge keeps it). Don't repeat an action item from the last few days unless it's still open and still matters; if one looks done, you can say so in a line.
 3. Only when something needs explaining: `search_altwire_archive` or `get_content_by_url` to see what a page that moved is about, or `get_altwire_page_performance` for one page's search detail. Don't run broad extra analysis every day.
 
 ## Rules for numbers

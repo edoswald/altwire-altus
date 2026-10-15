@@ -18,11 +18,16 @@
  * actionable. Addresses written as $NAME are read from that environment
  * variable (comma-separated lists are split).
  *
+ * "log": { "path": "/digest-log.md", "keep": 30 } records what each run sent
+ * in the team memory (see run-log.js); preview runs aren't logged.
+ *
  * "manual": true (no cron) defines a job that only runs with `run <name>`.
  *
  * "preview": true posts nothing to Slack; the Slack sections are appended to
  * the email instead, for trying a job out before it goes to the team.
  */
+
+import { parseLogConfig } from './run-log.js';
 
 export function parseSchedules(raw, { allowedChannels, env = process.env }) {
   if (!raw || !String(raw).trim()) return { jobs: [], errors: [] };
@@ -52,6 +57,9 @@ export function parseSchedules(raw, { allowedChannels, env = process.env }) {
     const blocked = routes.list.find((r) => !allowedChannels.has(r.channel));
     if (blocked) return errors.push(`schedule ${label}: route ${blocked.name} channel ${blocked.channel} is not in BRIDGE_ALLOWED_CHANNELS`);
 
+    const logConfig = parseLogConfig(job.log, job.name);
+    if (logConfig.error) return errors.push(`schedule ${label}: ${logConfig.error}`);
+
     let email = null;
     if (job.email) {
       const to = resolveAddresses(job.email.to, env);
@@ -74,6 +82,7 @@ export function parseSchedules(raw, { allowedChannels, env = process.env }) {
       ...(email ? { email } : {}),
       ...(routes.list.length ? { routes: routes.list } : {}),
       ...(job.preview === true ? { preview: true } : {}),
+      ...(logConfig.log ? { log: logConfig.log } : {}),
     });
   });
   return { jobs, errors };

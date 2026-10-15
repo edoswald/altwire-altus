@@ -88,8 +88,23 @@ function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = fa
           return { id: `memstore_${log.memoryStores.length}` };
         },
         memories: {
-          create: async (storeId, params) => { log.memories.push({ storeId, ...params }); return { id: 'mem_1' }; },
-          list: (storeId) => asyncIter(log.memories.filter((m) => m.storeId === storeId).map((m) => ({ type: 'memory', path: m.path }))),
+          create: async (storeId, params) => {
+            const id = `mem_${log.memories.length + 1}`;
+            log.memories.push({ id, storeId, ...params });
+            return { id };
+          },
+          list: (storeId, params = {}) => asyncIter(log.memories
+            .filter((m) => m.storeId === storeId && m.path.startsWith(params.path_prefix ?? '/'))
+            .map((m) => ({ type: 'memory', id: m.id, path: m.path }))),
+          retrieve: async (id) => {
+            const m = log.memories.find((x) => x.id === id);
+            return { ...m, content_sha256: `sha:${m.content.length}` };
+          },
+          update: async (id, params) => {
+            const m = log.memories.find((x) => x.id === id);
+            m.content = params.content;
+            return { id };
+          },
         },
       },
       vaults: {
@@ -507,6 +522,39 @@ describe('digest jobs (email + routed Slack action items)', () => {
     await deliver(bridge, edDm('run daily-digest'));
     expect(mailer.sent).toHaveLength(1);
     expect(slack.calls.at(-1).text).toBe('`daily-digest` done: emailed.');
+  });
+});
+
+describe('run logs in team memory', () => {
+  const HOLIDAY = 'C0HOLIDAY';
+  const config = { allowedChannels: new Set([TEAM, HOLIDAY]), memoryStoreId: 'memstore_team' };
+  const digestJob = {
+    name: 'daily-digest', channel: TEAM, prompt: 'Digest.', timezone: 'America/New_York',
+    email: { to: ['derek@altwire.net'], cc: [], subject: 'AltWire daily digest' },
+    routes: [{ name: 'team', channel: TEAM }, { name: 'holiday', channel: HOLIDAY }],
+    log: { path: '/digest-log.md', keep: 2, title: 'Daily digest log' },
+  };
+  const reply = (n) => `=== EMAIL SUBJECT ===\nDay ${n}\n=== EMAIL ===\nBody ${n}\n=== SLACK team ===\n- Fix page ${n}\n=== SLACK holiday ===\nnone`;
+  const mailer = { send: async () => {} };
+
+  it('records each digest newest first and keeps only the last N', async () => {
+    const { bridge, anthropic } = makeBridge({ mailer, config, anthropic: fakeAnthropic({ replies: [reply(1), reply(2), reply(3)] }) });
+    for (let i = 0; i < 3; i += 1) await bridge.runScheduledJob(digestJob);
+    const logs = anthropic.log.memories.filter((m) => m.path === '/digest-log.md');
+    expect(logs).toHaveLength(1);
+    const doc = logs[0].content;
+    expect(doc).toMatch(/^# Daily digest log\n\nWritten by the Slack bridge/);
+    expect(doc).toMatch(/Subject: Day 3\n\n### team\n- Fix page 3\n\n### holiday\nnone[\s\S]*Subject: Day 2/);
+    expect(doc).not.toMatch(/Day 1/);
+  });
+
+  it('logs single-post jobs, but never previews', async () => {
+    const recap = { name: 'weekly-recap', channel: TEAM, prompt: 'Recap.', timezone: 'America/New_York', log: { path: '/weekly-log.md', keep: 12, title: 'Weekly recap log' } };
+    const { bridge, anthropic } = makeBridge({ mailer, config, anthropic: fakeAnthropic({ replies: ['*The week*: visits up', reply(9)] }) });
+    await bridge.runScheduledJob(recap);
+    await bridge.runScheduledJob({ ...digestJob, preview: true });
+    expect(anthropic.log.memories.map((m) => m.path)).toEqual(['/weekly-log.md']);
+    expect(anthropic.log.memories[0].content).toMatch(/## \d{4}-\d{2}-\d{2} \(\w{3}\)\n\n\*The week\*: visits up/);
   });
 });
 

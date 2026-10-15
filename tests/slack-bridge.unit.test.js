@@ -8,6 +8,7 @@ import {
 } from '../slack-bridge/lib/mcp-oauth.js';
 import { parseJobOutput, parseSchedules, resolveAddresses, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
 import { emailText, markdownToEmailHtml } from '../slack-bridge/lib/email.js';
+import { appendRunLog, dateLabel, parseLogConfig, prependEntry } from '../slack-bridge/lib/run-log.js';
 import {
   HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, PERSONAL_INSTRUCTIONS, memoryResourcesFor, parseDmAccess, parseUserNames, personalStoreName, seedMemoryStore,
 } from '../slack-bridge/lib/memory.js';
@@ -469,6 +470,43 @@ describe('manual jobs', () => {
     ]), { allowedChannels: new Set(['C1']) });
     expect(jobs).toEqual([expect.objectContaining({ name: 'preview', manual: true, cron: null })]);
     expect(errors).toEqual(['schedule broken: missing cron']);
+  });
+});
+
+describe('run log helpers', () => {
+  it('validates log config', () => {
+    expect(parseLogConfig(undefined, 'x')).toEqual({ log: null });
+    expect(parseLogConfig('/digest-log.md', 'daily-digest')).toEqual({ log: { path: '/digest-log.md', keep: 30, title: 'daily-digest log' } });
+    expect(parseLogConfig({ path: '../x.md' }, 'x').error).toMatch(/log.path/);
+    expect(parseLogConfig({ path: '/x.md', keep: 0 }, 'x').error).toMatch(/keep/);
+  });
+
+  it('labels dates in the job time zone', () => {
+    expect(dateLabel(new Date('2026-10-15T03:30:00Z'), 'America/New_York')).toBe('2026-10-14 (Wed)');
+  });
+
+  it('prepends entries under the header and trims to keep', () => {
+    let doc = prependEntry('', '## A\none', { keep: 2, header: '# Log\n\nIntro.' });
+    doc = prependEntry(doc, '## B\ntwo', { keep: 2, header: 'unused' });
+    doc = prependEntry(doc, '## C\nthree', { keep: 2, header: 'unused' });
+    expect(doc).toBe('# Log\n\nIntro.\n\n## C\nthree\n\n## B\ntwo\n');
+  });
+
+  it('retries once when the file changed between read and write', async () => {
+    let content = '# Log\n\n## Old\nx\n';
+    let failNext = true;
+    const memories = {
+      list: () => ({ async *[Symbol.asyncIterator]() { yield { type: 'memory', id: 'mem_1', path: '/l.md' }; } }),
+      retrieve: async () => ({ content, content_sha256: 'h' }),
+      update: async (id, params) => {
+        if (failNext) { failNext = false; content += '## Edited\ny\n'; throw Object.assign(new Error('precondition'), { status: 409 }); }
+        expect(params.precondition).toEqual({ type: 'content_sha256', content_sha256: 'h' });
+        content = params.content;
+      },
+    };
+    const how = await appendRunLog({ beta: { memoryStores: { memories } } }, 'memstore', { path: '/l.md', keep: 5, title: 'L' }, '## New\nz');
+    expect(how).toBe('updated');
+    expect(content).toBe('# Log\n\n## New\nz\n\n## Old\nx\n\n## Edited\ny\n');
   });
 });
 

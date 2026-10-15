@@ -19,6 +19,7 @@ import {
 import { buildPersonalOverride, personalServersFromCredentials } from './personal-servers.js';
 import { isMultiOutput, parseJobOutput, scheduledPrompt } from './schedules.js';
 import { emailDocument, emailText } from './email.js';
+import { appendRunLog, digestEntry, postEntry } from './run-log.js';
 import { downloadFile, findNewSessionFiles } from './session-files.js';
 
 /**
@@ -513,14 +514,35 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
         log.warn('Scheduled job did not finish cleanly; not posting', { job: job.name, stopReason: result.stopReason });
         return;
       }
-      if (isMultiOutput(job)) return await deliverJobOutputs(job, sessionId, result.text);
+      if (isMultiOutput(job)) {
+        const delivered = await deliverJobOutputs(job, sessionId, result.text);
+        await recordRun(job, delivered.entry);
+        delete delivered.entry;
+        return delivered;
+      }
       const postTs = await postReply({ channel: job.channel, text: result.text });
       await deliverFiles({ sessionId, channel: job.channel, threadTs: postTs });
       log.info('Scheduled job posted', { job: job.name, channel: job.channel });
+      await recordRun(job, postEntry({ now: new Date(), timeZone: job.timezone, text: result.text }));
       return { posted: [job.channel] };
     } catch (err) {
       log.error('Scheduled job failed', { job: job.name, error: err.message });
       return { error: err.message };
+    }
+  }
+
+  /** Add what a run sent to its log in the team memory. Never fails the job. */
+  async function recordRun(job, entry) {
+    if (!job.log || job.preview || !entry) return;
+    if (!config.memoryStoreId) {
+      log.warn('Job has a log but no team memory store is configured', { job: job.name });
+      return;
+    }
+    try {
+      const how = await appendRunLog(anthropic, config.memoryStoreId, job.log, entry);
+      log.info('Run logged', { job: job.name, path: job.log.path, how });
+    } catch (err) {
+      log.error('Run log update failed', { job: job.name, path: job.log.path, error: err.message });
     }
   }
 
@@ -538,6 +560,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       const ts = await postReply({ channel: job.channel, text });
       await deliverFiles({ sessionId, channel: job.channel, threadTs: ts });
       delivered.posted.push(job.channel);
+      delivered.entry = postEntry({ now: new Date(), timeZone: job.timezone, text });
       return delivered;
     }
 
@@ -586,6 +609,14 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
     }
     if (firstPost) await deliverFiles({ sessionId, channel: firstPost.channel, threadTs: firstPost.ts });
     log.info('Scheduled job delivered', { job: job.name, emailed: delivered.emailed, posted: delivered.posted });
+    delivered.entry = digestEntry({
+      now: new Date(),
+      timeZone: job.timezone,
+      subject: out.subject,
+      routes: job.routes,
+      slack: out.slack,
+      emailed: job.email ? delivered.emailed : undefined,
+    });
     return delivered;
   }
 
