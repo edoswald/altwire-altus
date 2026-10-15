@@ -9,6 +9,11 @@
  * DMs get the store read-only by default (BRIDGE_MEMORY_DM_ACCESS): DMs can
  * carry a person's own mail and accounts, and a read-only mount means none of
  * that can be written into memory the whole team shares.
+ *
+ * Each person also gets a personal store (created on their first DM, unless
+ * BRIDGE_PERSONAL_MEMORY=false), mounted read-write in their DMs only. Their
+ * preferences and ongoing tasks live there, apart from the team's and from
+ * everyone else's.
  */
 
 export const MEMORY_INSTRUCTIONS = `Shared AltWire team memory. Read the files relevant to the request before starting (ls the folder first).
@@ -24,20 +29,76 @@ Edit existing files instead of creating new ones, keep entries short and dated (
 
 export const MEMORY_INSTRUCTIONS_READ_ONLY = `Shared AltWire team memory, read-only in this conversation. Read the files relevant to the request before starting (ls the folder first). If something here should be updated, say what, so it can be changed from a team channel.`;
 
+export const PERSONAL_INSTRUCTIONS = `This person's own memory, private to their DMs with you; nobody else's sessions mount it. Read it at the start of a conversation (ls the folder first) and follow what it says about them.
+
+Save what will help in their later conversations: how they like answers (length, format), what they work on and are responsible for, ongoing tasks and follow-ups, and corrections they give you. Keep preferences in preferences.md; use short, dated entries and edit rather than duplicate.
+
+Never save credentials, and don't copy email or message content in; note a task or follow-up in your own words instead. Team-wide decisions belong in the team memory, which is read-only here, so suggest raising those in a team channel.`;
+
 /**
- * Session resources for the shared memory store.
+ * Session resources: the shared team store, plus the person's own store in DMs.
  * @returns {Array<object>}  [] when no store is configured
  */
-export function memoryResourcesFor({ isDm, memoryStoreId, dmAccess = 'read_only' }) {
-  if (!memoryStoreId) return [];
-  const access = isDm ? dmAccess : 'read_write';
-  return [{
-    type: 'memory_store',
-    memory_store_id: memoryStoreId,
-    access,
-    instructions: access === 'read_only' ? MEMORY_INSTRUCTIONS_READ_ONLY : MEMORY_INSTRUCTIONS,
-  }];
+export function memoryResourcesFor({ isDm, memoryStoreId, dmAccess = 'read_only', personalStoreId = null }) {
+  const resources = [];
+  if (memoryStoreId) {
+    const access = isDm ? dmAccess : 'read_write';
+    resources.push({
+      type: 'memory_store',
+      memory_store_id: memoryStoreId,
+      access,
+      instructions: access === 'read_only' ? MEMORY_INSTRUCTIONS_READ_ONLY : MEMORY_INSTRUCTIONS,
+    });
+  }
+  if (isDm && personalStoreId) {
+    resources.push({
+      type: 'memory_store',
+      memory_store_id: personalStoreId,
+      access: 'read_write',
+      instructions: PERSONAL_INSTRUCTIONS,
+    });
+  }
+  return resources;
 }
+
+/** "U0B0T1RH5SL=ed, U0B0UF0QHKJ=derek" → Map (BRIDGE_USER_NAMES). */
+export function parseUserNames(value) {
+  const names = new Map();
+  for (const pair of String(value ?? '').split(',')) {
+    const [id, name] = pair.split('=').map((x) => x?.trim());
+    if (id && name) names.set(id, name);
+  }
+  return names;
+}
+
+/** Store name for a person; it also becomes their mount folder (/mnt/memory/<slug>/). */
+export function personalStoreName(slackUserId, names = new Map()) {
+  const label = names.get(slackUserId) ?? slackUserId;
+  const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'user';
+  return `altwire-${slug}`;
+}
+
+export function personalStoreDescription(slackUserId, names = new Map()) {
+  const who = names.get(slackUserId) ? `${names.get(slackUserId)} (Slack ${slackUserId})` : `Slack user ${slackUserId}`;
+  return `Personal memory for ${who}: their preferences, responsibilities, ongoing tasks, and follow-ups with AltWire Insights.`;
+}
+
+export const PERSONAL_SEEDS = [{
+  path: '/preferences.md',
+  content: `# Preferences
+
+How this person likes to work with AltWire Insights. Short, dated entries.
+
+## Answers
+(none yet)
+
+## What they work on
+(none yet)
+
+## Ongoing tasks and follow-ups
+(none yet)
+`,
+}];
 
 export function parseDmAccess(value) {
   return String(value ?? '').trim().toLowerCase() === 'read_write' ? 'read_write' : 'read_only';

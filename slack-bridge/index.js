@@ -10,6 +10,8 @@
  * - Scheduled jobs (BRIDGE_SCHEDULES) run fresh sessions and post to their channel
  * - Shared team memory (BRIDGE_MEMORY_STORE_ID) is mounted in every session:
  *   read-write in channels and scheduled jobs, read-only in DMs by default
+ * - Personal memory: each person's own store, created on first DM and
+ *   mounted read-write in their DMs only
  *
  * The agent has no Slack tools: the bridge posts every reply itself and only
  * to DMs or BRIDGE_ALLOWED_CHANNELS.
@@ -25,7 +27,7 @@ import { parseCsvSet } from './lib/router.js';
 import { Store } from './lib/store.js';
 import { parseSchedules } from './lib/schedules.js';
 import { createBridge } from './lib/app.js';
-import { parseDmAccess, seedMemoryStore } from './lib/memory.js';
+import { parseDmAccess, parseUserNames, seedMemoryStore } from './lib/memory.js';
 
 const log = {
   info: (msg, meta = {}) => console.log(JSON.stringify({ level: 'info', msg, ...meta })),
@@ -50,6 +52,8 @@ const config = {
   dmSessionIdleMinutes: Number(env.BRIDGE_DM_SESSION_IDLE_MINUTES || 120),
   memoryStoreId: env.BRIDGE_MEMORY_STORE_ID || null,
   memoryDmAccess: parseDmAccess(env.BRIDGE_MEMORY_DM_ACCESS),
+  personalMemory: String(env.BRIDGE_PERSONAL_MEMORY ?? '').trim().toLowerCase() !== 'false',
+  userNames: parseUserNames(env.BRIDGE_USER_NAMES),
   databaseUrl: env.BRIDGE_DATABASE_URL || env.DATABASE_URL,
 };
 
@@ -96,5 +100,6 @@ createServer((req, res) => bridge.handleHttp(req, res)).listen(config.port, () =
     allowedChannels: [...config.allowedChannels],
     schedules: jobs.map((j) => `${j.name} (${j.cron} ${j.timezone})`),
     memory: config.memoryStoreId ? `channels read_write, DMs ${config.memoryDmAccess}` : 'off',
+    personalMemory: config.personalMemory ? 'per user, DMs only' : 'off',
   });
 });

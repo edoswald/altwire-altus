@@ -99,7 +99,7 @@ export function canPostIn(channel, { isDm, allowedChannels }) {
  */
 export function parseCommand(text) {
   const trimmed = String(text ?? '').trim();
-  const m = trimmed.match(/^(help|connections|new|connect|disconnect)\b\s*(.*)$/i);
+  const m = trimmed.match(/^(help|connections|new|connect|disconnect|memory)\b\s*(.*)$/i);
   if (!m) return null;
   const name = m[1].toLowerCase();
   const arg = m[2].trim().replace(/^<(https?:\/\/[^|>]+)(\|[^>]*)?>$/, '$1'); // Slack wraps URLs as <url|label>

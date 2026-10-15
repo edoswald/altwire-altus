@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS bridge_user_vaults (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS bridge_user_memory (
+  slack_user_id   TEXT PRIMARY KEY,
+  memory_store_id TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS bridge_oauth_states (
   state          TEXT PRIMARY KEY,
   slack_user_id  TEXT NOT NULL,
@@ -124,6 +130,21 @@ export class Store {
        ON CONFLICT (slack_user_id) DO UPDATE SET vault_id = EXCLUDED.vault_id`,
       [slackUserId, vaultId],
     );
+  }
+
+  async getUserMemoryStore(slackUserId) {
+    const { rows } = await this.pool.query('SELECT memory_store_id FROM bridge_user_memory WHERE slack_user_id = $1', [slackUserId]);
+    return rows[0]?.memory_store_id ?? null;
+  }
+
+  /** Record a person's store; if one was saved meanwhile, keep it and return it. */
+  async saveUserMemoryStore(slackUserId, memoryStoreId) {
+    await this.pool.query(
+      `INSERT INTO bridge_user_memory (slack_user_id, memory_store_id) VALUES ($1, $2)
+       ON CONFLICT (slack_user_id) DO NOTHING`,
+      [slackUserId, memoryStoreId],
+    );
+    return this.getUserMemoryStore(slackUserId);
   }
 
   async saveOAuthState(state, { slackUserId, dmChannel, serverLabel, serverUrl, flow, ttlMinutes = 10 }) {

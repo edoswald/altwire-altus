@@ -7,7 +7,9 @@ import {
   buildAuthorizeUrl, buildVaultAuth, discover, exchangeCode, normalizeServerUrl, registerClient, resolveServer,
 } from '../slack-bridge/lib/mcp-oauth.js';
 import { parseSchedules, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
-import { HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, memoryResourcesFor, parseDmAccess, seedMemoryStore } from '../slack-bridge/lib/memory.js';
+import {
+  HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, PERSONAL_INSTRUCTIONS, memoryResourcesFor, parseDmAccess, parseUserNames, personalStoreName, seedMemoryStore,
+} from '../slack-bridge/lib/memory.js';
 
 const BOT = 'UBOT';
 
@@ -369,6 +371,26 @@ describe('memory', () => {
     expect(tracker).toMatch(/Fri Nov 27: Black Friday/);
     expect(tracker).toMatch(/## Guides[\s\S]*## Picks[\s\S]*## Weekly priorities[\s\S]*## Decisions/);
     expect(Buffer.byteLength(tracker)).toBeLessThan(100 * 1024);
+  });
+});
+
+describe('personal memory helpers', () => {
+  it('parses user names and builds store names that make clean folder names', () => {
+    const names = parseUserNames(' U1=Ed , U2 = Derek Smith,broken, =x');
+    expect([...names]).toEqual([['U1', 'Ed'], ['U2', 'Derek Smith']]);
+    expect(personalStoreName('U2', names)).toBe('altwire-derek-smith');
+    expect(personalStoreName('U0B0T1RH5SL')).toBe('altwire-u0b0t1rh5sl');
+  });
+
+  it('adds the personal store only in DMs, after the team store', () => {
+    expect(memoryResourcesFor({ isDm: false, memoryStoreId: 't', personalStoreId: 'p' }).map((r) => r.memory_store_id)).toEqual(['t']);
+    expect(memoryResourcesFor({ isDm: true, memoryStoreId: null, personalStoreId: 'p' }).map((r) => r.memory_store_id)).toEqual(['p']);
+    expect(PERSONAL_INSTRUCTIONS.length).toBeLessThanOrEqual(4096);
+  });
+
+  it('recognizes the memory command but not questions starting with "memory"', () => {
+    expect(parseCommand('memory')).toEqual({ name: 'memory' });
+    expect(parseCommand('memory of the 2019 tour?')).toBeNull();
   });
 });
 

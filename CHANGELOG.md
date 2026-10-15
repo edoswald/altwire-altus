@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Slack bridge memory**: a shared team memory store (`BRIDGE_MEMORY_STORE_ID`; read-write in channels and scheduled jobs, read-only in DMs by default) seeded with a 2026 holiday tracker and a decisions file, and a personal store per Slack user, created on first DM and mounted only in their DMs. New DM command `memory`.
+
 - **Archive filters and browse** (`search_altwire_archive`, `get_archive_stats`): `published_after` / `published_before`, `categories`, and `tags` filters (case-insensitive, applied to both semantic and keyword search; a date range drops the recency boost), `sort` (relevance, newest, oldest), and a browse mode with no query that lists matching items in date order with `total_matching` and `next_offset`. `get_archive_stats` adds item counts per year and category names with counts.
 - **Hybrid keyword + semantic archive search** (`handlers/altus-search.js`): `search_altwire_archive` adds Postgres full-text matches (new generated `altus_content.search_tsv` column with a GIN index; title and tags use the `simple` config so names like "The Who" survive, the body uses `english` stemming) to the vector matches. Each result reports `match`: semantic, keyword, or both. If reranking fails, the two lists are combined by reciprocal-rank fusion.
 - **Archive search reranking** (`handlers/altus-search.js`, `lib/voyage.js`): `search_altwire_archive` reranks its top 40 vector matches with Voyage `rerank-2.5` (override with `VOYAGE_RERANK_MODEL`) before the recency weighting, and falls back to vector similarity if reranking fails. Fan-out callers that pass a precomputed embedding skip it.

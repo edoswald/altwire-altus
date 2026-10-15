@@ -9,7 +9,9 @@ import crypto from 'node:crypto';
 import { chunkText, toSlackMrkdwn, verifySlackSignature } from './slack.js';
 import { canPostIn, parseCommand, routeEvent, vaultsFor } from './router.js';
 import { createSession, runTurn } from './agent-session.js';
-import { memoryResourcesFor } from './memory.js';
+import {
+  PERSONAL_SEEDS, memoryResourcesFor, personalStoreDescription, personalStoreName, seedMemoryStore,
+} from './memory.js';
 import {
   buildAuthorizeUrl, buildVaultAuth, createPkce, discover, exchangeCode,
   normalizeServerUrl, registerClient, resolveServer,
@@ -107,6 +109,58 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
     return buildPersonalOverride(await currentAgent(), personal) ?? config.agentId;
   }
 
+  /** The person's own memory store, created on first use. Null if disabled or creation fails. */
+  async function ensureUserMemoryStore(slackUserId) {
+    if (!config.personalMemory) return null;
+    const existing = await store.getUserMemoryStore(slackUserId);
+    if (existing) return existing;
+    try {
+      const created = await anthropic.beta.memoryStores.create({
+        name: personalStoreName(slackUserId, config.userNames),
+        description: personalStoreDescription(slackUserId, config.userNames),
+        metadata: { slack_user_id: slackUserId, owner: 'altwire-slack-bridge' },
+      });
+      const saved = await store.saveUserMemoryStore(slackUserId, created.id);
+      if (saved !== created.id) {
+        log.warn('Personal memory store created twice; using the first', { slackUserId, kept: saved, unused: created.id });
+        return saved;
+      }
+      const seeded = await seedMemoryStore(anthropic, created.id, PERSONAL_SEEDS);
+      log.info('Personal memory store created', { slackUserId, memoryStoreId: created.id, seeded: seeded.created });
+      return created.id;
+    } catch (err) {
+      log.error('Personal memory store creation failed; continuing without it', { slackUserId, error: err.message });
+      return null;
+    }
+  }
+
+  async function listMemoryPaths(memoryStoreId) {
+    const paths = [];
+    for await (const item of anthropic.beta.memoryStores.memories.list(memoryStoreId, { path_prefix: '/' })) {
+      if (item.type === 'memory') paths.push(item.path);
+      if (paths.length >= 50) break;
+    }
+    return paths.sort();
+  }
+
+  async function describeMemory(slackUserId) {
+    const lines = [];
+    const section = async (label, id) => {
+      if (!id) return;
+      try {
+        const paths = await listMemoryPaths(id);
+        lines.push(`*${label}*`, paths.length ? paths.map((p) => `• \`${p}\``).join('\n') : '_empty_');
+      } catch (err) {
+        lines.push(`*${label}*`, `_couldn't read it (${err.message})_`);
+      }
+    };
+    await section('Your memory (only used in DMs)', await ensureUserMemoryStore(slackUserId));
+    await section(`Team memory (${config.memoryDmAccess === 'read_write' ? 'read-write' : 'read-only'} in DMs)`, config.memoryStoreId);
+    if (!lines.length) return 'Memory is not set up for this app.';
+    lines.push('', 'Ask me to remember or forget something, or review and edit the files in the Claude Console under Memory stores.');
+    return lines.join('\n');
+  }
+
   async function sessionFor(route) {
     const existing = await store.getSession(route.sessionKey, {
       maxIdleMinutes: route.rolling ? config.dmSessionIdleMinutes : null,
@@ -119,6 +173,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       isDm: route.isDm,
       memoryStoreId: config.memoryStoreId,
       dmAccess: config.memoryDmAccess,
+      personalStoreId: route.isDm ? await ensureUserMemoryStore(route.user) : null,
     });
     const sessionId = await createSession(anthropic, {
       agent: await agentFor(route.isDm ? personalVaultId : null),
@@ -129,7 +184,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
     });
     await store.saveSession(route.sessionKey, { sessionId, slackUserId: route.user, vaultIds });
     log.info('Session created', {
-      sessionKey: route.sessionKey, sessionId, vaults: vaultIds.length, memory: resources[0]?.access ?? 'none',
+      sessionKey: route.sessionKey, sessionId, vaults: vaultIds.length, memory_stores: resources.length,
     });
     return { sessionId, slackUserId: route.user, vaultIds, isNew: true };
   }
@@ -178,6 +233,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
     '• `new` starts a fresh conversation in this DM.',
     '• `connect canva` or `connect <MCP server URL>` links one of your own accounts (only used in this DM).',
     '• `connections` lists what you have linked.',
+    '• `memory` shows what I remember about you (your own notes, only used in DMs) and the team.',
   ].join('\n');
 
   async function handleCommand(route, command) {
@@ -196,6 +252,8 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       const linked = personalServersFromCredentials(await listVaultCredentials(vaultId));
       return reply(linked.length ? `Linked accounts:\n${linked.map((p) => `• ${p.label}`).join('\n')}` : 'You have no linked accounts yet.');
     }
+
+    if (command.name === 'memory') return reply(await describeMemory(route.user));
 
     if (command.name === 'connect' || command.name === 'disconnect') {
       if (!config.connectUsers.has(route.user)) {

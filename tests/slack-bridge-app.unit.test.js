@@ -23,6 +23,8 @@ class MemoryStore {
   async touchSession() {}
   async forgetSession(key) { this.sessions.delete(key); }
   async forgetDmSessions(user) { for (const [k, s] of this.sessions) if (s.slackUserId === user && k.startsWith('D')) this.sessions.delete(k); }
+  async getUserMemoryStore(user) { return (this.memory ??= new Map()).get(user) ?? null; }
+  async saveUserMemoryStore(user, id) { const m = (this.memory ??= new Map()); if (!m.has(user)) m.set(user, id); return m.get(user); }
   async getUserVault(user) { return this.vaults.get(user) ?? null; }
   async saveUserVault(user, id) { this.vaults.set(user, id); }
   async saveOAuthState(state, data) { this.states.set(state, data); }
@@ -47,7 +49,7 @@ function fakeSlack() {
 }
 
 function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = false, credentials = {}, sessionFiles = {} } = {}) {
-  const log = { sessions: [], sent: [], vaults: [], creds: [], archived: [] };
+  const log = { sessions: [], sent: [], vaults: [], creds: [], archived: [], memoryStores: [], memories: [] };
   let replyIndex = 0;
   let failed = false;
   const asyncIter = (items) => ({ async *[Symbol.asyncIterator]() { yield* items; } });
@@ -77,6 +79,17 @@ function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = fa
             if (failFirstSend && !failed) { failed = true; throw new Error('session archived'); }
             log.sent.push({ sessionId, ...body.events[0] });
           },
+        },
+      },
+      memoryStores: {
+        create: async (params) => {
+          if (params.name === 'altwire-broken') throw new Error('quota exceeded');
+          log.memoryStores.push(params);
+          return { id: `memstore_${log.memoryStores.length}` };
+        },
+        memories: {
+          create: async (storeId, params) => { log.memories.push({ storeId, ...params }); return { id: 'mem_1' }; },
+          list: (storeId) => asyncIter(log.memories.filter((m) => m.storeId === storeId).map((m) => ({ type: 'memory', path: m.path }))),
         },
       },
       vaults: {
@@ -372,6 +385,55 @@ describe('shared memory store', () => {
     const none = makeBridge();
     await deliver(none.bridge, mention('hi'));
     expect(none.anthropic.log.sessions[0]).not.toHaveProperty('resources');
+  });
+});
+
+describe('personal memory', () => {
+  const config = {
+    memoryStoreId: 'memstore_team', memoryDmAccess: 'read_only', personalMemory: true,
+    userNames: new Map([[DEREK, 'Derek']]),
+  };
+
+  it('creates one store per person on their first DM and mounts it only in their DMs', async () => {
+    const { bridge, anthropic } = makeBridge({ config });
+    await deliver(bridge, dm('keep answers short please'));
+    await deliver(bridge, dm('new'));
+    await deliver(bridge, dm('what did I ask you to remember?'));
+    await deliver(bridge, mention('team question', { user: DEREK }));
+    await deliver(bridge, envelope({ type: 'message', channel_type: 'im', user: 'U_ED', channel: 'D2', ts: '300.1', text: 'hi' }));
+
+    expect(anthropic.log.memoryStores).toEqual([
+      expect.objectContaining({ name: 'altwire-derek', metadata: expect.objectContaining({ slack_user_id: DEREK }) }),
+      expect.objectContaining({ name: 'altwire-u-ed' }),
+    ]);
+    expect(anthropic.log.memories.filter((m) => m.storeId === 'memstore_1').map((m) => m.path)).toEqual(['/preferences.md']);
+
+    const [firstDm, secondDm, channel, edDm] = anthropic.log.sessions.map((s) => s.resources);
+    const ids = (r) => r.map((x) => `${x.memory_store_id}:${x.access}`);
+    expect(ids(firstDm)).toEqual(['memstore_team:read_only', 'memstore_1:read_write']);
+    expect(firstDm[1].instructions).toMatch(/private to their DMs/);
+    expect(ids(secondDm)).toEqual(['memstore_team:read_only', 'memstore_1:read_write']);
+    expect(ids(channel)).toEqual(['memstore_team:read_write']);
+    expect(ids(edDm)).toEqual(['memstore_team:read_only', 'memstore_2:read_write']);
+  });
+
+  it('lists both memories with the memory command', async () => {
+    const { bridge, slack } = makeBridge({ config });
+    await deliver(bridge, dm('memory'));
+    const text = slack.calls.at(-1).text;
+    expect(text).toMatch(/\*Your memory \(only used in DMs\)\*\n• `\/preferences.md`/);
+    expect(text).toMatch(/\*Team memory \(read-only in DMs\)\*\n_empty_/);
+  });
+
+  it('carries on without a personal store if creating it fails, and when disabled', async () => {
+    const broken = makeBridge({ config: { ...config, userNames: new Map([[DEREK, 'broken']]) } });
+    await deliver(broken.bridge, dm('hello'));
+    expect(broken.anthropic.log.sessions[0].resources.map((r) => r.memory_store_id)).toEqual(['memstore_team']);
+    expect(broken.slack.calls.at(-1).method).toBe('update');
+
+    const off = makeBridge({ config: { ...config, personalMemory: false } });
+    await deliver(off.bridge, dm('hello'));
+    expect(off.anthropic.log.memoryStores).toEqual([]);
   });
 });
 

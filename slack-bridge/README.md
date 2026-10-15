@@ -26,6 +26,7 @@ Slack ── AltWire Insights app ──► this bridge ──► Claude Managed
 | `connect <MCP server URL>` | Same, for any MCP server that supports OAuth sign-in (e.g. your Zoho MCP server URL) |
 | `disconnect <canva or URL>` | Unlinks it |
 | `connections` | Lists your linked accounts |
+| `memory` | Lists the files in your personal memory and the team memory |
 
 Only Slack users in `BRIDGE_CONNECT_USERS` can link accounts. Gmail can't be linked: it has no public MCP server that supports this sign-in, so forward the mail you want the agent to see into Zoho.
 
@@ -73,6 +74,8 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 | `BRIDGE_DM_SESSION_IDLE_MINUTES` | no | A DM conversation restarts after this much quiet (default 120) |
 | `BRIDGE_MEMORY_STORE_ID` | no | `memstore_…`: shared team memory mounted in every session (below) |
 | `BRIDGE_MEMORY_DM_ACCESS` | no | `read_only` (default) or `read_write`: the shared memory's access in DMs |
+| `BRIDGE_PERSONAL_MEMORY` | no | `false` turns off per-person memory (on by default) |
+| `BRIDGE_USER_NAMES` | no | `U0B0T1RH5SL=ed,U0B0UF0QHKJ=derek`: names personal stores (`altwire-ed`) instead of using Slack IDs |
 
 ### 5. Scheduled jobs
 
@@ -101,6 +104,8 @@ A Managed Agents memory store gives the agent a memory that outlasts a thread: e
 - **What gets saved** is set by the instructions in `lib/memory.js`: decisions, preferences, project state, and corrections; never email content, credentials, or analytics numbers.
 - **Starter files** (`holiday-2026.md`, `decisions.md`) are created on startup if they don't exist. Existing files are never overwritten.
 - A store attaches when a session starts, so threads that began before it was configured don't see it; new ones do.
+
+**Personal memory.** Each person who DMs the app gets their own store, created on their first DM (`altwire-<name>`, from `BRIDGE_USER_NAMES`, or their Slack ID) and seeded with a `preferences.md`. It's mounted read-write in **their DMs only**: never in channels, scheduled jobs, or anyone else's DMs. It holds how they like answers, what they work on, and their ongoing tasks, apart from the team memory. `memory` in a DM lists what's in both.
 
 ## Development
 
