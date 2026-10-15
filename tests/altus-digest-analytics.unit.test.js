@@ -79,4 +79,13 @@ describe('summarizeRecentArticles', () => {
     expect(result[0]).toMatchObject({ pageviews: 900, search_clicks: 12, avg_position: 11.4, latest_snapshot: null });
     expect(result[1]).toMatchObject({ pageviews: 0, published_at: '2026-10-10T00:00:00.000Z', latest_snapshot: { type: '72h', clicks: 1, impressions: 20 } });
   });
+
+  it('formats checkpoint snapshots keyed by lowercased URL', () => {
+    const result = summarizeRecentArticles([{ title: 'Mixed', url: 'https://altwire.net/Mixed-Case/', published_at: '2026-10-01' }], {
+      pageviewsByUrl: new Map(),
+      searchByUrl: new Map(),
+      snapshotsByUrl: new Map([['https://altwire.net/mixed-case', { checkpoint_days: 7, pageviews: 410, search_clicks: 22, search_impressions: 900, news_clicks: 3 }]]),
+    });
+    expect(result[0].latest_snapshot).toEqual({ first_days: 7, pageviews: 410, search_clicks: 22, search_impressions: 900, news_clicks: 3 });
+  });
 });

@@ -44,6 +44,12 @@ describe('Altus shared Hal registry parity', () => {
     expect(scanBlock).toContain('runStoryScan()');
   });
 
+  it('takes article checkpoints daily and serves them from get_article_performance in core', () => {
+    const cronBlock = indexSource.match(/scheduleCron\(\s*'article_snapshots',\s*'15 6 \* \* \*'[\s\S]+?\}, \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
+    expect(cronBlock).toContain('runArticleSnapshots()');
+    expect(indexSource).toMatch(/if \(isCoreProfile\(\)\) \{\s*scopedRegister\(\s*'get_article_performance'[\s\S]+?getArticleCheckpoints\(\{ url, days \}\)/);
+  });
+
   it('exposes an explicit article tracking registration tool for performance snapshots', () => {
     const names = new Set(extractScopedToolNames(indexSource));
     const trackingToolBlock = indexSource.match(/scopedRegister\(\s*'altus_register_article_tracking'[\s\S]+?\n  \);/)?.[0] ?? '';

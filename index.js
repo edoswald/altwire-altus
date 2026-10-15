@@ -54,6 +54,7 @@ import { generateChart } from './hal-chart.js';
 import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { listStoryQueue, runStoryScan, updateStoryOpportunity } from './handlers/altus-story-scan.js';
+import { getArticlePerformance as getArticleCheckpoints, runArticleSnapshots } from './handlers/altus-article-snapshots.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, registerArticleForTracking, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
@@ -557,7 +558,17 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
     }
   }, { timezone: 'America/New_York' });
 
-  // Performance Snapshot — 6 AM ET daily
+  // Article checkpoints (altus_article_snapshots): first 3/7/30 days of every
+  // new post, from Matomo and Search Console. 6:15 AM ET daily.
+  scheduleCron('article_snapshots', '15 6 * * *', async () => {
+    try {
+      await runArticleSnapshots();
+    } catch (err) {
+      logger.error('article_snapshots cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Legacy (Hal-era) GSC snapshots for registered articles — 6 AM ET daily
   scheduleCron('performance_snapshot', '0 6 * * *', async () => {
     await runPerformanceSnapshotCron();
   }, { timezone: 'America/New_York' });
@@ -1184,22 +1195,42 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     }
   );
 
-  scopedRegister(
-    'get_article_performance',
-    {
-      description: 'Returns post-publish GSC performance snapshots (72h, 7d, 30d) for tracked articles. Use to check how published content is performing in Google Search.',
-      inputSchema: {
-        article_url: z.string().optional()
-          .describe('Full article URL — omit to get aggregate for most recent 20 articles'),
-        snapshot_type: z.enum(['72h', '7d', '30d']).optional()
-          .describe('Filter to a specific snapshot interval'),
+  if (isCoreProfile()) {
+    scopedRegister(
+      'get_article_performance',
+      {
+        description: 'How new AltWire posts did in their first 3, 7, and 30 days, compared with the typical AltWire article.',
+        inputSchema: {
+          url: z.string().optional()
+            .describe('One article URL. Omit to list every post published in the last `days` days.'),
+          days: z.number().int().min(1).max(365).default(30)
+            .describe('Lookback for publication date when url is omitted (default 30)'),
+        },
       },
-    },
-    async ({ article_url, snapshot_type }) => {
-      const result = await getArticlePerformance({ article_url, snapshot_type });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    }
-  );
+      async ({ url, days }) => {
+        if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+        const result = await getArticleCheckpoints({ url, days });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+    );
+  } else {
+    scopedRegister(
+      'get_article_performance',
+      {
+        description: 'Returns post-publish GSC performance snapshots (72h, 7d, 30d) for tracked articles. Use to check how published content is performing in Google Search.',
+        inputSchema: {
+          article_url: z.string().optional()
+            .describe('Full article URL — omit to get aggregate for most recent 20 articles'),
+          snapshot_type: z.enum(['72h', '7d', '30d']).optional()
+            .describe('Filter to a specific snapshot interval'),
+        },
+      },
+      async ({ article_url, snapshot_type }) => {
+        const result = await getArticlePerformance({ article_url, snapshot_type });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+    );
+  }
 
   scopedRegister(
     'altus_register_article_tracking',

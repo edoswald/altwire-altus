@@ -471,3 +471,43 @@ export async function getPagePerformance(pageUrl, startDate, endDate) {
     return { error: 'gsc_api_error', message: err.message };
   }
 }
+
+/**
+ * One page's Search Console numbers for a date range: web search totals,
+ * its top queries, and Google News (searchType 'news') totals. The page is
+ * matched with or without a trailing slash. Any failed call returns
+ * { error } so callers can skip rather than store zeros.
+ *
+ * @returns {Promise<{ search: object, top_queries: object[], news: object } | { error: string, message?: string }>}
+ */
+export async function getPageSearchDetail(pageUrl, startDate, endDate, { topQueries = 5 } = {}) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+  const pageFilter = [{ filters: [{ dimension: 'page', operator: 'includingRegex', expression: pageUrlPattern(pageUrl) }] }];
+  const query = (extra) => searchconsole.searchanalytics.query({
+    siteUrl: cfg.siteUrl,
+    requestBody: { startDate, endDate, dimensionFilterGroups: pageFilter, dataState: 'final', ...extra },
+  });
+  const totals = (rows) => {
+    const r = rows?.[0];
+    return { clicks: r?.clicks ?? 0, impressions: r?.impressions ?? 0, position: r?.position != null ? Math.round(r.position * 10) / 10 : null };
+  };
+  try {
+    const [web, queries, news] = await Promise.all([
+      query({}),
+      query({ dimensions: ['query'], rowLimit: topQueries }),
+      query({ type: 'news' }),
+    ]);
+    return {
+      search: totals(web.data.rows),
+      top_queries: (queries.data.rows ?? []).map((r) => ({
+        query: r.keys[0], clicks: r.clicks, impressions: r.impressions, position: Math.round(r.position * 10) / 10,
+      })),
+      news: totals(news.data.rows),
+    };
+  } catch (err) {
+    logger.error('GSC page detail query failed', { pageUrl, error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}

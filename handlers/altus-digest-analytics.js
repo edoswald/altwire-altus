@@ -25,6 +25,8 @@ import {
 } from './altwire-gsc-client.js';
 import { isoDateOffset } from '../lib/gsc-date-window.js';
 import { lookupArchiveTitles } from '../lib/archive-titles.js';
+import { isCoreProfile } from '../lib/altus-profile.js';
+import { latestSnapshotsByUrl } from './altus-article-snapshots.js';
 
 // GSC data settles ~2–3 days behind real time.
 const GSC_LAG_DAYS = 3;
@@ -111,6 +113,22 @@ export function findNewOpportunityZoneEntries(currentRows, previousRows, limit =
   return entries;
 }
 
+// Core snapshots (altus_article_snapshots) are checkpoints since publication;
+// legacy ones (altus_article_performance) are GSC-only tracking snapshots.
+function formatSnapshot(snapshot) {
+  if (!snapshot) return null;
+  if (snapshot.checkpoint_days != null) {
+    return {
+      first_days: snapshot.checkpoint_days,
+      pageviews: snapshot.pageviews,
+      search_clicks: snapshot.search_clicks,
+      search_impressions: snapshot.search_impressions,
+      news_clicks: snapshot.news_clicks,
+    };
+  }
+  return { type: snapshot.snapshot_type, clicks: snapshot.clicks, impressions: snapshot.impressions };
+}
+
 /**
  * Join recently published articles with this window's Matomo pageviews, GSC
  * clicks/impressions and their latest tracking snapshot.
@@ -119,7 +137,7 @@ export function summarizeRecentArticles(contentRows, { pageviewsByUrl, searchByU
   return (contentRows ?? []).map((row) => {
     const url = normalizeUrl(row.url);
     const search = searchByUrl.get(url);
-    const snapshot = snapshotsByUrl.get(url);
+    const snapshot = snapshotsByUrl.get(url) ?? snapshotsByUrl.get(url?.toLowerCase());
     return {
       title: row.title,
       url: row.url,
@@ -128,9 +146,7 @@ export function summarizeRecentArticles(contentRows, { pageviewsByUrl, searchByU
       search_clicks: search?.clicks ?? 0,
       search_impressions: search?.impressions ?? 0,
       avg_position: search?.position != null ? Math.round(search.position * 10) / 10 : null,
-      latest_snapshot: snapshot
-        ? { type: snapshot.snapshot_type, clicks: snapshot.clicks, impressions: snapshot.impressions }
-        : null,
+      latest_snapshot: formatSnapshot(snapshot),
     };
   }).sort((a, b) => b.pageviews - a.pageviews);
 }
@@ -289,7 +305,14 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
     const contentRows = recentContent.rows ?? [];
     const urls = contentRows.map((r) => r.url).filter(Boolean);
     let snapshotRows = [];
-    if (urls.length) {
+    let snapshotMap = null;
+    if (urls.length && isCoreProfile()) {
+      try {
+        snapshotMap = await latestSnapshotsByUrl(urls);
+      } catch (err) {
+        warnings.push({ section: 'article_snapshots', message: err.message });
+      }
+    } else if (urls.length) {
       try {
         ({ rows: snapshotRows } = await pool.query(
           `SELECT DISTINCT ON (article_url) article_url, snapshot_type, clicks, impressions
@@ -305,7 +328,7 @@ export async function buildAnalyticsSnapshot({ days = 7 } = {}) {
     recent_articles = summarizeRecentArticles(contentRows, {
       pageviewsByUrl: new Map(pageRows(pagesCur).map((r) => [normalizeUrl(r.url), r.nb_hits ?? 0])),
       searchByUrl: new Map((gscPagesCur?.rows ?? []).map((r) => [normalizeUrl(r.keys?.[0]), r])),
-      snapshotsByUrl: new Map(snapshotRows.map((r) => [normalizeUrl(r.article_url), r])),
+      snapshotsByUrl: snapshotMap ?? new Map(snapshotRows.map((r) => [normalizeUrl(r.article_url), r])),
     });
   }
 

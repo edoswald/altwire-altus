@@ -222,3 +222,56 @@ export async function getReferrerBreakdown(period, date) {
 export async function getSiteSearch(period, date) {
   return getSiteSearchKeywords(period, date);
 }
+
+/**
+ * Pageviews and visits for one URL over a date range (Actions.getPageUrl).
+ * Tries the URL as given, then with/without its trailing slash, since
+ * Matomo matches the exact URL it recorded.
+ *
+ * @returns {Promise<{ pageviews: number, visits: number, matched_url: string|null } | { error: string }>}
+ */
+export async function getPageUrlStats(pageUrl, startDate, endDate) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const variants = [pageUrl, pageUrl.endsWith('/') ? pageUrl.replace(/\/+$/, '') : `${pageUrl}/`];
+  for (const url of variants) {
+    const result = await callApi('Actions.getPageUrl', 'range', `${startDate},${endDate}`, { pageUrl: url });
+    if (result?.error) return result;
+    const rows = Array.isArray(result) ? result : [];
+    if (rows.length) {
+      return {
+        pageviews: rows.reduce((s, r) => s + (r.nb_hits ?? 0), 0),
+        visits: rows.reduce((s, r) => s + (r.nb_visits ?? 0), 0),
+        matched_url: url,
+      };
+    }
+  }
+  return { pageviews: 0, visits: 0, matched_url: null };
+}
+
+/**
+ * Site totals per calendar month for the last `months` months, including the
+ * current partial month: { 'YYYY-MM': { visits, pageviews, unique_visitors } }.
+ */
+export async function getMonthlyTotals(months = 19) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const date = `last${months}`;
+  const [visits, actions] = await Promise.all([
+    callApi('VisitsSummary.get', 'month', date),
+    callApi('Actions.get', 'month', date),
+  ]);
+  if (visits?.error) return visits;
+  if (actions?.error) return actions;
+  const out = {};
+  for (const [month, v] of Object.entries(visits ?? {})) {
+    const a = actions?.[month] ?? {};
+    const row = Array.isArray(v) ? {} : v;
+    out[month] = {
+      visits: row.nb_visits ?? 0,
+      unique_visitors: row.nb_uniq_visitors ?? null,
+      pageviews: (Array.isArray(a) ? null : a.nb_pageviews) ?? 0,
+    };
+  }
+  return out;
+}
