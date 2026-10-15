@@ -339,14 +339,18 @@ export async function getNewsSearchPerformance(startDate, endDate, options = {})
   }
 }
 
+// [query, page] rows pulled per opportunity-zone request (API max 25,000).
+const OPPORTUNITY_ZONE_POOL = 5000;
+
 /**
  * Opportunity zone queries: position 5–30 range, sorted by impressions.
  *
  * @param {string} startDate  ISO date string
  * @param {string} endDate    ISO date string
+ * @param {{ limit?: number }} [options]  rows to return (default 100)
  * @returns {Promise<object>}
  */
-export async function getOpportunityZoneQueries(startDate, endDate) {
+export async function getOpportunityZoneQueries(startDate, endDate, { limit = 100 } = {}) {
   const cfg = getConfig();
   if (!cfg.configured) return { error: cfg.error };
 
@@ -355,40 +359,44 @@ export async function getOpportunityZoneQueries(startDate, endDate) {
 
     logger.info('GSC opportunity zone queries request', { startDate, endDate, siteUrl: cfg.siteUrl });
 
+    // Search Console can't filter by position or sort by impressions, so pull
+    // a deep slice of [query, page] rows (it returns them by clicks) and
+    // filter and sort here. Rows ranking 5-30 rarely have the most clicks,
+    // so a shallow pull misses most of them.
     const response = await searchconsole.searchanalytics.query({
       siteUrl: cfg.siteUrl,
       requestBody: {
         startDate,
         endDate,
         dimensions: ['query', 'page'],
-        dimensionFilterGroups: [{
-          filters: [
-            { dimension: 'query', operator: 'notContains', expression: '' },
-          ],
-        }],
-        rowLimit: 100,
-        orderBy: [{ fieldName: 'impressions', sortOrder: 'DESCENDING' }],
+        rowLimit: OPPORTUNITY_ZONE_POOL,
         dataState: 'all',
       },
     });
 
-    const rows = (response.data.rows ?? [])
-      .filter((row) => row.position >= 5 && row.position <= 30);
+    const fetched = response.data.rows ?? [];
+    const rows = fetched
+      .filter((row) => row.position >= 5 && row.position <= 30)
+      .sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))
+      .slice(0, limit);
+
+    logger.info('GSC opportunity zone queries fetched', {
+      startDate,
+      endDate,
+      fetched: fetched.length,
+      rowCount: rows.length,
+    });
 
     if (rows.length === 0) {
       return {
         startDate,
         endDate,
         rows: [],
-        note: 'No queries found in position 5-30 range',
+        note: fetched.length
+          ? 'No queries found in position 5-30 range'
+          : 'Search Console returned no rows for this window',
       };
     }
-
-    logger.info('GSC opportunity zone queries fetched', {
-      startDate,
-      endDate,
-      rowCount: rows.length,
-    });
 
     return {
       startDate,

@@ -65,3 +65,26 @@ describe('story scan helpers', () => {
     expect(describeOpportunity({ ...base, coverage_status: 'unknown', best_match: null }, now).suggestion).toBe('check_coverage');
   });
 });
+
+describe('getOpportunityZoneQueries request', () => {
+  it('sends no query filter (notContains "" matches nothing) and pulls a deep pool', async () => {
+    vi.resetModules();
+    const query = vi.fn(async () => ({ data: { rows: [
+      { keys: ['a', 'p1'], clicks: 9, impressions: 50, position: 2 },
+      { keys: ['b', 'p2'], clicks: 1, impressions: 80, position: 12 },
+      { keys: ['c', 'p3'], clicks: 2, impressions: 300, position: 7 },
+    ] } }));
+    vi.doMock('googleapis', () => ({ google: {
+      auth: { GoogleAuth: class {} },
+      searchconsole: () => ({ searchanalytics: { query } }),
+    } }));
+    process.env.ALTWIRE_GSC_SERVICE_ACCOUNT_JSON ??= JSON.stringify({ client_email: 'x@y', private_key: 'k' });
+    process.env.ALTWIRE_GSC_SITE_URL ??= 'sc-domain:altwire.net';
+    const { getOpportunityZoneQueries } = await import('../handlers/altwire-gsc-client.js');
+    const result = await getOpportunityZoneQueries('2026-09-14', '2026-10-12', { limit: 1 });
+    const body = query.mock.calls[0][0].requestBody;
+    expect(body.dimensionFilterGroups).toBeUndefined();
+    expect(body.rowLimit).toBeGreaterThanOrEqual(5000);
+    expect(result.rows.map((r) => r.keys[0])).toEqual(['c']);
+  });
+});

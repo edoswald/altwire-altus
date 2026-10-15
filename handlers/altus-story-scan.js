@@ -198,8 +198,8 @@ export async function runStoryScan({ deps = {} } = {}) {
   const prevWindow = { startDate: isoDateOffset(WINDOW_DAYS * 2 + LAG_DAYS), endDate: isoDateOffset(WINDOW_DAYS + LAG_DAYS + 1) };
 
   const [current, previous] = await Promise.all([
-    gsc(window.startDate, window.endDate),
-    gsc(prevWindow.startDate, prevWindow.endDate),
+    gsc(window.startDate, window.endDate, { limit: Infinity }),
+    gsc(prevWindow.startDate, prevWindow.endDate, { limit: Infinity }),
   ]);
   if (current?.error) return { error: `Search Console: ${current.message ?? current.error}` };
 

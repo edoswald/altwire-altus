@@ -45,6 +45,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Opportunity-zone queries were always empty** (`getOpportunityZoneQueries`): the request filtered on `query notContains ""`, which excludes every row because every string contains the empty string, so story opportunities and the digest's new positions 5-30 entries never had data. The filter is gone, and the request pulls 5,000 [query, page] rows (Search Console can't filter by position) and filters and sorts them here. It also dropped `orderBy`, which isn't a Search Console field. The story scan uses the full pool.
+
 - **Page performance returned nothing**: `getPagePerformance` (used by `get_altwire_page_performance` and the article snapshots) stripped the trailing slash and asked Search Console for an exact match, but Search Console stores WordPress permalinks with it. It now matches the URL with or without the slash.
 - **Digest (core) inputs**: the stored 18-month Matomo history (built from weekly data counted about seven times over) and the watch-list news alerts are no longer served; site-search terms are computed live for the last 7 days instead of read from the nightly reflection, which overwrote them with errors when Matomo failed.
 
