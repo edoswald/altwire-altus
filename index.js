@@ -48,6 +48,8 @@ import {
 } from './handlers/altwire-gsc-client.js';
 import { getCombinedAnalytics } from './handlers/altus-combined-analytics.js';
 import { annotatePagesWithTitles } from './lib/archive-titles.js';
+import { findGiftGuideCandidates } from './lib/review-scores.js';
+import { getSeasonalComparison } from './handlers/altus-seasonal.js';
 import { generateChart } from './hal-chart.js';
 import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
@@ -281,6 +283,8 @@ const TOOL_CONTEXTS = {
   get_altwire_opportunity_zone_queries: [],
   get_altwire_page_performance: [],
   get_altwire_combined_analytics: [],
+  get_altwire_seasonal_comparison: [],
+  find_gift_guide_candidates: [],
   // Editorial intelligence
   get_story_opportunities:      [],
   get_news_opportunities:       [],
@@ -1051,6 +1055,54 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ start_date, end_date, synthesize }) => {
       const result = await getCombinedAnalytics({ startDate: start_date, endDate: end_date, synthesize });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_altwire_seasonal_comparison',
+    {
+      description: 'How AltWire did over a past season (default: last November-December) in Search Console and Matomo, joined with current 28-day search performance for the same pages.',
+      inputSchema: {
+        year: z.number().int().min(2015).max(2100).optional()
+          .describe('Season year (default: the most recent season that has already ended)'),
+        start_md: z.string().regex(/^\d{2}-\d{2}$/).optional().default('11-01')
+          .describe('Season start as MM-DD (default 11-01)'),
+        end_md: z.string().regex(/^\d{2}-\d{2}$/).optional().default('12-31')
+          .describe('Season end as MM-DD (default 12-31); earlier than start_md means it runs into the next year'),
+        query_contains: z.string().optional()
+          .describe('Only queries and pages containing this text, e.g. "gift" or "vinyl"'),
+        limit: z.number().int().min(5).max(100).optional().default(25)
+          .describe('Rows per list (default 25)'),
+      },
+    },
+    async (args) => {
+      const result = await getSeasonalComparison(args);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'find_gift_guide_candidates',
+    {
+      description: 'Best-rated products and albums AltWire has reviewed, from structured review scores, filtered by product type, rating, and publish date.',
+      inputSchema: {
+        product_types: z.array(z.enum(['hardware', 'software', 'recording', 'live', 'accessory', 'service', 'album', 'single', 'other'])).optional()
+          .describe('Limit to these product types (default: all)'),
+        min_overall: z.number().min(1).max(10).optional()
+          .describe('Minimum overall rating, 1-10 (e.g. 8 for strong recommendations)'),
+        min_rating_subcategory: z.string().optional()
+          .describe('Subcategory to threshold on, e.g. Value, Sound, Build'),
+        min_rating_value: z.number().min(1).max(10).optional()
+          .describe('Minimum rating for min_rating_subcategory'),
+        published_after: z.string().optional().describe('YYYY-MM-DD; only reviews published on or after this date'),
+        published_before: z.string().optional().describe('YYYY-MM-DD; only reviews published on or before this date'),
+        title_contains: z.string().optional().describe('Only reviews whose title contains this text'),
+        limit: z.number().int().min(1).max(100).optional().default(25).describe('Max results (default 25)'),
+      },
+    },
+    async (args) => {
+      const result = await findGiftGuideCandidates(args);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

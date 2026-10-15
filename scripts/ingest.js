@@ -14,6 +14,7 @@
  */
 
 import { initSchema, logIngestRun, getLastSuccessfulIngestRun } from '../lib/altus-db.js';
+import { scorePendingReviews } from '../lib/review-scores.js';
 import { fetchTaxonomies, fetchPosts, fetchGalleries } from '../lib/wp-client.js';
 import { embedAndUpsertPosts, embedAndUpsertGalleries, filterGalleriesForWindow } from '../lib/ingest-pipeline.js';
 import { logger } from '../logger.js';
@@ -63,6 +64,8 @@ let galleriesIngested = 0;
 let galleriesSkipped = 0;
 let errors = 0;
 
+const REVIEW_SCORING_LIMIT = 40;
+
 async function main() {
   const afterDate = await resolveAfterDate();
   logger.info('Starting Altus ingestion run', { mode, afterDate, batchSynthesis });
@@ -101,10 +104,23 @@ async function main() {
     notes: galleriesSkipped > 0 ? `Galleries skipped (no material): ${galleriesSkipped}` : `Ingestion complete. Posts: ${postsIngested}, Galleries: ${galleriesIngested}, Errors: ${errors}`,
   });
 
+  // Score reviews that are new or edited (gift-guide candidates). Capped so a
+  // backlog never runs long here; the full backfill is
+  // `node scripts/score-reviews.js --batch`. Failures don't fail the ingest.
+  let reviewScoring = null;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      reviewScoring = await scorePendingReviews({ limit: REVIEW_SCORING_LIMIT });
+    } catch (err) {
+      logger.error('Review scoring after ingest failed', { error: err.message });
+    }
+  }
+
   console.log(`\nIngestion complete in ${(durationMs / 1000).toFixed(1)}s`);
   console.log(`  Posts:     ${postsIngested}`);
   console.log(`  Galleries: ${galleriesIngested} (${galleriesSkipped} skipped — no synthesizable material)`);
   console.log(`  Errors:    ${errors}`);
+  if (reviewScoring) console.log(`  Reviews scored: ${reviewScoring.scored} (${reviewScoring.error} errors)`);
   process.exit(errors > 0 ? 1 : 0);
 }
 

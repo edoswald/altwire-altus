@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **`ALTUS_PROFILE=core`** (`lib/altus-profile.js`): 33-tool AltWire MCP (archive RAG, Matomo + GSC analytics, story ideas) for Claude in Slack and other agents. Serves only MCP, OAuth and health routes; no Slack bot or Hal-only crons. The default `legacy` profile is unchanged.
+- **`find_gift_guide_candidates`** (`lib/review-scores.js`): best-rated reviewed products and albums, filtered by product type, overall or subcategory rating, publish date, and title. Backed by a new `altus_review_scores` table.
+- **Review scores in Postgres**: `scripts/score-reviews.js` now writes to `altus_review_scores` and only rescores reviews that are new, edited (content hash), or previously errored; `--limit` and `--export` added. The nightly ingest scores up to 40 new or changed reviews. Fixes direct (non-batch) mode, which called a missing `scoreReview`.
+- **`get_altwire_seasonal_comparison`** (`handlers/altus-seasonal.js`): a past season (default: last November–December) in Search Console and Matomo, with seasonal queries and pages, current 28-day search performance for the same pages, and refresh candidates.
+- **`agent-skills/altwire-gift-guide/SKILL.md`**: a gift-guide skill for the managed agent (workflow, structure, voice, disclosure, 2026 holiday dates).
+- **`ALTUS_PROFILE=core`** (`lib/altus-profile.js`): 34-tool AltWire MCP (archive RAG, Matomo + GSC analytics, story ideas) for Claude in Slack and other agents. Serves only MCP, OAuth and health routes; no Slack bot or Hal-only crons. The default `legacy` profile is unchanged.
 - **`ALTUS_RUN_CRONS=false`** disables all background jobs, so two services can share one database without double-running crons.
 
 ### Security
