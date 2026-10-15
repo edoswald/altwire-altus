@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **CI** (`.github/workflows/test.yml`): the test suite runs on every push to `main` and every pull request; Railway waits for it before deploying.
+- **`scripts/oauth-clients.js`**: list registered OAuth clients with token counts, or delete clients (and their codes and tokens) by name.
+
 - **Agent-written daily digest** (`slack-bridge`, `agent-skills/altwire-digest`): scheduled jobs can email a detailed digest (Markdown → HTML through SES) and route short Slack action items to several channels from one run, with a preview mode and an admin `run <job>` DM command. Replaces the legacy service's code-built digest email once enabled.
 
 - **Slack bridge memory**: a shared team memory store (`BRIDGE_MEMORY_STORE_ID`; read-write in channels and scheduled jobs, read-only in DMs by default) seeded with a 2026 holiday tracker and a decisions file, and a personal store per Slack user, created on first DM and mounted only in their DMs. New DM command `memory`.
