@@ -51,6 +51,19 @@ describe('altus profile', () => {
     }
   });
 
+  it('ALTUS_RUN_CRONS can name the only jobs to run, and ALTUS_SKIP_CRONS removes jobs', () => {
+    const only = { ALTUS_PROFILE: 'core', ALTUS_RUN_CRONS: 'daily_ingest' };
+    expect(shouldRunCrons(only)).toBe(true);
+    expect(isCronEnabled('daily_ingest', only)).toBe(true);
+    expect(isCronEnabled('news_monitor', only)).toBe(false);
+    expect(isCronEnabled('daily_ingest', { ALTUS_RUN_CRONS: ' Daily_Ingest , weekly_brief ' })).toBe(true);
+    expect(isCronEnabled('weekly_brief', { ALTUS_RUN_CRONS: 'true' })).toBe(true);
+
+    const skip = { ALTUS_SKIP_CRONS: 'daily_ingest' };
+    expect(isCronEnabled('daily_ingest', skip)).toBe(false);
+    expect(isCronEnabled('news_monitor', skip)).toBe(true);
+  });
+
   it('ALTUS_RUN_CRONS=false disables every cron in either profile', () => {
     expect(shouldRunCrons({})).toBe(true);
     expect(shouldRunCrons({ ALTUS_RUN_CRONS: 'false' })).toBe(false);

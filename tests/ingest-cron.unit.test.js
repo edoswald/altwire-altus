@@ -23,6 +23,11 @@ vi.mock('../logger.js', () => ({
   logger,
 }));
 
+const lastRunMock = vi.fn();
+vi.mock('../lib/altus-db.js', () => ({
+  getLastSuccessfulIngestRun: lastRunMock,
+}));
+
 function createStream() {
   const listeners = new Map();
   return {
@@ -41,6 +46,8 @@ describe('ingest-cron', () => {
     vi.resetModules();
     scheduleMock.mockReset();
     spawnMock.mockReset();
+    lastRunMock.mockReset();
+    lastRunMock.mockResolvedValue(null);
     Object.values(logger).forEach(fn => fn.mockReset());
   });
 
@@ -60,7 +67,8 @@ describe('ingest-cron', () => {
 
     expect(scheduleMock).toHaveBeenCalledOnce();
     const scheduledRun = scheduleMock.mock.calls[0][1];
-    scheduledRun();
+    await scheduledRun();
+    expect(spawnMock.mock.calls[0][1]).toEqual(expect.arrayContaining([expect.stringMatching(/ingest\.js$/), '--recent']));
 
     stdout.emit('data', Buffer.from('ingest ok\n'));
     stderr.emit('data', Buffer.from('ingest warning\n'));
@@ -70,5 +78,31 @@ describe('ingest-cron', () => {
 
     stdoutWrite.mockRestore();
     stderrWrite.mockRestore();
+  });
+
+  function fakeChild() {
+    const child = createStream();
+    child.stdout = createStream();
+    child.stderr = createStream();
+    return child;
+  }
+
+  it('only scores reviews when a clean ingest ran within the last few hours', async () => {
+    spawnMock.mockReturnValue(fakeChild());
+    const { runIngest } = await import('../lib/ingest-cron.js');
+    const now = Date.parse('2026-10-16T04:00:00Z');
+
+    await runIngest({ lastRunLookup: async () => '2026-10-16T03:05:00Z', now });
+    expect(spawnMock.mock.calls[0][1]).toEqual(expect.arrayContaining([expect.stringMatching(/score-reviews\.js$/), '--limit', '40']));
+
+    await runIngest({ lastRunLookup: async () => '2026-10-15T03:05:00Z', now });
+    expect(spawnMock.mock.calls[1][1]).toEqual(expect.arrayContaining([expect.stringMatching(/ingest\.js$/), '--recent']));
+  });
+
+  it('uses ALTUS_INGEST_CRON when valid and falls back to 03:00 UTC otherwise', async () => {
+    const { startIngestCron } = await import('../lib/ingest-cron.js');
+    startIngestCron({ expression: '0 4 * * *' });
+    expect(scheduleMock.mock.calls[0][0]).toBe('0 4 * * *');
+    expect(scheduleMock.mock.calls[0][2]).toEqual({ timezone: 'UTC' });
   });
 });

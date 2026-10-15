@@ -19,7 +19,11 @@ import { fetchTaxonomies, fetchPosts, fetchGalleries } from '../lib/wp-client.js
 import { embedAndUpsertPosts, embedAndUpsertGalleries, filterGalleriesForWindow } from '../lib/ingest-pipeline.js';
 import { logger } from '../logger.js';
 
-const required = ['DATABASE_URL', 'ALTWIRE_WP_URL', 'ALTWIRE_WP_USER', 'ALTWIRE_WP_APP_PASSWORD', 'VOYAGE_API_KEY', 'ANTHROPIC_API_KEY'];
+if (!process.env.ALTWIRE_DATABASE_URL && !process.env.DATABASE_URL) {
+  console.error('Missing required env var: ALTWIRE_DATABASE_URL (or DATABASE_URL)');
+  process.exit(1);
+}
+const required = ['ALTWIRE_WP_URL', 'ALTWIRE_WP_USER', 'ALTWIRE_WP_APP_PASSWORD', 'VOYAGE_API_KEY', 'ANTHROPIC_API_KEY'];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`Missing required env var: ${key}`);

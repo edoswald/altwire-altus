@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`get_altwire_seasonal_comparison`** (`handlers/altus-seasonal.js`): a past season (default: last November–December) in Search Console and Matomo, with seasonal queries and pages, current 28-day search performance for the same pages, and refresh candidates.
 - **`agent-skills/altwire-gift-guide/SKILL.md`**: a gift-guide skill for the managed agent (workflow, structure, voice, disclosure, 2026 holiday dates).
 - **`ALTUS_PROFILE=core`** (`lib/altus-profile.js`): 34-tool AltWire MCP (archive RAG, Matomo + GSC analytics, story ideas) for Claude in Slack and other agents. Serves only MCP, OAuth and health routes; no Slack bot or Hal-only crons. The default `legacy` profile is unchanged.
-- **`ALTUS_RUN_CRONS=false`** disables all background jobs, so two services can share one database without double-running crons.
+- **`ALTUS_RUN_CRONS=false`** disables all background jobs, so two services can share one database without double-running crons. It also accepts a comma-separated list of job names to run only those (e.g. `daily_ingest`), and `ALTUS_SKIP_CRONS` never runs the named jobs.
+- **Nightly ingest is now a named job (`daily_ingest`)** with a configurable schedule (`ALTUS_INGEST_CRON`, default `0 3 * * *` UTC). If a clean ingest already ran in the last 6 hours (another service on the same database), the run only scores new or edited reviews. `scripts/ingest.js` accepts `ALTWIRE_DATABASE_URL` as well as `DATABASE_URL`.
 
 ### Security
 

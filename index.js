@@ -492,7 +492,7 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       })
       .catch(err => logger.error('slack-altus: init import failed', { error: err.message, code: err.code, stack: err.stack }));
 
-  if (shouldRunCrons()) startIngestCron();
+  if (isCronEnabled('daily_ingest')) startIngestCron({ expression: process.env.ALTUS_INGEST_CRON || undefined });
 
   // News Monitor — 4:30 AM ET daily (after 4 AM reflection so fresh GSC data is available)
   scheduleCron('news_monitor', '30 4 * * *', async () => {
