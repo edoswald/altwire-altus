@@ -511,3 +511,29 @@ export async function getPageSearchDetail(pageUrl, startDate, endDate, { topQuer
     return { error: 'gsc_api_error', message: err.message };
   }
 }
+
+/**
+ * Site-wide Google web search totals per day (final data only), for
+ * monthly rollups. Search Console keeps about 16 months.
+ *
+ * @returns {Promise<{ rows: { date: string, clicks: number, impressions: number, position: number }[] } | { error: string, message?: string }>}
+ */
+export async function getDailySearchTotals(startDate, endDate) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  try {
+    const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+    const response = await searchconsole.searchanalytics.query({
+      siteUrl: cfg.siteUrl,
+      requestBody: { startDate, endDate, dimensions: ['date'], rowLimit: 1000, dataState: 'final' },
+    });
+    return {
+      rows: (response.data.rows ?? []).map((r) => ({
+        date: r.keys[0], clicks: r.clicks ?? 0, impressions: r.impressions ?? 0, position: r.position ?? null,
+      })),
+    };
+  } catch (err) {
+    logger.error('GSC daily totals query failed', { error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}

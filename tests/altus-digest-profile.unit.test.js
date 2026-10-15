@@ -8,6 +8,10 @@ vi.mock('../handlers/altwire-matomo-client.js', () => ({
 vi.mock('../handlers/altus-story-scan.js', () => ({
   listStoryQueue: vi.fn(async () => ({ opportunities: [{ id: 1, query: 'gamma mini synth' }], open_count: 4, last_scan_at: '2026-10-15T09:00:00Z' })),
 }));
+vi.mock('../handlers/altus-history.js', () => ({
+  getAnalyticsHistory: vi.fn(async () => ({ months: [], last_complete_month: { month: '2026-09' }, computed_at: 't' })),
+  summarizeHistory: vi.fn((h) => ({ last_complete_month: h.last_complete_month })),
+}));
 vi.mock('../handlers/altus-opportunity-queue.js', () => ({ listStoryOpportunityQueue: vi.fn(async () => []) }));
 vi.mock('../handlers/altus-digest-analytics.js', () => ({ buildAnalyticsSnapshot: vi.fn(async () => ({ matomo: {} })) }));
 
@@ -40,6 +44,7 @@ describe('morning digest by profile', () => {
     expect(digest.site_search_keywords).toMatchObject({ source: 'Matomo', keywords: [{ keyword: 'deftones', searches: 7 }] });
     expect(digest.story_opportunities).toEqual({ open_count: 4, last_scan_at: '2026-10-15T09:00:00Z', top: [{ id: 1, query: 'gamma mini synth' }] });
     expect(digest.analytics).toEqual({ matomo: {} });
+    expect(digest.history).toEqual({ last_complete_month: { month: '2026-09' } });
   });
 
   it('keeps them in the legacy profile, where the old mailer reads them', async () => {

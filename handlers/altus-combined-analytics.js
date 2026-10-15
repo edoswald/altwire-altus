@@ -36,6 +36,8 @@ import {
   getOpportunityZoneQueries,
 } from './altwire-gsc-client.js';
 import { MODEL_SONNET } from '../lib/model-ids.js';
+import { isCoreProfile } from '../lib/altus-profile.js';
+import { getAnalyticsHistory, summarizeHistory } from './altus-history.js';
 
 const HISTORICAL_KEYS = [
   'hal:altwire:analytics:traffic_summary',
@@ -570,7 +572,17 @@ export async function getCombinedAnalytics(opts = {}) {
     }
   }
 
-  const historical = await loadHistoricalContext();
+  // Core reads the rebuilt monthly history; legacy keeps the Hal-era keys.
+  const core = isCoreProfile();
+  const historical = core ? {} : await loadHistoricalContext();
+  let history = null;
+  if (core) {
+    try {
+      history = summarizeHistory(await getAnalyticsHistory(), { months: 13 });
+    } catch (err) {
+      history = { error: err.message };
+    }
+  }
 
   const baseline = {
     period: { start_date: startDate, end_date: endDate },
@@ -580,7 +592,7 @@ export async function getCombinedAnalytics(opts = {}) {
     cross_reference,
     search_gaps,
     search_traffic_share_pct,
-    historical_keys_loaded: Object.keys(historical),
+    ...(core ? { history } : { historical_keys_loaded: Object.keys(historical) }),
   };
 
   let synthesis = null;
@@ -630,7 +642,10 @@ export async function getCombinedAnalytics(opts = {}) {
         urls: [...recentFeatures.urls].slice(0, 30),
         queries: [...recentFeatures.queries].slice(0, 30),
       },
-      historical_summary: {
+      historical_summary: core ? {
+        last_complete_month: history?.last_complete_month ?? null,
+        last_3_months: history?.last_3_months ?? null,
+      } : {
         gsc_16m_insights: historical['hal:altwire:gsc:summary_16m']?.insights ?? null,
         gsc_16m_trend: historical['hal:altwire:gsc:summary_16m']?.trend_direction ?? null,
         traffic_trend: historical['hal:altwire:analytics:traffic_summary']?.trend_direction ?? null,

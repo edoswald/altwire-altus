@@ -19,6 +19,7 @@ import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
 import { buildAnalyticsSnapshot } from './altus-digest-analytics.js';
 import { isCoreProfile } from '../lib/altus-profile.js';
 import { listStoryQueue } from './altus-story-scan.js';
+import { getAnalyticsHistory, summarizeHistory } from './altus-history.js';
 import { isoDateOffset } from '../lib/gsc-date-window.js';
 
 const ANALYTICS_KEYS = {
@@ -110,9 +111,10 @@ export async function getAltwireMorningDigest() {
 async function buildCoreSections(warnings) {
   const start = isoDateOffset(7);
   const end = isoDateOffset(1);
-  const [queue, search] = await Promise.allSettled([
+  const [queue, search, monthly] = await Promise.allSettled([
     listStoryQueue({ status: 'open', limit: 5 }),
     getSiteSearchKeywords('range', `${start},${end}`),
+    getAnalyticsHistory(),
   ]);
 
   let story_opportunities = null;
@@ -137,7 +139,14 @@ async function buildCoreSections(warnings) {
   } else if (result?.error) {
     warnings.push({ section: 'site_search_keywords', message: `Matomo site search failed: ${result.message ?? result.error}` });
   }
-  return { story_opportunities, site_search_keywords };
+  let history = null;
+  const built = monthly.status === 'fulfilled' ? monthly.value : { error: monthly.reason?.message };
+  if (built?.error) {
+    warnings.push({ section: 'history', message: `Monthly history unavailable: ${built.error}` });
+  } else {
+    history = summarizeHistory(built);
+  }
+  return { story_opportunities, site_search_keywords, history };
 }
 
 /**
@@ -372,11 +381,13 @@ async function buildMorningDigest() {
       reachable: trafficResult.status === 'fulfilled' && !trafficResult.value?.error,
       last_error: trafficResult.status === 'fulfilled' ? (trafficResult.value?.error ?? null) : (trafficResult.reason?.message ?? 'unknown'),
     },
-    gsc: {
-      configured: gscEnvPresent,
-      reachable: !!historical?.gsc_summary_16m,
-      last_refreshed: historical?.gsc_summary_16m?.last_refreshed ?? null,
-    },
+    gsc: isCoreProfile()
+      ? { configured: gscEnvPresent, reachable: !!analytics?.search }
+      : {
+        configured: gscEnvPresent,
+        reachable: !!historical?.gsc_summary_16m,
+        last_refreshed: historical?.gsc_summary_16m?.last_refreshed ?? null,
+      },
   };
 
   // --- Build response ---
@@ -392,9 +403,9 @@ async function buildMorningDigest() {
     : { fresh_traffic, fresh_top_articles, fresh_gsc_opps, editorial_synthesis };
 
   // Core (the Managed Agent): story opportunities from the story-scan queue,
-  // site search computed live for the last 7 days, and no Hal-era history or
-  // watch-list alerts. The stored 18-month history was built from inflated
-  // weekly data and is left out until it's rebuilt.
+  // site search computed live for the last 7 days, the rebuilt monthly
+  // history (altus-history.js) in place of the Hal-era 18-month summaries,
+  // which were built from inflated weekly data, and no watch-list alerts.
   const coreBlocks = core ? await buildCoreSections(warnings) : null;
 
   const digest = {
@@ -404,7 +415,7 @@ async function buildMorningDigest() {
     ...(core ? {} : { news_alerts }),
     story_opportunities: core ? coreBlocks.story_opportunities : story_opportunities,
     traffic,
-    ...(core ? {} : { historical }),
+    ...(core ? { history: coreBlocks.history } : { historical }),
     providers,
     ...legacyBlocks,
     site_search_keywords: core ? coreBlocks.site_search_keywords : site_search_keywords,

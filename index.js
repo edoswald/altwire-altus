@@ -55,6 +55,7 @@ import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { listStoryQueue, runStoryScan, updateStoryOpportunity } from './handlers/altus-story-scan.js';
 import { getArticlePerformance as getArticleCheckpoints, runArticleSnapshots } from './handlers/altus-article-snapshots.js';
+import { refreshAnalyticsHistory } from './handlers/altus-history.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, registerArticleForTracking, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
@@ -565,6 +566,16 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       await runArticleSnapshots();
     } catch (err) {
       logger.error('article_snapshots cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Monthly traffic + search history (altus_kv), rebuilt before the digest.
+  scheduleCron('analytics_history', '40 4 * * *', async () => {
+    try {
+      const result = await refreshAnalyticsHistory();
+      if (result?.error) logger.error('analytics_history cron failed', { error: result.error });
+    } catch (err) {
+      logger.error('analytics_history cron failed', { error: err.message });
     }
   }, { timezone: 'America/New_York' });
 
