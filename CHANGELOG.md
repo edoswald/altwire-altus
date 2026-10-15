@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Hybrid keyword + semantic archive search** (`handlers/altus-search.js`): `search_altwire_archive` adds Postgres full-text matches (new generated `altus_content.search_tsv` column with a GIN index; title and tags use the `simple` config so names like "The Who" survive, the body uses `english` stemming) to the vector matches. Each result reports `match`: semantic, keyword, or both. If reranking fails, the two lists are combined by reciprocal-rank fusion.
 - **Archive search reranking** (`handlers/altus-search.js`, `lib/voyage.js`): `search_altwire_archive` reranks its top 40 vector matches with Voyage `rerank-2.5` (override with `VOYAGE_RERANK_MODEL`) before the recency weighting, and falls back to vector similarity if reranking fails. Fan-out callers that pass a precomputed embedding skip it.
 - **`scripts/reembed.js`**: re-embeds archive rows whose vectors came from another model, using the text already in the database (no WordPress fetch, no gallery re-synthesis). Resumable; `--dry-run` reports rows and tokens. `altus_content.embedding_model` now records the model and dimension of every vector.
 - **`find_gift_guide_candidates`** (`lib/review-scores.js`): best-rated reviewed products and albums, filtered by product type, overall or subcategory rating, publish date, and title. Backed by a new `altus_review_scores` table.

@@ -3,15 +3,19 @@
  * Embeds the query via Voyage AI, runs cosine similarity search over altus_content.
  * Results are recency-weighted and re-sorted before returning.
  *
- * Candidates from vector search are reranked with the Voyage reranker (which
+ * Hybrid retrieval: semantic (vector) matches plus keyword (Postgres
+ * full-text) matches, so exact names (bands, products, people) are found even
+ * when embeddings blur them. The combined candidates are reranked with the
+ * Voyage reranker (which
  * reads the query and each article's text together, so it is far better at
  * "which of these is actually about X"). If reranking fails, results fall
- * back to vector similarity.
+ * back to reciprocal-rank fusion of the two lists.
  *
  * Callers that fan out over many queries (e.g. topic discovery) may pass:
  *   embedding      — a precomputed query vector (skips the per-call Voyage call)
  *   totalSearched  — a precomputed archive count (skips the per-call COUNT(*))
- *   rerank: false  — skip reranking (fan-out callers default to no rerank)
+ *   rerank: false  — vector-only, no keyword search or reranking (fan-out
+ *                    callers with a precomputed embedding default to this)
  */
 
 import pool, { hasDbConfig } from '../lib/altus-db.js';
@@ -19,16 +23,44 @@ import { embedQuery, rerank as rerankDocuments } from '../lib/voyage.js';
 import { applyRecencyWeight } from '../lib/recency.js';
 import { logger } from '../logger.js';
 
+const RERANK_CANDIDATES = 40;
+const KEYWORD_CANDIDATES = 20;
+const RERANK_TEXT_CHARS = 4000;
+const RRF_K = 60;
+
 /**
- * @param {{ query: string, limit: number, content_type: 'post'|'gallery'|'all', embedding?: number[], totalSearched?: number }} params
+ * Merge semantic and keyword candidate lists by row id, recording each row's
+ * rank in either list and a reciprocal-rank-fusion score normalized to 0-1.
+ * Exported for tests.
+ */
+export function fuseCandidates(vectorRows, keywordRows) {
+  const byId = new Map();
+  const add = (rows, rankKey) => rows.forEach((row, i) => {
+    const key = row.id ?? row.url ?? `${rankKey}:${i}`;
+    const existing = byId.get(key) ?? { ...row };
+    existing[rankKey] = i + 1;
+    if (row.keyword_rank != null) existing.keyword_rank = row.keyword_rank;
+    byId.set(key, existing);
+  });
+  add(vectorRows, 'vector_position');
+  add(keywordRows, 'keyword_position');
+
+  const maxRrf = 2 / (RRF_K + 1);
+  return [...byId.values()].map((row) => {
+    const rrf = (row.vector_position ? 1 / (RRF_K + row.vector_position) : 0)
+      + (row.keyword_position ? 1 / (RRF_K + row.keyword_position) : 0);
+    const match = row.vector_position && row.keyword_position ? 'both' : (row.keyword_position ? 'keyword' : 'semantic');
+    return { ...row, similarity: parseFloat(row.similarity ?? 0), fused: rrf / maxRrf, match };
+  });
+}
+
+/**
+ * @param {{ query: string, limit: number, content_type: 'post'|'gallery'|'all', embedding?: number[], totalSearched?: number, rerank?: boolean }} params
  * @returns {Promise<object>} results or { error: string }
  */
-const RERANK_CANDIDATES = 40;
-const RERANK_TEXT_CHARS = 4000;
-
 export async function searchAltwireArchive({ query, limit, content_type, embedding: precomputedEmbedding, totalSearched, rerank }) {
-  // Fan-out callers pass a precomputed vector and skip reranking by default.
-  const useRerank = rerank ?? !Array.isArray(precomputedEmbedding);
+  // Fan-out callers pass a precomputed vector and get plain vector search.
+  const hybrid = rerank ?? !Array.isArray(precomputedEmbedding);
   if (!hasDbConfig()) {
     return { error: 'Database not configured' };
   }
@@ -44,18 +76,19 @@ export async function searchAltwireArchive({ query, limit, content_type, embeddi
 
   const embeddingStr = `[${vector.join(',')}]`;
   const typeFilter = content_type === 'all' ? '' : 'AND content_type = $3';
+  const columns = `
+      id, content_type, title, slug, url, published_at, categories, tags,
+      LEFT(raw_text, 300) AS snippet,
+      ${hybrid ? `LEFT(raw_text, ${RERANK_TEXT_CHARS}) AS rerank_text,` : ''}
+      1 - (embedding <=> $1::vector) AS similarity`;
 
   // Over-fetch so reranking and the recency re-sort can promote candidates
-  const fetchLimit = useRerank ? Math.max(RERANK_CANDIDATES, limit) : Math.min(limit * 3, 60);
+  const fetchLimit = hybrid ? Math.max(RERANK_CANDIDATES, limit) : Math.min(limit * 3, 60);
   const params = [embeddingStr, fetchLimit];
   if (content_type !== 'all') params.push(content_type);
 
   const sql = `
-    SELECT
-      content_type, title, slug, url, published_at, categories, tags,
-      LEFT(raw_text, 300) AS snippet,
-      ${useRerank ? `LEFT(raw_text, ${RERANK_TEXT_CHARS}) AS rerank_text,` : ''}
-      1 - (embedding <=> $1::vector) AS similarity
+    SELECT ${columns}
     FROM altus_content
     WHERE embedding IS NOT NULL
     ${typeFilter}
@@ -63,37 +96,63 @@ export async function searchAltwireArchive({ query, limit, content_type, embeddi
     LIMIT $2
   `;
 
+  // Keyword side: 'simple' keeps names whole (title/tags), 'english' stems
+  // the body. The tsquery is built once in the CTE.
+  const keywordParams = [embeddingStr, KEYWORD_CANDIDATES, ...(content_type !== 'all' ? [content_type] : []), query];
+  const queryParam = `$${keywordParams.length}`;
+  const keywordSql = `
+    WITH q AS (
+      SELECT websearch_to_tsquery('simple', ${queryParam}) || websearch_to_tsquery('english', ${queryParam}) AS tsq
+    )
+    SELECT ${columns}, ts_rank_cd(search_tsv, q.tsq) AS keyword_rank
+    FROM altus_content, q
+    WHERE embedding IS NOT NULL
+      AND search_tsv @@ q.tsq
+      ${typeFilter}
+    ORDER BY keyword_rank DESC
+    LIMIT $2
+  `;
+
   try {
-    const [searchResult, countResult] = await Promise.all([
+    const [searchResult, countResult, keywordResult] = await Promise.all([
       pool.query(sql, params),
       // Reuse the caller's archive count when provided — avoids a redundant
       // full-table COUNT(*) on every fan-out search.
       totalSearched != null
         ? { rows: [{ count: totalSearched }] }
         : pool.query('SELECT COUNT(*) FROM altus_content WHERE embedding IS NOT NULL'),
+      hybrid
+        ? Promise.resolve().then(() => pool.query(keywordSql, keywordParams)).catch((err) => {
+            logger.warn('Archive keyword search failed; using vector results only', { error: err.message });
+            return { rows: [] };
+          })
+        : { rows: [] },
     ]);
 
-    let candidates = searchResult.rows.map((row) => ({ ...row, similarity: parseFloat(row.similarity ?? 0) }));
-    let reranked = false;
-    if (useRerank && candidates.length > 1) {
-      const ranking = await rerankDocuments(
+    let candidates = fuseCandidates(searchResult.rows, keywordResult?.rows ?? []);
+    let ranking = 'vector_similarity';
+    if (hybrid && candidates.length > 1) {
+      const reranked = await rerankDocuments(
         query,
-        candidates.map((row) => `${row.title}\n\n${row.rerank_text ?? row.snippet ?? ''}`),
+        candidates.map((row) => `${row.title}${row.tags?.length ? `\nTags: ${row.tags.join(', ')}` : ''}\n\n${row.rerank_text ?? row.snippet ?? ''}`),
       );
-      if (Array.isArray(ranking)) {
-        candidates = ranking.map(({ index, relevance_score }) => ({ ...candidates[index], relevance: relevance_score }));
-        reranked = true;
+      if (Array.isArray(reranked)) {
+        candidates = reranked.map(({ index, relevance_score }) => ({ ...candidates[index], relevance: relevance_score }));
+        ranking = 'reranked';
       } else {
-        logger.warn('Archive search rerank failed; using vector similarity', { error: ranking?.error });
+        logger.warn('Archive search rerank failed; using rank fusion', { error: reranked?.error });
+        ranking = 'fused';
       }
     }
+
+    const scoreOf = (row) => (ranking === 'reranked' ? row.relevance : ranking === 'fused' ? row.fused : row.similarity);
 
     // Apply recency weighting, re-sort, trim to requested limit
     const weighted = candidates
       .map((row) => ({
         ...row,
         weighted_score: applyRecencyWeight(
-          reranked ? row.relevance : row.similarity,
+          scoreOf(row),
           row.published_at ? new Date(row.published_at).toISOString() : null
         ),
       }))
@@ -110,15 +169,18 @@ export async function searchAltwireArchive({ query, limit, content_type, embeddi
       tags: row.tags ?? [],
       snippet: row.snippet ?? '',
       similarity: row.similarity,
-      ...(reranked ? { relevance: row.relevance } : {}),
+      ...(ranking === 'reranked' ? { relevance: row.relevance } : {}),
+      ...(hybrid ? { match: row.match } : {}),
       weighted_score: row.weighted_score,
     }));
 
-    logger.info('Archive search completed', { query, results: results.length, content_type, reranked });
+    logger.info('Archive search completed', {
+      query, results: results.length, content_type, ranking, keyword_hits: keywordResult?.rows?.length ?? 0,
+    });
 
     return {
       results,
-      ranking: reranked ? 'reranked' : 'vector_similarity',
+      ranking,
       total_searched: parseInt(countResult.rows[0].count, 10),
       query,
     };
