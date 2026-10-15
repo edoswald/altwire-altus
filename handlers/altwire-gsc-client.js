@@ -203,7 +203,9 @@ export async function getSearchOpportunities(startDate, endDate) {
         startDate,
         endDate,
         dimensions: ['query'],
-        rowLimit: 100,
+        // Positions 5–30 are filtered below; with only the top 100 rows by
+        // impressions, most mid-ranking queries never made it that far.
+        rowLimit: 1000,
         orderBy: [{ fieldName: 'impressions', sortOrder: 'DESCENDING' }],
         dataState: 'all',
       },

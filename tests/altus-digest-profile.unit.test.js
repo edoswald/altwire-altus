@@ -1,0 +1,44 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../logger.js', () => ({ logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('../handlers/altwire-matomo-client.js', () => ({ getTrafficSummary: vi.fn(async () => ({ nb_visits: 10 })) }));
+vi.mock('../handlers/altus-opportunity-queue.js', () => ({ listStoryOpportunityQueue: vi.fn(async () => []) }));
+vi.mock('../handlers/altus-digest-analytics.js', () => ({ buildAnalyticsSnapshot: vi.fn(async () => ({ matomo: {} })) }));
+
+// Every agent_memory read returns a stored Hal-era snapshot.
+vi.mock('../lib/altus-db.js', () => ({
+  default: {
+    query: vi.fn(async (sql) => {
+      if (/LIKE 'altus:news_alert/.test(sql)) return { rows: [] };
+      if (/LIKE 'hal:altwire:analytics/.test(sql)) return { rows: [] };
+      return { rows: [{ value: JSON.stringify({ period: '7d', generated_at: '2026-10-10T08:00:00Z' }) }] };
+    }),
+  },
+}));
+
+const STALE = ['fresh_traffic', 'fresh_top_articles', 'fresh_gsc_opps', 'editorial_synthesis'];
+
+describe('morning digest by profile', () => {
+  const saved = process.env.ALTUS_PROFILE;
+  beforeEach(() => { vi.resetModules(); });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ALTUS_PROFILE;
+    else process.env.ALTUS_PROFILE = saved;
+  });
+
+  it('leaves out the stale Hal-era snapshots in core, keeping site search terms', async () => {
+    process.env.ALTUS_PROFILE = 'core';
+    const { getAltwireMorningDigest } = await import('../handlers/altus-digest.js');
+    const digest = await getAltwireMorningDigest();
+    for (const key of STALE) expect(digest, key).not.toHaveProperty(key);
+    expect(digest.site_search_keywords).toMatchObject({ period: '7d' });
+    expect(digest.analytics).toEqual({ matomo: {} });
+  });
+
+  it('keeps them in the legacy profile, where the old mailer reads them', async () => {
+    delete process.env.ALTUS_PROFILE;
+    const { getAltwireMorningDigest } = await import('../handlers/altus-digest.js');
+    const digest = await getAltwireMorningDigest();
+    for (const key of STALE) expect(digest[key], key).toMatchObject({ period: '7d' });
+  });
+});

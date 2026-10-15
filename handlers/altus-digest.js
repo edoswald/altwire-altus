@@ -17,6 +17,7 @@ import { logger } from '../logger.js';
 import { getTrafficSummary } from './altwire-matomo-client.js';
 import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
 import { buildAnalyticsSnapshot } from './altus-digest-analytics.js';
+import { isCoreProfile } from '../lib/altus-profile.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -343,6 +344,15 @@ async function buildMorningDigest() {
   };
 
   // --- Build response ---
+  // In the core profile (read by the Managed Agent), leave out the Hal-era
+  // snapshots the legacy reflection cron stores. Each covers a different
+  // window and time than `analytics`, so they contradicted it (a "7-day"
+  // traffic figure that didn't match the live one), and they stop updating
+  // once the legacy service is retired. `analytics` already has the live
+  // equivalents; site search terms and long-run history stay.
+  const legacyBlocks = isCoreProfile()
+    ? {}
+    : { fresh_traffic, fresh_top_articles, fresh_gsc_opps, editorial_synthesis };
   const digest = {
     date: today,
     generated_at: new Date().toISOString(),
@@ -352,10 +362,7 @@ async function buildMorningDigest() {
     traffic,
     historical,
     providers,
-    fresh_traffic,
-    fresh_top_articles,
-    fresh_gsc_opps,
-    editorial_synthesis,
+    ...legacyBlocks,
     site_search_keywords,
   };
 
