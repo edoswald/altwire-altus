@@ -35,7 +35,7 @@ Subject: the single most important thing today, specific (for example: "Search c
 7. **Holiday season** (October 1 to December 31 only): one short paragraph on where the plan stands against the calendar, from the tracker.
 8. **Action items**: a numbered list. Each item is concrete and doable today, and names its channel (team or holiday).
 
-Length: roughly 400–700 words. Scannable: short paragraphs, bold the key number in each section. No filler, no restating the obvious ("traffic changes day to day").
+Length: roughly 800–1,100 words on a normal day; shorter on a quiet one. Scannable: short paragraphs, bold the key number in each section. No filler, no restating the obvious ("traffic changes day to day").
 
 ## Slack action items
 
