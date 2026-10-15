@@ -68,8 +68,14 @@ export function prependEntry(existing, entry, { keep, header }) {
   return `${(head.trim() ? head.trim() : header.trim())}\n\n${kept.join('\n\n')}\n`;
 }
 
+/** Directory part of a path, with a trailing slash: '/a/b.md' -> '/a/'. */
+export function parentDir(path) {
+  return path.slice(0, path.lastIndexOf('/') + 1) || '/';
+}
+
 async function findMemory(anthropic, storeId, path) {
-  for await (const item of anthropic.beta.memoryStores.memories.list(storeId, { path_prefix: path })) {
+  // path_prefix must be a directory (ending in '/'), so list the parent and match exactly.
+  for await (const item of anthropic.beta.memoryStores.memories.list(storeId, { path_prefix: parentDir(path) })) {
     if (item.type === 'memory' && item.path === path) return item;
   }
   return null;

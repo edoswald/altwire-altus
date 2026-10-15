@@ -8,7 +8,7 @@ import {
 } from '../slack-bridge/lib/mcp-oauth.js';
 import { parseJobOutput, parseSchedules, resolveAddresses, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
 import { emailText, markdownToEmailHtml } from '../slack-bridge/lib/email.js';
-import { appendRunLog, dateLabel, parseLogConfig, prependEntry } from '../slack-bridge/lib/run-log.js';
+import { appendRunLog, dateLabel, parentDir, parseLogConfig, prependEntry } from '../slack-bridge/lib/run-log.js';
 import {
   HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, PERSONAL_INSTRUCTIONS, memoryResourcesFor, parseDmAccess, parseUserNames, personalStoreName, seedMemoryStore,
 } from '../slack-bridge/lib/memory.js';
@@ -490,6 +490,22 @@ describe('run log helpers', () => {
     doc = prependEntry(doc, '## B\ntwo', { keep: 2, header: 'unused' });
     doc = prependEntry(doc, '## C\nthree', { keep: 2, header: 'unused' });
     expect(doc).toBe('# Log\n\nIntro.\n\n## C\nthree\n\n## B\ntwo\n');
+  });
+
+  it('lists by parent directory, since path_prefix must end in a slash', async () => {
+    expect(parentDir('/digest-log.md')).toBe('/');
+    expect(parentDir('/logs/weekly.md')).toBe('/logs/');
+    const prefixes = [];
+    const memories = {
+      list: (store, params) => {
+        prefixes.push(params.path_prefix);
+        return { async *[Symbol.asyncIterator]() { yield { type: 'memory', id: 'mem_x', path: '/digest-log.mdx' }; } };
+      },
+      create: async (store, params) => { expect(params.path).toBe('/digest-log.md'); },
+    };
+    const how = await appendRunLog({ beta: { memoryStores: { memories } } }, 'memstore', { path: '/digest-log.md', keep: 5, title: 'L' }, '## New\nz');
+    expect(how).toBe('created');
+    for (const p of prefixes) expect(p).toMatch(/^(\/([^/]+\/)*)?$/);
   });
 
   it('retries once when the file changed between read and write', async () => {
