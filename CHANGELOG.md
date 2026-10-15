@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Archive vector search recall**: dropped the ivfflat index (lists=50, default probes=1, so each query searched about 2% of the archive, with centroids built from pre-voyage-4 vectors). Search is now exact, which at archive scale takes tens of milliseconds.
+- **Embeddings covered only the opening of each article**: post embed text was cut at 3,000 characters (about 500 words); it is now 12,000. The stored article text was always complete.
+- **Nightly sync missed edits to older posts**: the WordPress query combined `after` with `modified_after`, which WordPress ANDs together, so only posts published in the window were fetched. It now uses `modified_after` alone.
+
 - **`get_altwire_combined_analytics` top_articles label fallback** (`handlers/altus-combined-analytics.js`): Changed `label: a.label ?? a.url` to `label: a.label ?? a.title ?? a.url` — `normalizeTopArticles()` returns objects with `title` (not `label`), so synthesis payload was always receiving URLs instead of human-readable article titles.
 
 ### Added
