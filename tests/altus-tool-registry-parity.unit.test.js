@@ -30,18 +30,18 @@ describe('Altus shared Hal registry parity', () => {
     expect(names.has('altus_send_admin_email')).toBe(true);
   });
 
-  it('exposes refresh for live story opportunity smoke checks', () => {
+  it('serves story opportunities from the queue, with refresh running a scan first', () => {
     const storyToolBlock = indexSource.match(/scopedRegister\(\s*'get_story_opportunities'[\s\S]+?\n  \);/)?.[0] ?? '';
 
     expect(storyToolBlock).toContain('refresh');
-    expect(storyToolBlock).toContain('getStoryOpportunities({ days, refresh })');
+    expect(storyToolBlock).toContain('runStoryScan()');
+    expect(storyToolBlock).toContain('listStoryQueue({ status, limit })');
   });
 
-  it('wires the story opportunities cron through the unified queue refresh path', () => {
-    const storyCronBlock = indexSource.match(/scheduleCron\(\s*'story_opportunities',\s*'0 5 \* \* 1-5'[\s\S]+?\}, \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
+  it('runs the story scan on weekday mornings before the digest', () => {
+    const scanBlock = indexSource.match(/scheduleCron\(\s*'story_scan',\s*'0 5 \* \* 1-5'[\s\S]+?\}, \{ timezone: 'America\/New_York' \}\);/)?.[0] ?? '';
 
-    expect(storyCronBlock).toContain('refreshOpportunityQueue({ days: 28, includeNews: true })');
-    expect(storyCronBlock).not.toContain('getStoryOpportunities({ days: 28 })');
+    expect(scanBlock).toContain('runStoryScan()');
   });
 
   it('exposes an explicit article tracking registration tool for performance snapshots', () => {

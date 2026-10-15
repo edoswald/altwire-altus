@@ -12,7 +12,7 @@ function inlineDescription(name) {
 }
 
 const WRITE_TOOLS = [
-  'reingest_altwire_archive', 'add_content_idea', 'altus_add_watch_subject', 'altus_remove_watch_subject',
+  'reingest_altwire_archive', 'update_story_opportunity',
   'altus_register_article_tracking', 'track_article', 'update_altwire_seo_fields',
 ];
 

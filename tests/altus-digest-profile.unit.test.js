@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../logger.js', () => ({ logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
-vi.mock('../handlers/altwire-matomo-client.js', () => ({ getTrafficSummary: vi.fn(async () => ({ nb_visits: 10 })) }));
+vi.mock('../handlers/altwire-matomo-client.js', () => ({
+  getTrafficSummary: vi.fn(async () => ({ nb_visits: 10 })),
+  getSiteSearchKeywords: vi.fn(async () => [{ label: 'deftones', nb_visits: 7 }]),
+}));
+vi.mock('../handlers/altus-story-scan.js', () => ({
+  listStoryQueue: vi.fn(async () => ({ opportunities: [{ id: 1, query: 'gamma mini synth' }], open_count: 4, last_scan_at: '2026-10-15T09:00:00Z' })),
+}));
 vi.mock('../handlers/altus-opportunity-queue.js', () => ({ listStoryOpportunityQueue: vi.fn(async () => []) }));
 vi.mock('../handlers/altus-digest-analytics.js', () => ({ buildAnalyticsSnapshot: vi.fn(async () => ({ matomo: {} })) }));
 
@@ -26,12 +32,13 @@ describe('morning digest by profile', () => {
     else process.env.ALTUS_PROFILE = saved;
   });
 
-  it('leaves out the stale Hal-era snapshots in core, keeping site search terms', async () => {
+  it('in core: no Hal-era snapshots, history, or watch-list alerts; live site search; the story queue', async () => {
     process.env.ALTUS_PROFILE = 'core';
     const { getAltwireMorningDigest } = await import('../handlers/altus-digest.js');
     const digest = await getAltwireMorningDigest();
-    for (const key of STALE) expect(digest, key).not.toHaveProperty(key);
-    expect(digest.site_search_keywords).toMatchObject({ period: '7d' });
+    for (const key of [...STALE, 'historical', 'news_alerts']) expect(digest, key).not.toHaveProperty(key);
+    expect(digest.site_search_keywords).toMatchObject({ source: 'Matomo', keywords: [{ keyword: 'deftones', searches: 7 }] });
+    expect(digest.story_opportunities).toEqual({ open_count: 4, last_scan_at: '2026-10-15T09:00:00Z', top: [{ id: 1, query: 'gamma mini synth' }] });
     expect(digest.analytics).toEqual({ matomo: {} });
   });
 

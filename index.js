@@ -53,6 +53,7 @@ import { getSeasonalComparison } from './handlers/altus-seasonal.js';
 import { generateChart } from './hal-chart.js';
 import { getAltwireMorningDigest } from './handlers/altus-digest.js';
 import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
+import { listStoryQueue, runStoryScan, updateStoryOpportunity } from './handlers/altus-story-scan.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, registerArticleForTracking, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
@@ -287,6 +288,7 @@ const TOOL_CONTEXTS = {
   find_gift_guide_candidates: [],
   // Editorial intelligence
   get_story_opportunities:      [],
+  update_story_opportunity:     [],
   get_news_opportunities:       [],
   get_article_performance:      [],
   get_news_performance_patterns: [],
@@ -500,6 +502,18 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
   }, { timezone: 'America/New_York' });
 
   // Story Opportunities — 5:00 AM ET weekdays (15 min before digest; upserts the altus_story_opportunities queue the digest reads)
+  // Story opportunities (altus_story_queue): Search Console opportunity-zone
+  // queries ranked against archive coverage, before the 5:50 AM digest.
+  scheduleCron('story_scan', '0 5 * * 1-5', async () => {
+    try {
+      const result = await runStoryScan();
+      if (result?.error) logger.error('story_scan cron failed', { error: result.error });
+    } catch (err) {
+      logger.error('story_scan cron failed', { error: err.message });
+    }
+  }, { timezone: 'America/New_York' });
+
+  // Legacy (Hal-era) opportunity queue; skipped once story_scan runs.
   scheduleCron('story_opportunities', '0 5 * * 1-5', async () => {
     try {
       await logAltusEvent('cron_trigger', { payload: { cron_name: 'story_opportunities', phase: 'started' } });
@@ -1120,16 +1134,37 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   scopedRegister(
     'get_story_opportunities',
     {
-      description: 'Cross-references GSC opportunity-zone queries (position 5–30) against the AltWire archive to surface story opportunities where search demand exists but coverage is thin. Uses Haiku to synthesize editorial pitches.',
+      description: 'Story opportunities: Google searches where AltWire ranks in positions 5-30 and a new or refreshed piece could move up, with coverage and a reason.',
       inputSchema: {
-        days: z.number().int().min(7).max(90).default(28)
-          .describe('Lookback window in days for GSC data (default 28)'),
+        status: z.enum(['open', 'done', 'dismissed', 'expired', 'all']).optional().default('open')
+          .describe('Which opportunities to list (default open)'),
+        limit: z.number().int().min(1).max(50).optional().default(10)
+          .describe('Max results (default 10)'),
         refresh: z.boolean().optional().default(false)
-          .describe('Bypass today\'s cached story-opportunity result and recompute from GSC/archive data. Use for smoke tests, "right now" checks, or suspected stale empty results.'),
+          .describe('Run a fresh scan of Search Console and the archive first (takes about a minute). The queue is normally refreshed every weekday morning.'),
       },
     },
-    async ({ days, refresh }) => {
-      const result = await getStoryOpportunities({ days, refresh });
+    async ({ status, limit, refresh }) => {
+      let scan = null;
+      if (refresh) scan = await runStoryScan();
+      if (scan?.error) return { content: [{ type: 'text', text: JSON.stringify(scan) }] };
+      const result = await listStoryQueue({ status, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(scan ? { ...result, scan } : result) }] };
+    }
+  );
+
+  scopedRegister(
+    'update_story_opportunity',
+    {
+      description: 'Mark a story opportunity done or dismissed (or open again), with an optional note.',
+      inputSchema: {
+        id: z.number().int().describe('Opportunity id from get_story_opportunities'),
+        status: z.enum(['open', 'done', 'dismissed']).optional().describe('New status'),
+        note: z.string().max(500).optional().describe('Why, or what was published (e.g. a URL)'),
+      },
+    },
+    async ({ id, status, note }) => {
+      const result = await updateStoryOpportunity({ id, status, note });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

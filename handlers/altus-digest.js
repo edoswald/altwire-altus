@@ -14,10 +14,12 @@
 
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
-import { getTrafficSummary } from './altwire-matomo-client.js';
+import { getSiteSearchKeywords, getTrafficSummary } from './altwire-matomo-client.js';
 import { listStoryOpportunityQueue } from './altus-opportunity-queue.js';
 import { buildAnalyticsSnapshot } from './altus-digest-analytics.js';
 import { isCoreProfile } from '../lib/altus-profile.js';
+import { listStoryQueue } from './altus-story-scan.js';
+import { isoDateOffset } from '../lib/gsc-date-window.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -102,6 +104,40 @@ export async function getAltwireMorningDigest() {
     }
   })();
   return _digestInFlight;
+}
+
+/** Digest sections specific to the core profile. Failures become warnings. */
+async function buildCoreSections(warnings) {
+  const start = isoDateOffset(7);
+  const end = isoDateOffset(1);
+  const [queue, search] = await Promise.allSettled([
+    listStoryQueue({ status: 'open', limit: 5 }),
+    getSiteSearchKeywords('range', `${start},${end}`),
+  ]);
+
+  let story_opportunities = null;
+  if (queue.status === 'fulfilled') {
+    story_opportunities = {
+      open_count: queue.value.open_count,
+      last_scan_at: queue.value.last_scan_at,
+      top: queue.value.opportunities,
+    };
+  } else {
+    warnings.push({ section: 'story_opportunities', message: `Story queue read failed: ${queue.reason?.message ?? queue.reason}` });
+  }
+
+  let site_search_keywords = null;
+  const result = search.status === 'fulfilled' ? search.value : { error: search.reason?.message };
+  if (Array.isArray(result)) {
+    site_search_keywords = {
+      source: 'Matomo',
+      window: { start, end },
+      keywords: result.slice(0, 15).map((r) => ({ keyword: r.label, searches: r.nb_visits ?? r.nb_hits ?? null })),
+    };
+  } else if (result?.error) {
+    warnings.push({ section: 'site_search_keywords', message: `Matomo site search failed: ${result.message ?? result.error}` });
+  }
+  return { story_opportunities, site_search_keywords };
 }
 
 /**
@@ -350,20 +386,28 @@ async function buildMorningDigest() {
   // traffic figure that didn't match the live one), and they stop updating
   // once the legacy service is retired. `analytics` already has the live
   // equivalents; site search terms and long-run history stay.
-  const legacyBlocks = isCoreProfile()
+  const core = isCoreProfile();
+  const legacyBlocks = core
     ? {}
     : { fresh_traffic, fresh_top_articles, fresh_gsc_opps, editorial_synthesis };
+
+  // Core (the Managed Agent): story opportunities from the story-scan queue,
+  // site search computed live for the last 7 days, and no Hal-era history or
+  // watch-list alerts. The stored 18-month history was built from inflated
+  // weekly data and is left out until it's rebuilt.
+  const coreBlocks = core ? await buildCoreSections(warnings) : null;
+
   const digest = {
     date: today,
     generated_at: new Date().toISOString(),
     analytics,
-    news_alerts,
-    story_opportunities,
+    ...(core ? {} : { news_alerts }),
+    story_opportunities: core ? coreBlocks.story_opportunities : story_opportunities,
     traffic,
-    historical,
+    ...(core ? {} : { historical }),
     providers,
     ...legacyBlocks,
-    site_search_keywords,
+    site_search_keywords: core ? coreBlocks.site_search_keywords : site_search_keywords,
   };
 
   // Include per-section warning fields for failed sections

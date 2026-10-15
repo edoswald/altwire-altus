@@ -23,6 +23,15 @@ export function normalizeUrl(url) {
 }
 
 /**
+ * RE2 pattern (Search Console's regex dialect) matching exactly this URL,
+ * with or without a trailing slash.
+ */
+export function pageUrlPattern(url) {
+  const escaped = String(normalizeUrl(url)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return `^${escaped}/?$`;
+}
+
+/**
  * Check that all required GSC env vars are present and return a configured auth client.
  * @returns {{ configured: true, auth: object, siteUrl: string } | { configured: false, error: string }}
  */
@@ -423,10 +432,13 @@ export async function getPagePerformance(pageUrl, startDate, endDate) {
         startDate,
         endDate,
         dimensionFilterGroups: [{
+          // Search Console stores WordPress permalinks with their trailing
+          // slash; an exact match on the stripped URL found nothing. Match
+          // the URL with or without it.
           filters: [{
             dimension: 'page',
-            operator: 'equals',
-            expression: normalized,
+            operator: 'includingRegex',
+            expression: pageUrlPattern(normalized),
           }],
         }],
         dataState: 'all',

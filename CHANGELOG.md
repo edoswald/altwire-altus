@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Story opportunities rebuilt** (`handlers/altus-story-scan.js`, weekday cron `story_scan` at 5:00 ET): Search Console positions 5-30 for the last 28 days with the previous 28 for trend, one row per query, ranked by impressions x closeness to the top x coverage gap, where coverage comes from the hybrid archive search and reranker (a failed search is "unknown", not a gap). Results go to a new `altus_story_queue` with a suggestion (new_story, expand, refresh, optimize), a plain reason, the ranking page's title and date, first/last seen, and status; items unseen for 14 days expire. `get_story_opportunities` reads the queue (`refresh=true` scans now) and the new `update_story_opportunity` marks items done or dismissed. No LLM pitch step.
+
 - **CI** (`.github/workflows/test.yml`): the test suite runs on every push to `main` and every pull request; Railway waits for it before deploying.
 - **`scripts/oauth-clients.js`**: list registered OAuth clients with token counts, or delete clients (and their codes and tokens) by name.
 
@@ -33,9 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
+- **From the core profile**: `get_news_opportunities`, the watch-list tools (`altus_add_watch_subject`, `altus_remove_watch_subject`, `altus_list_watch_subjects`), and content ideas (`add_content_idea`, `get_content_ideas`). Unused; the digest covers Google News performance directly.
+
 - **Laminar tracing**: removed `tracing.js`, `hal-signals.js`, `lib/laminar-integration.js`, the `@lmnr-ai/lmnr` dependency, and every `observe()` span wrapper. `LMNR_PROJECT_API_KEY` is no longer read.
 
 ### Fixed
+
+- **Page performance returned nothing**: `getPagePerformance` (used by `get_altwire_page_performance` and the article snapshots) stripped the trailing slash and asked Search Console for an exact match, but Search Console stores WordPress permalinks with it. It now matches the URL with or without the slash.
+- **Digest (core) inputs**: the stored 18-month Matomo history (built from weekly data counted about seven times over) and the watch-list news alerts are no longer served; site-search terms are computed live for the last 7 days instead of read from the nightly reflection, which overwrote them with errors when Matomo failed.
 
 - **Archive vector search recall**: dropped the ivfflat index (lists=50, default probes=1, so each query searched about 2% of the archive, with centroids built from pre-voyage-4 vectors). Search is now exact, which at archive scale takes tens of milliseconds.
 - **Embeddings covered only the opening of each article**: post embed text was cut at 3,000 characters (about 500 words); it is now 12,000. The stored article text was always complete.
