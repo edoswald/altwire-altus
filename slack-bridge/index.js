@@ -77,7 +77,7 @@ const anthropic = new Anthropic();
 const { jobs, errors } = parseSchedules(env.BRIDGE_SCHEDULES, { allowedChannels: config.allowedChannels });
 for (const e of errors) log.error('Invalid schedule', { error: e });
 config.jobs = jobs.filter((job) => {
-  if (cron.validate(job.cron)) return true;
+  if (job.manual || cron.validate(job.cron)) return true;
   log.error('Invalid schedule', { error: `schedule ${job.name}: invalid cron "${job.cron}"` });
   return false;
 });
@@ -101,7 +101,7 @@ await store.init();
 const botUserId = (await slack.authTest()).user_id;
 bridge.setBotUserId(botUserId);
 
-for (const job of config.jobs) {
+for (const job of config.jobs.filter((j) => !j.manual)) {
   cron.schedule(job.cron, () => bridge.runScheduledJob(job), { timezone: job.timezone, name: job.name, noOverlap: true });
 }
 cron.schedule('17 * * * *', () => store.pruneSeenEvents().catch(() => {}), { name: 'prune' });
@@ -119,7 +119,7 @@ createServer((req, res) => bridge.handleHttp(req, res)).listen(config.port, () =
     port: config.port,
     botUserId,
     allowedChannels: [...config.allowedChannels],
-    schedules: config.jobs.map((j) => `${j.name} (${j.cron} ${j.timezone})${j.email ? ` email→${j.email.to.length + j.email.cc.length}` : ''}${j.routes ? ` slack→${j.routes.map((r) => r.name).join('/')}` : ''}`),
+    schedules: config.jobs.map((j) => `${j.name} (${j.manual ? 'manual' : `${j.cron} ${j.timezone}`})${j.email ? ` email→${j.email.to.length + j.email.cc.length}` : ''}${j.routes ? ` slack→${j.routes.map((r) => r.name).join('/')}` : ''}`),
     email: mailer ? 'ses' : 'off',
     memory: config.memoryStoreId ? `channels read_write, DMs ${config.memoryDmAccess}` : 'off',
     personalMemory: config.personalMemory ? 'per user, DMs only' : 'off',

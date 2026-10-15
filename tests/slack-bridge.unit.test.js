@@ -461,3 +461,14 @@ describe('email rendering', () => {
   });
 });
 
+describe('manual jobs', () => {
+  it('accepts a job with no cron when it is marked manual', () => {
+    const { jobs, errors } = parseSchedules(JSON.stringify([
+      { name: 'preview', manual: true, channel: 'C1', prompt: 'x' },
+      { name: 'broken', channel: 'C1', prompt: 'x' },
+    ]), { allowedChannels: new Set(['C1']) });
+    expect(jobs).toEqual([expect.objectContaining({ name: 'preview', manual: true, cron: null })]);
+    expect(errors).toEqual(['schedule broken: missing cron']);
+  });
+});
+

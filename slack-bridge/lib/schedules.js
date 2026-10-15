@@ -18,6 +18,8 @@
  * actionable. Addresses written as $NAME are read from that environment
  * variable (comma-separated lists are split).
  *
+ * "manual": true (no cron) defines a job that only runs with `run <name>`.
+ *
  * "preview": true posts nothing to Slack; the Slack sections are appended to
  * the email instead, for trying a job out before it goes to the team.
  */
@@ -37,11 +39,13 @@ export function parseSchedules(raw, { allowedChannels, env = process.env }) {
   const names = new Set();
   list.forEach((job, i) => {
     const label = job?.name || `#${i}`;
-    const missing = ['name', 'cron', 'channel', 'prompt'].filter((k) => !job?.[k] || typeof job[k] !== 'string');
+    const manual = job?.manual === true;
+    const required = manual ? ['name', 'channel', 'prompt'] : ['name', 'cron', 'channel', 'prompt'];
+    const missing = required.filter((k) => !job?.[k] || typeof job[k] !== 'string');
     if (missing.length) return errors.push(`schedule ${label}: missing ${missing.join(', ')}`);
     if (names.has(job.name)) return errors.push(`schedule ${label}: duplicate name`);
     if (!allowedChannels.has(job.channel)) return errors.push(`schedule ${label}: channel ${job.channel} is not in BRIDGE_ALLOWED_CHANNELS`);
-    if (job.cron.trim().split(/\s+/).length !== 5) return errors.push(`schedule ${label}: cron must have 5 fields`);
+    if (!manual && job.cron.trim().split(/\s+/).length !== 5) return errors.push(`schedule ${label}: cron must have 5 fields`);
 
     const routes = parseRoutes(job.routes);
     if (routes.error) return errors.push(`schedule ${label}: ${routes.error}`);
@@ -62,7 +66,8 @@ export function parseSchedules(raw, { allowedChannels, env = process.env }) {
     names.add(job.name);
     jobs.push({
       name: job.name,
-      cron: job.cron.trim(),
+      cron: manual ? null : job.cron.trim(),
+      ...(manual ? { manual: true } : {}),
       timezone: job.timezone || 'America/New_York',
       channel: job.channel,
       prompt: job.prompt,
