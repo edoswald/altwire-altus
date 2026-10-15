@@ -7,6 +7,7 @@ import {
   buildAuthorizeUrl, buildVaultAuth, discover, exchangeCode, normalizeServerUrl, registerClient, resolveServer,
 } from '../slack-bridge/lib/mcp-oauth.js';
 import { parseSchedules, scheduledPrompt } from '../slack-bridge/lib/schedules.js';
+import { HOLIDAY_TRACKER_PATH, MEMORY_SEEDS, memoryResourcesFor, parseDmAccess, seedMemoryStore } from '../slack-bridge/lib/memory.js';
 
 const BOT = 'UBOT';
 
@@ -332,3 +333,42 @@ describe('Slack file upload and file selection', async () => {
     expect(selectNewFiles(many, new Set())).toHaveLength(10);
   });
 });
+
+describe('memory', () => {
+  it('builds memory resources by context', () => {
+    expect(memoryResourcesFor({ isDm: false, memoryStoreId: null })).toEqual([]);
+    expect(memoryResourcesFor({ isDm: false, memoryStoreId: 'm' })[0].access).toBe('read_write');
+    expect(memoryResourcesFor({ isDm: true, memoryStoreId: 'm' })[0].access).toBe('read_only');
+    expect(memoryResourcesFor({ isDm: true, memoryStoreId: 'm', dmAccess: 'read_write' })[0].access).toBe('read_write');
+    for (const r of [memoryResourcesFor({ isDm: false, memoryStoreId: 'm' })[0], memoryResourcesFor({ isDm: true, memoryStoreId: 'm' })[0]]) {
+      expect(r.instructions.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it('parses DM access, defaulting to read-only', () => {
+    expect(parseDmAccess(undefined)).toBe('read_only');
+    expect(parseDmAccess('READ_WRITE')).toBe('read_write');
+    expect(parseDmAccess('yes')).toBe('read_only');
+  });
+
+  it('seeds starter files without overwriting existing ones', async () => {
+    const calls = [];
+    const anthropic = { beta: { memoryStores: { memories: { create: async (id, params) => {
+      calls.push({ id, ...params });
+      if (params.path === HOLIDAY_TRACKER_PATH) throw Object.assign(new Error('conflict'), { status: 409 });
+      if (params.path === '/decisions.md') return { id: 'mem_1' };
+      throw Object.assign(new Error('boom'), { status: 500 });
+    } } } } };
+    const result = await seedMemoryStore(anthropic, 'memstore_team', [...MEMORY_SEEDS, { path: '/x.md', content: 'x' }]);
+    expect(calls.map((c) => c.id)).toEqual(['memstore_team', 'memstore_team', 'memstore_team']);
+    expect(result).toEqual({ created: ['/decisions.md'], existing: [HOLIDAY_TRACKER_PATH], failed: ['/x.md: boom'] });
+  });
+
+  it('seeds a holiday tracker with the 2026 dates and empty sections', () => {
+    const tracker = MEMORY_SEEDS.find((s) => s.path === HOLIDAY_TRACKER_PATH).content;
+    expect(tracker).toMatch(/Fri Nov 27: Black Friday/);
+    expect(tracker).toMatch(/## Guides[\s\S]*## Picks[\s\S]*## Weekly priorities[\s\S]*## Decisions/);
+    expect(Buffer.byteLength(tracker)).toBeLessThan(100 * 1024);
+  });
+});
+

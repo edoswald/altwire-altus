@@ -12,12 +12,14 @@ const DENY_MESSAGE = 'No one is available to approve tool calls from Slack. Cont
 
 /**
  * @param {string|object} agent  agent id, or an `agent_with_overrides` object
+ * @param {Array<object>} [resources]  session resources (e.g. the shared memory store)
  */
-export async function createSession(client, { agent, environmentId, vaultIds, title }) {
+export async function createSession(client, { agent, environmentId, vaultIds, resources = [], title }) {
   const session = await client.beta.sessions.create({
     agent,
     environment_id: environmentId,
     vault_ids: vaultIds,
+    ...(resources.length ? { resources } : {}),
     title,
   });
   return session.id;

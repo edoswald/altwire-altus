@@ -71,6 +71,8 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 | `BRIDGE_CONNECT_USERS` | for linking | Comma-separated Slack user IDs allowed to link accounts (Derek's) |
 | `BRIDGE_SCHEDULES` | no | JSON array of scheduled jobs (below) |
 | `BRIDGE_DM_SESSION_IDLE_MINUTES` | no | A DM conversation restarts after this much quiet (default 120) |
+| `BRIDGE_MEMORY_STORE_ID` | no | `memstore_…`: shared team memory mounted in every session (below) |
+| `BRIDGE_MEMORY_DM_ACCESS` | no | `read_only` (default) or `read_write`: the shared memory's access in DMs |
 
 ### 5. Scheduled jobs
 
@@ -89,6 +91,16 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 To run a job only part of the year, use the cron month field. The live holiday check-in posts Mondays at 8:50 ET from October through December (`"cron": "50 8 * 10-12 1"`, channel `C0C8DSN1BP0`), and its prompt asks for a season wrap-up after December 25.
 
 Each job's channel must be in `BRIDGE_ALLOWED_CHANNELS`. A run that doesn't finish cleanly is logged and not posted.
+
+### 6. Shared team memory (optional)
+
+A Managed Agents memory store gives the agent a memory that outlasts a thread: editorial decisions, preferences, and project state such as the holiday tracker. Create one in the Console (**Memory stores → New**) and put its ID in `BRIDGE_MEMORY_STORE_ID`.
+
+- **Mounted as files** at `/mnt/memory/<store name>/`; the agent reads and edits them with its file tools. Every change is versioned in the Console, so a bad entry can be reviewed, rolled back, or redacted.
+- **Read-write in channels and scheduled jobs, read-only in DMs** by default. DMs can include someone's own mail, and read-only means none of it can be written into memory the whole team shares. Set `BRIDGE_MEMORY_DM_ACCESS=read_write` to change that.
+- **What gets saved** is set by the instructions in `lib/memory.js`: decisions, preferences, project state, and corrections; never email content, credentials, or analytics numbers.
+- **Starter files** (`holiday-2026.md`, `decisions.md`) are created on startup if they don't exist. Existing files are never overwritten.
+- A store attaches when a session starts, so threads that began before it was configured don't see it; new ones do.
 
 ## Development
 

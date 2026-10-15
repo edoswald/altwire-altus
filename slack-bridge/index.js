@@ -8,6 +8,8 @@
  *   attached only here, never in channels
  * - DM commands: connect <canva | MCP URL>, connections, new, help
  * - Scheduled jobs (BRIDGE_SCHEDULES) run fresh sessions and post to their channel
+ * - Shared team memory (BRIDGE_MEMORY_STORE_ID) is mounted in every session:
+ *   read-write in channels and scheduled jobs, read-only in DMs by default
  *
  * The agent has no Slack tools: the bridge posts every reply itself and only
  * to DMs or BRIDGE_ALLOWED_CHANNELS.
@@ -23,6 +25,7 @@ import { parseCsvSet } from './lib/router.js';
 import { Store } from './lib/store.js';
 import { parseSchedules } from './lib/schedules.js';
 import { createBridge } from './lib/app.js';
+import { parseDmAccess, seedMemoryStore } from './lib/memory.js';
 
 const log = {
   info: (msg, meta = {}) => console.log(JSON.stringify({ level: 'info', msg, ...meta })),
@@ -45,6 +48,8 @@ const config = {
   allowedChannels: parseCsvSet(env.BRIDGE_ALLOWED_CHANNELS),
   connectUsers: parseCsvSet(env.BRIDGE_CONNECT_USERS),
   dmSessionIdleMinutes: Number(env.BRIDGE_DM_SESSION_IDLE_MINUTES || 120),
+  memoryStoreId: env.BRIDGE_MEMORY_STORE_ID || null,
+  memoryDmAccess: parseDmAccess(env.BRIDGE_MEMORY_DM_ACCESS),
   databaseUrl: env.BRIDGE_DATABASE_URL || env.DATABASE_URL,
 };
 
@@ -58,7 +63,8 @@ if (missing.length) {
 const pool = new pg.Pool({ connectionString: config.databaseUrl, ssl: { rejectUnauthorized: false }, max: 5 });
 const store = new Store(pool);
 const slack = new SlackClient({ token: config.slackToken });
-const bridge = createBridge({ config, store, anthropic: new Anthropic(), slack, log });
+const anthropic = new Anthropic();
+const bridge = createBridge({ config, store, anthropic, slack, log });
 
 await store.init();
 const botUserId = (await slack.authTest()).user_id;
@@ -75,11 +81,20 @@ for (const job of jobs) {
 }
 cron.schedule('17 * * * *', () => store.pruneSeenEvents().catch(() => {}), { name: 'prune' });
 
+// Starter files for the shared memory (holiday tracker, decisions). Existing
+// files are never overwritten.
+if (config.memoryStoreId) {
+  seedMemoryStore(anthropic, config.memoryStoreId)
+    .then((r) => log[r.failed.length ? 'warn' : 'info']('Memory store seeded', r))
+    .catch((err) => log.error('Memory store seeding failed', { error: err.message }));
+}
+
 createServer((req, res) => bridge.handleHttp(req, res)).listen(config.port, () => {
   log.info('Slack bridge listening', {
     port: config.port,
     botUserId,
     allowedChannels: [...config.allowedChannels],
     schedules: jobs.map((j) => `${j.name} (${j.cron} ${j.timezone})`),
+    memory: config.memoryStoreId ? `channels read_write, DMs ${config.memoryDmAccess}` : 'off',
   });
 });

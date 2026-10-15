@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { chunkText, toSlackMrkdwn, verifySlackSignature } from './slack.js';
 import { canPostIn, parseCommand, routeEvent, vaultsFor } from './router.js';
 import { createSession, runTurn } from './agent-session.js';
+import { memoryResourcesFor } from './memory.js';
 import {
   buildAuthorizeUrl, buildVaultAuth, createPkce, discover, exchangeCode,
   normalizeServerUrl, registerClient, resolveServer,
@@ -114,14 +115,22 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
 
     const personalVaultId = route.isDm ? await store.getUserVault(route.user) : null;
     const vaultIds = vaultsFor({ isDm: route.isDm, user: route.user, sharedVaultId: config.sharedVaultId, personalVaultId });
+    const resources = memoryResourcesFor({
+      isDm: route.isDm,
+      memoryStoreId: config.memoryStoreId,
+      dmAccess: config.memoryDmAccess,
+    });
     const sessionId = await createSession(anthropic, {
       agent: await agentFor(route.isDm ? personalVaultId : null),
       environmentId: config.environmentId,
       vaultIds,
+      resources,
       title: `Slack ${route.isDm ? 'DM' : 'thread'} ${route.sessionKey}`,
     });
     await store.saveSession(route.sessionKey, { sessionId, slackUserId: route.user, vaultIds });
-    log.info('Session created', { sessionKey: route.sessionKey, sessionId, vaults: vaultIds.length });
+    log.info('Session created', {
+      sessionKey: route.sessionKey, sessionId, vaults: vaultIds.length, memory: resources[0]?.access ?? 'none',
+    });
     return { sessionId, slackUserId: route.user, vaultIds, isNew: true };
   }
 
@@ -420,6 +429,7 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
         agent: config.agentId,
         environmentId: config.environmentId,
         vaultIds: config.sharedVaultId ? [config.sharedVaultId] : [],
+        resources: memoryResourcesFor({ isDm: false, memoryStoreId: config.memoryStoreId }),
         title: `Scheduled: ${job.name}`,
       });
       const result = await runTurn(anthropic, sessionId, scheduledPrompt(job), { logger: log });

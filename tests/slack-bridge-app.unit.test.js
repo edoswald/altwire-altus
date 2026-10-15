@@ -106,6 +106,7 @@ function makeBridge(overrides = {}) {
       connectUsers: new Set([DEREK]),
       dmSessionIdleMinutes: 120,
       botUserId: BOT,
+      ...overrides.config,
     },
     store,
     anthropic,
@@ -345,3 +346,32 @@ describe('file attachments', () => {
     expect(slack.calls.map((c) => [c.method, c.thread_ts])).toEqual([['post', undefined], ['upload', 'ts1']]);
   });
 });
+
+describe('shared memory store', () => {
+  const memoryConfig = { memoryStoreId: 'memstore_team', memoryDmAccess: 'read_only' };
+
+  it('mounts the store read-write in channels and scheduled jobs, read-only in DMs', async () => {
+    const { bridge, anthropic } = makeBridge({ config: memoryConfig });
+    await deliver(bridge, mention('what did we decide about the vinyl guide?'));
+    await deliver(bridge, dm('anything new?'));
+    await bridge.runScheduledJob({ name: 'holiday-check-in', channel: TEAM, prompt: 'Check in.', timezone: 'America/New_York' });
+
+    const [channel, direct, scheduled] = anthropic.log.sessions.map((s) => s.resources);
+    expect(channel).toEqual([expect.objectContaining({ type: 'memory_store', memory_store_id: 'memstore_team', access: 'read_write' })]);
+    expect(channel[0].instructions).toMatch(/Never save: anything from someone's email/);
+    expect(direct).toEqual([expect.objectContaining({ access: 'read_only' })]);
+    expect(direct[0].instructions).toMatch(/read-only in this conversation/);
+    expect(scheduled).toEqual([expect.objectContaining({ access: 'read_write' })]);
+  });
+
+  it('can make DMs read-write, and sends no resources when no store is configured', async () => {
+    const rw = makeBridge({ config: { memoryStoreId: 'memstore_team', memoryDmAccess: 'read_write' } });
+    await deliver(rw.bridge, dm('remember that Derek owns the plugin guide'));
+    expect(rw.anthropic.log.sessions[0].resources[0].access).toBe('read_write');
+
+    const none = makeBridge();
+    await deliver(none.bridge, mention('hi'));
+    expect(none.anthropic.log.sessions[0]).not.toHaveProperty('resources');
+  });
+});
+
