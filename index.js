@@ -701,16 +701,22 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     {
       description: 'Searches the AltWire content archive using semantic similarity. Returns relevant articles, reviews, and galleries based on the query. Use this to understand how AltWire has previously covered an artist or topic.',
       inputSchema: {
-        query: z.string().describe('The search query — artist name, topic, or concept'),
-        limit: z.number().int().min(1).max(20).default(5).describe('Number of results to return'),
+        query: z.string().optional().describe('What to search for: an artist, album, product, person, or topic. Omit to browse by the filters in date order.'),
+        limit: z.number().int().min(1).max(50).default(5).describe('Number of results to return (searching: up to 20 is useful; browsing: up to 50 per page)'),
         content_type: z
           .enum(['post', 'gallery', 'all'])
           .default('all')
           .describe('Filter by content type'),
+        published_after: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Only items published on or after this date (YYYY-MM-DD)'),
+        published_before: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Only items published on or before this date (YYYY-MM-DD)'),
+        categories: z.array(z.string()).optional().describe('Only items in any of these WordPress categories, e.g. ["Reviews"] (case-insensitive; get_archive_stats lists them)'),
+        tags: z.array(z.string()).optional().describe('Only items with any of these tags, e.g. ["Deftones"] (case-insensitive)'),
+        sort: z.enum(['relevance', 'newest', 'oldest']).optional().describe('Order of results. Searching defaults to relevance; browsing defaults to newest.'),
+        offset: z.number().int().min(0).optional().describe('Browsing only: skip this many items (use next_offset from the previous page)'),
       },
     },
-    async ({ query, limit, content_type }) => {
-      const result = await searchAltwireArchive({ query, limit, content_type });
+    async (args) => {
+      const result = await searchAltwireArchive({ ...args, limit: args.query ? Math.min(args.limit, 20) : args.limit });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };

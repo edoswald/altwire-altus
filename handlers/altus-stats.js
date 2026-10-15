@@ -15,7 +15,7 @@ export async function getArchiveStats() {
   }
 
   try {
-    const [contentResult, logResult] = await Promise.all([
+    const [contentResult, logResult, yearResult, categoryResult] = await Promise.all([
       pool.query(`
         SELECT
           content_type,
@@ -33,6 +33,20 @@ export async function getArchiveStats() {
         FROM altus_ingest_log
         ORDER BY run_at DESC
         LIMIT 1
+      `),
+      pool.query(`
+        SELECT EXTRACT(YEAR FROM published_at)::int AS year, COUNT(*)::int AS count
+        FROM altus_content
+        WHERE published_at IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+      `),
+      pool.query(`
+        SELECT c AS category, COUNT(*)::int AS count
+        FROM altus_content, unnest(categories) c
+        GROUP BY 1
+        ORDER BY 2 DESC, 1
+        LIMIT 60
       `),
     ]);
 
@@ -75,6 +89,8 @@ export async function getArchiveStats() {
       by_type: byType,
       last_ingest_run: lastIngestRun,
       index_healthy: indexHealthy,
+      by_year: Object.fromEntries((yearResult?.rows ?? []).map((r) => [r.year, r.count])),
+      categories: (categoryResult?.rows ?? []).map((r) => ({ name: r.category, count: r.count })),
     };
   } catch (err) {
     logger.error('get_archive_stats failed', { error: err.message });

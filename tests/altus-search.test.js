@@ -51,7 +51,7 @@ describe('altus-search.js', () => {
     const { searchAltwireArchive } = await import('../handlers/altus-search.js');
     await searchAltwireArchive({ query: 'live show', limit: 5, content_type: 'post' });
     const sql = mockQuery.mock.calls[0][0];
-    expect(sql).toContain("AND content_type = $3");
+    expect(sql).toContain("AND content_type = $2");
   });
 
   it('does not add type filter when content_type is "all"', async () => {
@@ -178,9 +178,9 @@ describe('altus-search.js', () => {
     const result = await searchAltwireArchive({ query: 'deftones', limit: 5, content_type: 'post' });
 
     const [keywordSql, keywordParams] = mockQuery.mock.calls[2];
-    expect(keywordSql).toContain("websearch_to_tsquery('simple', $4)");
+    expect(keywordSql).toContain("websearch_to_tsquery('simple', $2)");
     expect(keywordSql).toContain('AND content_type = $3');
-    expect(keywordParams.slice(1)).toEqual([20, 'post', 'deftones']);
+    expect(keywordParams.slice(1)).toEqual(['deftones', 'post', 20]);
     expect(Object.fromEntries(result.results.map((r) => [r.title, r.match]))).toEqual({
       'Semantic hit': 'semantic', Both: 'both', 'Deftones review': 'keyword',
     });
@@ -203,3 +203,76 @@ describe('fuseCandidates', () => {
     expect(byId[1].similarity).toBe(0.9);
   });
 });
+
+describe('archive filters and browse', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('builds date, category, and tag conditions with case-insensitive matching', async () => {
+    const { buildFilterClauses } = await import('../handlers/altus-search.js');
+    const params = [];
+    const add = (v) => { params.push(v); return `$${params.length}`; };
+    const clauses = buildFilterClauses({
+      content_type: 'post', published_after: '2014-01-01', published_before: '2014-12-31',
+      categories: [' Reviews '], tags: ['Deftones', ''],
+    }, add);
+    expect(clauses).toEqual([
+      'content_type = $1',
+      'published_at >= $2::date',
+      'published_at < ($3::date + 1)',
+      'EXISTS (SELECT 1 FROM unnest(categories) c WHERE lower(c) = ANY($4))',
+      'EXISTS (SELECT 1 FROM unnest(tags) t WHERE lower(t) = ANY($5))',
+    ]);
+    expect(params).toEqual(['post', '2014-01-01', '2014-12-31', ['reviews'], ['deftones']]);
+    expect(buildFilterClauses({ content_type: 'all' }, add)).toEqual([]);
+  });
+
+  it('browses without a query: filters, date order, total count, and next page', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    const embedQuery = vi.fn();
+    vi.doMock('../lib/voyage.js', () => ({ embedQuery, rerank: vi.fn() }));
+    const mockQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ content_type: 'post', title: 'Old review', url: 'u', published_at: '2014-03-01', categories: ['Reviews'], tags: [] }] })
+      .mockResolvedValueOnce({ rows: [{ count: '37' }] });
+    vi.doMock('../lib/altus-db.js', () => ({ default: { query: mockQuery }, hasDbConfig: () => true }));
+    const { searchAltwireArchive } = await import('../handlers/altus-search.js');
+    const result = await searchAltwireArchive({ limit: 20, categories: ['Reviews'], published_after: '2014-01-01', published_before: '2014-12-31', offset: 20, sort: 'oldest' });
+
+    expect(embedQuery).not.toHaveBeenCalled();
+    const [rowsSql, rowsParams] = mockQuery.mock.calls[0];
+    expect(rowsSql).toContain('ORDER BY published_at ASC NULLS LAST');
+    expect(rowsParams).toEqual(['2014-01-01', '2014-12-31', ['reviews'], 20, 20]);
+    expect(mockQuery.mock.calls[1][1]).toEqual(['2014-01-01', '2014-12-31', ['reviews']]);
+    expect(result).toMatchObject({ mode: 'browse', total_matching: 37, offset: 20, next_offset: 21 });
+    expect(result.filters).toEqual({ published_after: '2014-01-01', published_before: '2014-12-31', categories: ['Reviews'] });
+    delete process.env.DATABASE_URL;
+  });
+
+  it('applies filters to both halves of a search and drops the recency boost for date ranges', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    vi.doMock('../lib/voyage.js', () => ({
+      embedQuery: async () => Array(512).fill(0.1),
+      rerank: async () => [{ index: 0, relevance_score: 0.5 }, { index: 1, relevance_score: 0.4 }],
+    }));
+    const rows = [
+      { id: 1, content_type: 'post', title: 'A', url: 'a', published_at: '2013-05-01', similarity: 0.5 },
+      { id: 2, content_type: 'post', title: 'B', url: 'b', published_at: '2013-06-01', similarity: 0.4 },
+    ];
+    const mockQuery = vi.fn()
+      .mockResolvedValueOnce({ rows })
+      .mockResolvedValueOnce({ rows: [{ count: '2' }] })
+      .mockResolvedValueOnce({ rows: [] });
+    vi.doMock('../lib/altus-db.js', () => ({ default: { query: mockQuery }, hasDbConfig: () => true }));
+    const { searchAltwireArchive } = await import('../handlers/altus-search.js');
+    const result = await searchAltwireArchive({ query: 'festival', limit: 5, content_type: 'all', published_after: '2013-01-01', published_before: '2013-12-31', sort: 'newest' });
+
+    expect(mockQuery.mock.calls[0][0]).toContain('AND published_at >= $2::date');
+    expect(mockQuery.mock.calls[2][0]).toContain('AND published_at >= $3::date');
+    expect(result.results[0].weighted_score).toBe(0.4); // newest first, unboosted relevance
+    expect(result.results.map((r) => r.title)).toEqual(['B', 'A']);
+    expect(result.filters).toEqual({ published_after: '2013-01-01', published_before: '2013-12-31' });
+    delete process.env.DATABASE_URL;
+  });
+});
+
