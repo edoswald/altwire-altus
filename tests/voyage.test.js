@@ -167,4 +167,30 @@ describe('voyage.js', () => {
     vi.unstubAllGlobals();
     delete process.env.VOYAGE_API_KEY;
   });
+
+  it('rerank posts to the rerank endpoint and returns best-first scores', async () => {
+    process.env.VOYAGE_API_KEY = 'test-key';
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ index: 0, relevance_score: 0.1 }, { index: 1, relevance_score: 0.9 }] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    const { rerank } = await import('../lib/voyage.js');
+    const result = await rerank('q', ['a', 'b']);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://api.voyageai.com/v1/rerank');
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toMatchObject({ model: 'rerank-2.5', query: 'q', documents: ['a', 'b'], truncation: true });
+    expect(result).toEqual([{ index: 1, relevance_score: 0.9 }, { index: 0, relevance_score: 0.1 }]);
+  });
+
+  it('rerank returns an error object on HTTP failure', async () => {
+    process.env.VOYAGE_API_KEY = 'test-key';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
+    const { rerank } = await import('../lib/voyage.js');
+    expect(await rerank('q', ['a'])).toEqual({ error: 'Voyage rerank error — HTTP 503' });
+  });
+
+  it('embeddingModelId labels vectors with model and dimension', async () => {
+    const { embeddingModelId } = await import('../lib/voyage.js');
+    expect(embeddingModelId()).toBe('voyage-4@512');
+  });
 });

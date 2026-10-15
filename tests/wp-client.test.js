@@ -80,7 +80,7 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_APP_PASSWORD;
   });
 
-  it('fetchPosts adds after + modified_after when afterDate is provided', async () => {
+  it('fetchPosts filters on modified_after only, so edits to older posts are caught', async () => {
     process.env.ALTWIRE_WP_URL = 'https://altwire.net';
     process.env.ALTWIRE_WP_USER = 'admin';
     process.env.ALTWIRE_WP_APP_PASSWORD = 'pass';
@@ -101,8 +101,8 @@ describe('wp-client.js', () => {
     await fetchPosts({ categoryCache: new Map(), tagCache: new Map() }, '2024-01-01T00:00:00.000Z');
 
     const url = mockFetch.mock.calls[0][0];
-    expect(url).toContain('after=2024-01-01T00%3A00%3A00.000Z');
     expect(url).toContain('modified_after=2024-01-01T00%3A00%3A00.000Z');
+    expect(url).not.toMatch(/[?&]after=/);
 
     delete process.env.ALTWIRE_WP_URL;
     delete process.env.ALTWIRE_WP_USER;

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Archive search reranking** (`handlers/altus-search.js`, `lib/voyage.js`): `search_altwire_archive` reranks its top 40 vector matches with Voyage `rerank-2.5` (override with `VOYAGE_RERANK_MODEL`) before the recency weighting, and falls back to vector similarity if reranking fails. Fan-out callers that pass a precomputed embedding skip it.
+- **`scripts/reembed.js`**: re-embeds archive rows whose vectors came from another model, using the text already in the database (no WordPress fetch, no gallery re-synthesis). Resumable; `--dry-run` reports rows and tokens. `altus_content.embedding_model` now records the model and dimension of every vector.
 - **`find_gift_guide_candidates`** (`lib/review-scores.js`): best-rated reviewed products and albums, filtered by product type, overall or subcategory rating, publish date, and title. Backed by a new `altus_review_scores` table.
 - **Review scores in Postgres**: `scripts/score-reviews.js` now writes to `altus_review_scores` and only rescores reviews that are new, edited (content hash), or previously errored; `--limit` and `--export` added. The nightly ingest scores up to 40 new or changed reviews. Fixes direct (non-batch) mode, which called a missing `scoreReview`.
 - **`get_altwire_seasonal_comparison`** (`handlers/altus-seasonal.js`): a past season (default: last November–December) in Search Console and Matomo, with seasonal queries and pages, current 28-day search performance for the same pages, and refresh candidates.
