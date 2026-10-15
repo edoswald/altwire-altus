@@ -86,6 +86,8 @@ Slack verifies the events URL when you save the manifest, so deploy the bridge w
 ]
 ```
 
+To run a job only part of the year, use the cron month field. The live holiday check-in posts Mondays at 8:50 ET from October through December (`"cron": "50 8 * 10-12 1"`, channel `C0C8DSN1BP0`), and its prompt asks for a season wrap-up after December 25.
+
 Each job's channel must be in `BRIDGE_ALLOWED_CHANNELS`. A run that doesn't finish cleanly is logged and not posted.
 
 ## Development
