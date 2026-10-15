@@ -144,23 +144,23 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_APP_PASSWORD;
   });
 
-  it('getSeoState calls the cirrusly-seo endpoint with X-Agent-Token auth', async () => {
+  it('getSeoState reads the Cirrusly Agent API seo-meta endpoint with X-Agent-Token auth', async () => {
     process.env.ALTWIRE_WP_URL = 'https://altwire.net';
     process.env.ALTWIRE_WP_AGENT_READ_TOKEN = 'read-token';
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: { get: () => 'application/json' },
-      json: async () => ({ object: { type: 'post', id: 99 }, score: { mode: 'editorial', score: 88 } }),
+      json: async () => ({ object_type: 'post', id: 99, seo: { title: 'T' } }),
     });
     vi.stubGlobal('fetch', mockFetch);
 
     const { getSeoState } = await import('../lib/wp-client.js');
     const result = await getSeoState({ objectType: 'post', objectId: 99 });
 
-    expect(result.object.id).toBe(99);
+    expect(result.id).toBe(99);
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://altwire.net/wp-json/cirrusly/v1/seo/state?object_type=post&object_id=99',
+      'https://altwire.net/wp-json/cirrusly/v1/agent/seo-meta?post_id=99',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
@@ -173,14 +173,14 @@ describe('wp-client.js', () => {
     delete process.env.ALTWIRE_WP_AGENT_READ_TOKEN;
   });
 
-  it('updateSeoFields posts fields to the cirrusly-seo endpoint with write token auth', async () => {
+  it('updateSeoFields posts plugin field names to the seo-meta endpoint with write token auth', async () => {
     process.env.ALTWIRE_WP_URL = 'https://altwire.net';
     process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN = 'write-token';
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: { get: () => 'application/json' },
-      json: async () => ({ changed_fields: ['seo_title'] }),
+      json: async () => ({ success: true, updated: { title: 'Updated Title', description: 'D' } }),
     });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -188,28 +188,57 @@ describe('wp-client.js', () => {
     const result = await updateSeoFields({
       objectType: 'post',
       objectId: 55,
-      fields: { seo_title: 'Updated Title' },
-      reason: 'Improve CTR for a high-impression query',
+      fields: { seo_title: 'Updated Title', meta_description: 'D' },
     });
 
-    expect(result.changed_fields).toEqual(['seo_title']);
+    expect(result.updated.title).toBe('Updated Title');
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://altwire.net/wp-json/cirrusly/v1/seo/update-fields',
+      'https://altwire.net/wp-json/cirrusly/v1/agent/seo-meta',
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
           'X-Agent-Token': 'write-token',
           'Content-Type': 'application/json',
         }),
-        body: JSON.stringify({
-          object_type: 'post',
-          object_id: 55,
-          fields: { seo_title: 'Updated Title' },
-          reason: 'Improve CTR for a high-impression query',
-        }),
+        body: JSON.stringify({ post_id: 55, title: 'Updated Title', description: 'D' }),
       })
     );
 
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN;
+  });
+
+  it('getSeoStateBulk reads 100 posts per request and falls back to single reads on older plugins', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_AGENT_READ_TOKEN = 'read-token';
+    const json = (body, status = 200) => ({ ok: status < 400, status, headers: { get: () => 'application/json' }, json: async () => body });
+
+    const bulkFetch = vi.fn().mockResolvedValue(json({ items: [{ id: 1 }, { id: 2 }], missing: [3] }));
+    vi.stubGlobal('fetch', bulkFetch);
+    let { getSeoStateBulk } = await import('../lib/wp-client.js');
+    expect(await getSeoStateBulk([1, 2, 2, 3])).toEqual({ items: [{ id: 1 }, { id: 2 }], missing: [3] });
+    expect(bulkFetch.mock.calls[0][0]).toBe('https://altwire.net/wp-json/cirrusly/v1/agent/seo-meta?post_ids=1%2C2%2C3');
+
+    const oldPlugin = vi.fn(async (url) => {
+      if (url.includes('post_ids')) return json({ code: 'missing_target', message: 'Provide post_id or term_id.' }, 400);
+      if (url.includes('post_id=3')) return json({ code: 'not_found', message: 'Not found' }, 404);
+      return json({ id: Number(new URL(url).searchParams.get('post_id')) });
+    });
+    vi.stubGlobal('fetch', oldPlugin);
+    vi.resetModules();
+    ({ getSeoStateBulk } = await import('../lib/wp-client.js'));
+    expect(await getSeoStateBulk([1, 3])).toEqual({ items: [{ id: 1 }], missing: [3] });
+
+    delete process.env.ALTWIRE_WP_URL;
+    delete process.env.ALTWIRE_WP_AGENT_READ_TOKEN;
+  });
+
+  it('updateSeoFields rejects fields the plugin does not support', async () => {
+    process.env.ALTWIRE_WP_URL = 'https://altwire.net';
+    process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN = 'write-token';
+    vi.stubGlobal('fetch', vi.fn());
+    const { updateSeoFields } = await import('../lib/wp-client.js');
+    await expect(updateSeoFields({ objectType: 'post', objectId: 1, fields: { social_title: 'x' } })).rejects.toMatchObject({ code: 'unsupported_field' });
     delete process.env.ALTWIRE_WP_URL;
     delete process.env.ALTWIRE_WP_AGENT_WRITE_TOKEN;
   });
@@ -236,7 +265,6 @@ describe('wp-client.js', () => {
       objectType: 'post',
       objectId: 55,
       fields: { seo_title: 'Updated Title' },
-      reason: 'Test',
     })).rejects.toMatchObject({
       message: 'WP plugin fetch failed: 403 Hal integration is not enabled for this site.',
       status: 403,

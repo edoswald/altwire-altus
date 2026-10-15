@@ -129,7 +129,8 @@ import { refreshOpportunityQueue } from './handlers/altus-opportunity-refresh.js
 import { getAltusDataHealth } from './handlers/altus-data-health.js';
 import { handleAltwireOpportunityAssignRoute } from './handlers/altus-opportunity-routes.js';
 import { sendAltusAdminEmail } from './handlers/altus-admin-email.js';
-import { getSeoState, updateSeoFields } from './lib/wp-client.js';
+import { getSeoQueue, getSeoState, updateSeoQueueItem } from './lib/wp-client.js';
+import { applySeoChange, findSeoCandidates, getSeoChangeResults } from './handlers/altus-seo-work.js';
 import { initOAuthSchema } from './lib/oauth-store.js';
 import { createRateLimiter } from './lib/rate-limiter.js';
 import { getHalUiRateLimitBucket } from './lib/hal-ui-rate-limit.js';
@@ -281,6 +282,10 @@ const TOOL_CONTEXTS = {
   get_altwire_search_opportunities: [],
   get_altwire_seo_state:      [],
   update_altwire_seo_fields:  [],
+  find_altwire_seo_candidates: [],
+  get_altwire_seo_queue:      [],
+  update_altwire_seo_queue_item: [],
+  get_altwire_seo_results:    [],
   get_altwire_sitemap_health:  [],
   get_altwire_news_search_performance: [],
   get_altwire_opportunity_zone_queries: [],
@@ -985,14 +990,14 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   scopedRegister(
     'get_altwire_seo_state',
     {
-      description: 'Read current SEO state for an AltWire WordPress object through the cirrusly-seo plugin. Use this before changing titles, meta descriptions, canonicals, social fields, or indexation.',
+      description: 'Read the SEO fields for an AltWire post, page, or term through the Cirrusly SEO plugin.',
       inputSchema: {
-        object_type: z.enum(['post', 'page', 'term']).describe('SEO object type. Use post for articles and podcast episodes.'),
+        object_type: z.enum(['post', 'page', 'term']).describe('Use post for articles, pages and podcast episodes.'),
         object_id: z.number().int().positive().describe('WordPress object ID'),
       },
     },
     async ({ object_type, object_id }) => {
-      const result = await getSeoState({ objectType: object_type, objectId: object_id });
+      const result = await getSeoState({ objectType: object_type === 'term' ? 'term' : 'post', objectId: object_id });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -1000,28 +1005,88 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
   scopedRegister(
     'update_altwire_seo_fields',
     {
-      description: 'Update allowlisted content-level SEO fields for an AltWire WordPress object through the cirrusly-seo plugin. Use after reviewing current SEO state and identifying a clear editorial or search-performance improvement.',
+      description: 'Change SEO fields on the live altwire.net site and log the change with a Search Console baseline.',
       inputSchema: {
-        object_type: z.enum(['post', 'page', 'term']).describe('SEO object type. Use post for articles and podcast episodes.'),
+        object_type: z.enum(['post', 'page', 'term']).describe('Use post for articles, pages and podcast episodes.'),
         object_id: z.number().int().positive().describe('WordPress object ID'),
         fields: z.object({
-          seo_title: z.string().optional(),
+          seo_title: z.string().optional().describe('Title part only; " - AltWire" is added automatically'),
           meta_description: z.string().optional(),
-          canonical: z.string().optional(),
           focus_keyword: z.string().optional(),
-          noindex: z.union([z.boolean(), z.number().int().min(0).max(1)]).optional(),
-          nofollow: z.union([z.boolean(), z.number().int().min(0).max(1)]).optional(),
-          social_title: z.string().optional(),
-          social_description: z.string().optional(),
-          social_image_id: z.number().int().positive().optional(),
+          canonical: z.string().optional(),
+          noindex: z.boolean().optional(),
         }).refine((value) => Object.keys(value).length > 0, {
           message: 'At least one SEO field must be provided.',
-        }).describe('Allowlisted content-level SEO patch'),
-        reason: z.string().optional().describe('Short reason for the change, recorded by the WordPress plugin (e.g. "raise CTR: title matched to top query"). Required if the plugin enforces write reasons.'),
+        }),
+        reason: z.string().min(5).describe('Why, in one line (e.g. "CTR 0.3% at #11; title now leads with \'arturia microfreak review\'"). Kept in the change log.'),
       },
     },
     async ({ object_type, object_id, fields, reason }) => {
-      const result = await updateSeoFields({ objectType: object_type, objectId: object_id, fields, reason });
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await applySeoChange({ objectType: object_type === 'term' ? 'term' : 'post', objectId: object_id, fields, reason });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'find_altwire_seo_candidates',
+    {
+      description: 'AltWire articles whose titles and descriptions are costing the most Google clicks.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(25).default(10).describe('Candidates to return (default 10)'),
+        min_impressions: z.number().int().min(0).default(50).describe('Skip pages with fewer Google impressions in 28 days (default 50)'),
+        include_recently_changed: z.boolean().default(false).describe('Include pages changed in the last 45 days (default false)'),
+      },
+    },
+    async ({ limit, min_impressions, include_recently_changed }) => {
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await findSeoCandidates({ limit, minImpressions: min_impressions, includeRecent: include_recently_changed });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_altwire_seo_queue',
+    {
+      description: 'Opportunities people queued in the Cirrusly SEO plugin (SEO Workflow → Add to queue).',
+      inputSchema: {
+        status: z.enum(['accepted', 'done', 'dismissed', 'all']).default('accepted').describe('accepted = queued and waiting (default)'),
+        limit: z.number().int().min(1).max(100).default(25),
+      },
+    },
+    async ({ status, limit }) => {
+      const result = await getSeoQueue({ status: status === 'all' ? undefined : status, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'update_altwire_seo_queue_item',
+    {
+      description: 'Mark a queued SEO opportunity done or dismissed in the Cirrusly SEO plugin.',
+      inputSchema: {
+        opportunity_key: z.string().min(1).describe('opportunity_key from get_altwire_seo_queue'),
+        status: z.enum(['done', 'dismissed', 'accepted']),
+        notes: z.string().optional().describe('What was changed, or why it was dismissed'),
+      },
+    },
+    async ({ opportunity_key, status, notes }) => {
+      const result = await updateSeoQueueItem({ opportunityKey: opportunity_key, status, notes });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_altwire_seo_results',
+    {
+      description: 'What past SEO changes did: Search Console clicks, impressions, CTR and position in the 28 days after each change vs. the 28 before.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).default(20).describe('Most recent changes to list (default 20)'),
+      },
+    },
+    async ({ limit }) => {
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getSeoChangeResults({ limit });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

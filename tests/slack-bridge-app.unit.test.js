@@ -340,6 +340,14 @@ describe('scheduled jobs', () => {
     expect(anthropic.log.sent[0].content[0].text).toMatch(/^Recap the week\./);
     expect(slack.calls).toEqual([{ method: 'post', channel: TEAM, text: 'Traffic is *up* 5%.', thread_ts: undefined }]);
   });
+
+  it('continues the job\'s session when someone replies in its thread', async () => {
+    const { bridge, anthropic } = makeBridge();
+    await bridge.runScheduledJob({ name: 'seo-batch', channel: TEAM, prompt: 'Propose a batch.', timezone: 'America/New_York' });
+    await deliver(bridge, envelope({ type: 'message', channel_type: 'channel', user: 'U2', channel: TEAM, ts: '200.0', thread_ts: 'ts1', text: 'approve 1 and 3' }));
+    expect(anthropic.log.sessions).toHaveLength(1);
+    expect(anthropic.log.sent.at(-1).content[0].text).toMatch(/approve 1 and 3/);
+  });
 });
 
 describe('file attachments', () => {

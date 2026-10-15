@@ -522,6 +522,15 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       }
       const postTs = await postReply({ channel: job.channel, text: result.text });
       await deliverFiles({ sessionId, channel: job.channel, threadTs: postTs });
+      // Replies in the post's thread continue this session, so people can
+      // answer the job (e.g. approve a proposed batch) with its context.
+      if (postTs) {
+        await store.saveSession(`${job.channel}:${postTs}`, {
+          sessionId,
+          slackUserId: 'scheduled',
+          vaultIds: config.sharedVaultId ? [config.sharedVaultId] : [],
+        });
+      }
       log.info('Scheduled job posted', { job: job.name, channel: job.channel });
       await recordRun(job, postEntry({ now: new Date(), timeZone: job.timezone, text: result.text }));
       return { posted: [job.channel] };
