@@ -28,7 +28,12 @@ export async function createSession(client, { agent, environmentId, vaultIds, re
 /**
  * @returns {Promise<{ text: string, stopReason: string, toolCalls: number }>}
  */
-export async function runTurn(client, sessionId, text, { timeoutMs = 10 * 60 * 1000, logger = console } = {}) {
+export async function runTurn(client, sessionId, text, { timeoutMs = 10 * 60 * 1000, logger = console, onStep = null } = {}) {
+  // Progress callbacks are best-effort: they must never break the turn.
+  const step = (fn) => {
+    if (!onStep) return;
+    try { fn(onStep); } catch (err) { logger.warn?.('progress callback failed', { error: err.message }); }
+  };
   const stream = await client.beta.sessions.events.stream(sessionId);
   await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
@@ -61,11 +66,18 @@ export async function runTurn(client, sessionId, text, { timeoutMs = 10 * 60 * 1
         case 'agent.tool_use':
         case 'agent.mcp_tool_use':
           toolCalls += 1;
+          step((cb) => cb.start?.(event.id, event.name, event.input));
           if (event.evaluated_permission === 'ask') {
             await client.beta.sessions.events.send(sessionId, {
               events: [{ type: 'user.tool_confirmation', tool_use_id: event.id, result: 'deny', deny_message: DENY_MESSAGE }],
             });
           }
+          break;
+        case 'agent.tool_result':
+          step((cb) => cb.end?.(event.tool_use_id, Boolean(event.is_error)));
+          break;
+        case 'agent.mcp_tool_result':
+          step((cb) => cb.end?.(event.mcp_tool_use_id, Boolean(event.is_error)));
           break;
         case 'agent.custom_tool_use':
           // The agent has no custom tools; answer so the session never hangs.

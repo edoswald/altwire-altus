@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { chunkText, toSlackMrkdwn, verifySlackSignature } from './slack.js';
 import { canPostIn, parseCommand, routeEvent, vaultsFor } from './router.js';
 import { createSession, runTurn } from './agent-session.js';
+import { createProgress } from './progress.js';
 import {
   PERSONAL_SEEDS, memoryResourcesFor, personalStoreDescription, personalStoreName, seedMemoryStore,
 } from './memory.js';
@@ -198,9 +199,15 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
       thread_ts: route.replyThreadTs ?? undefined,
     });
 
+    // Edit the placeholder into a live checklist of the agent's steps.
+    const progress = createProgress(
+      (text) => slack.update({ channel: route.channel, ts: placeholder.ts, text }),
+      { minIntervalMs: config.progressIntervalMs ?? 1500, logger: log },
+    );
+
     const attempt = async () => {
       const session = await sessionFor(route);
-      const result = await runTurn(anthropic, session.sessionId, route.text, { logger: log });
+      const result = await runTurn(anthropic, session.sessionId, route.text, { logger: log, onStep: progress });
       await store.touchSession(route.sessionKey);
       return { session, result };
     };
@@ -217,10 +224,12 @@ export function createBridge({ config, store, anthropic, slack, log = console, f
         outcome = await attempt();
       }
       log.info('Turn complete', { sessionKey: route.sessionKey, stopReason: outcome.result.stopReason, toolCalls: outcome.result.toolCalls });
+      await progress.stop();
       await postReply({ channel: route.channel, threadTs: route.replyThreadTs, placeholderTs: placeholder.ts, text: outcome.result.text });
       await deliverFiles({ sessionId: outcome.session.sessionId, channel: route.channel, threadTs: route.replyThreadTs });
     } catch (err) {
       log.error('Conversation failed', { sessionKey: route.sessionKey, error: err.message });
+      await progress.stop();
       await slack.update({ channel: route.channel, ts: placeholder.ts, text: '_Something went wrong reaching the agent. Try again in a minute._' })
         .catch(() => {});
     }

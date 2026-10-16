@@ -48,7 +48,7 @@ function fakeSlack() {
   };
 }
 
-function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = false, credentials = {}, sessionFiles = {} } = {}) {
+function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = false, credentials = {}, sessionFiles = {}, steps = [] } = {}) {
   const log = { sessions: [], sent: [], vaults: [], creds: [], archived: [], memoryStores: [], memories: [] };
   let replyIndex = 0;
   let failed = false;
@@ -71,6 +71,7 @@ function fakeAnthropic({ replies = ['Traffic is **up** 5%.'], failFirstSend = fa
             const text = replies[Math.min(replyIndex, replies.length - 1)];
             replyIndex += 1;
             return asyncIter([
+              ...steps,
               { type: 'agent.message', content: [{ type: 'text', text }] },
               { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
             ]);
@@ -347,6 +348,34 @@ describe('scheduled jobs', () => {
     await deliver(bridge, envelope({ type: 'message', channel_type: 'channel', user: 'U2', channel: TEAM, ts: '200.0', thread_ts: 'ts1', text: 'approve 1 and 3' }));
     expect(anthropic.log.sessions).toHaveLength(1);
     expect(anthropic.log.sent.at(-1).content[0].text).toMatch(/approve 1 and 3/);
+  });
+});
+
+describe('progress', () => {
+  it('turns the placeholder into a checklist of steps, then replaces it with the answer', async () => {
+    const steps = [
+      { type: 'agent.mcp_tool_use', id: 't1', name: 'search_altwire_archive', input: { query: 'deftones' } },
+      { type: 'agent.mcp_tool_result', mcp_tool_use_id: 't1' },
+      { type: 'agent.mcp_tool_use', id: 't2', name: 'get_altwire_search_performance', input: {} },
+    ];
+    // Hold the stream between steps so the throttled edit can fire.
+    const anthropic = fakeAnthropic({ steps });
+    const stream = anthropic.beta.sessions.events.stream;
+    anthropic.beta.sessions.events.stream = async (...args) => {
+      const items = [];
+      for await (const e of await stream(...args)) items.push(e);
+      return { async *[Symbol.asyncIterator]() {
+        for (const e of items) {
+          if (e.type === 'agent.message') await new Promise((r) => setTimeout(r, 30));
+          yield e;
+        }
+      } };
+    };
+    const { bridge, slack } = makeBridge({ anthropic, config: { progressIntervalMs: 0 } });
+    await deliver(bridge, mention('how is the deftones review doing?'));
+    const updates = slack.calls.filter((c) => c.method === 'update').map((c) => c.text);
+    expect(updates[0]).toBe('_Working on it…_\n✓ Searched the archive for “deftones”\n⏳ Checking Google search performance');
+    expect(updates.at(-1)).toBe('Traffic is *up* 5%.');
   });
 });
 
