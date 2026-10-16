@@ -10,6 +10,7 @@ import {
   estimatedExtraClicks,
   expectedCtr,
   findSeoCandidates,
+  summarizeSeoQueue,
 } from '../handlers/altus-seo-work.js';
 
 describe('SEO scoring', () => {
@@ -116,5 +117,23 @@ describe('findSeoCandidates', () => {
     query.mockResolvedValue({ rows: [] });
     const result = await findSeoCandidates({ deps: { gsc: async () => ({ error: 'gsc_api_error', message: 'quota' }) } });
     expect(result).toEqual({ error: 'Search Console: quota' });
+  });
+});
+
+describe('SEO queue summary for the digest', () => {
+  it('counts new items, newest first, in plain words', () => {
+    const summary = summarizeSeoQueue([
+      { page_url: 'https://altwire.net/a/', query: 'a', reason_code: 'declining_target', source: 'hal', first_seen: '2026-10-10 09:00:00' },
+      { page_url: 'https://altwire.net/b/', query: 'b', reason_code: 'ctr_gap', source: null, first_seen: '2026-10-15 14:00:00', notes: 'check title' },
+      { page_url: 'https://altwire.net/c/', query: 'c', reason_code: 'something_else', source: '', first_seen: '2026-10-15 07:00:00' },
+    ], '2026-10-15', { limit: 2 });
+    expect(summary.waiting).toBe(3);
+    expect(summary.new_since_yesterday).toBe(2);
+    expect(summary.items).toEqual([
+      { query: 'b', url: 'https://altwire.net/b/', reason: 'seen but rarely clicked', queued_by: 'person', queued_on: '2026-10-15 14:00:00', notes: 'check title' },
+      { query: 'c', url: 'https://altwire.net/c/', reason: 'something_else', queued_by: 'person', queued_on: '2026-10-15 07:00:00', notes: null },
+    ]);
+    expect(summarizeSeoQueue([{ reason_code: 'declining_target', source: 'hal' }], '2026-10-15').items[0]).toMatchObject({ reason: 'slipping in Google', queued_by: 'agent' });
+    expect(summarizeSeoQueue(undefined, '2026-10-15')).toEqual({ waiting: 0, new_since_yesterday: 0, items: [] });
   });
 });

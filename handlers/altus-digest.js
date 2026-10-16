@@ -21,6 +21,8 @@ import { isCoreProfile } from '../lib/altus-profile.js';
 import { listStoryQueue } from './altus-story-scan.js';
 import { getAnalyticsHistory, summarizeHistory } from './altus-history.js';
 import { isoDateOffset } from '../lib/gsc-date-window.js';
+import { getSeoQueue } from '../lib/wp-client.js';
+import { summarizeSeoQueue } from './altus-seo-work.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -111,10 +113,11 @@ export async function getAltwireMorningDigest() {
 async function buildCoreSections(warnings) {
   const start = isoDateOffset(7);
   const end = isoDateOffset(1);
-  const [queue, search, monthly] = await Promise.allSettled([
+  const [queue, search, monthly, seoQueue] = await Promise.allSettled([
     listStoryQueue({ status: 'open', limit: 5 }),
     getSiteSearchKeywords('range', `${start},${end}`),
     getAnalyticsHistory(),
+    getSeoQueue({ status: 'accepted', limit: 50 }),
   ]);
 
   let story_opportunities = null;
@@ -146,7 +149,14 @@ async function buildCoreSections(warnings) {
   } else {
     history = summarizeHistory(built);
   }
-  return { story_opportunities, site_search_keywords, history };
+  // SEO work queued in WordPress (by people or the agent) and not done yet.
+  let seo_queue = null;
+  if (seoQueue.status === 'fulfilled') {
+    seo_queue = summarizeSeoQueue(seoQueue.value?.items, isoDateOffset(1));
+  } else {
+    warnings.push({ section: 'seo_queue', message: `SEO queue unavailable: ${seoQueue.reason?.message ?? seoQueue.reason}` });
+  }
+  return { story_opportunities, site_search_keywords, history, seo_queue };
 }
 
 /**
@@ -414,6 +424,7 @@ async function buildMorningDigest() {
     analytics,
     ...(core ? {} : { news_alerts }),
     story_opportunities: core ? coreBlocks.story_opportunities : story_opportunities,
+    ...(core ? { seo_queue: coreBlocks.seo_queue } : {}),
     traffic,
     ...(core ? { history: coreBlocks.history } : { historical }),
     providers,

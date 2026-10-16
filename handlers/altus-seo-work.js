@@ -27,6 +27,40 @@ const TRANSLATED_PATH_RE = /^https?:\/\/[^/]+\/[a-z]{2}(?:-[a-z]{2})?\//i;
 // " - AltWire" is appended to every title.
 const TITLE_SUFFIX_LENGTH = 10;
 
+// Cirrusly SEO reason codes in plain words.
+export const SEO_REASON_LABELS = {
+  ctr_gap: 'seen but rarely clicked',
+  declining_target: 'slipping in Google',
+  position_gap: 'stuck past page one',
+  near_striking_distance: 'close to the top',
+  new_query: 'new search term',
+  rising_target: 'climbing in Google',
+};
+
+/**
+ * The SEO queue for the digest: how many items are waiting, how many were
+ * queued since yesterday, and the newest ones in plain words. Pure;
+ * exported for tests.
+ *
+ * @param {object[]} items  queue items (status accepted) from the plugin
+ * @param {string} sinceDate  YYYY-MM-DD; items first queued on or after it count as new
+ */
+export function summarizeSeoQueue(items, sinceDate, { limit = 10 } = {}) {
+  const list = [...(items ?? [])].sort((a, b) => String(b.first_seen ?? '').localeCompare(String(a.first_seen ?? '')));
+  return {
+    waiting: list.length,
+    new_since_yesterday: list.filter((i) => String(i.first_seen ?? '') >= sinceDate).length,
+    items: list.slice(0, limit).map((i) => ({
+      query: i.query || null,
+      url: i.page_url || null,
+      reason: SEO_REASON_LABELS[i.reason_code] ?? (i.reason_code || null),
+      queued_by: ['hal', 'agent'].includes(i.source) ? 'agent' : 'person',
+      queued_on: i.first_seen ?? null,
+      notes: i.notes || null,
+    })),
+  };
+}
+
 export const urlKey = (url) => String(url ?? '').replace(/\/+$/, '').toLowerCase();
 
 export async function ensureSeoChangesTable(client = pool) {
