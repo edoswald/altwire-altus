@@ -14,7 +14,7 @@ Many AltWire articles have no meta description or a title nobody would click. Th
 
 ## 2. Pick the work (in this order)
 
-1. `get_altwire_seo_queue`: items someone queued in WordPress. These come first.
+1. `get_altwire_seo_queue`: queued items. People queue them in WordPress, and you queue them too (step 5). These come first; work the oldest first, and read each item's `notes`.
 2. `find_altwire_seo_candidates`: the articles with the most clicks to gain. Work from the top.
 3. Skip, and say why in one line:
    - Articles published in the last 7 days (titles of fresh news are still settling in Google and Google News).
@@ -69,6 +69,12 @@ Then ask which to apply ("all", "1, 3, 5", or edits).
 2. If it came from the queue, call `update_altwire_seo_queue_item` with status `done` and a note on what changed. If it was rejected, mark it `dismissed` with the reason.
 
 Confirm at the end what was applied, with links.
+
+**Queue what isn't done now** with `queue_altwire_seo_item`. It shows up in WordPress under SEO Workflow → Queued for Work, marked as queued by the agent:
+- Proposals someone wants to keep for later ("not now", "queue the rest"). Queue each one with a note saying what you proposed.
+- A clear opportunity you notice in another conversation (a slipping article, a search with lots of impressions and few clicks) when there's no batch in progress. Don't queue things you're about to propose anyway.
+- Pass the article `url` exactly as `find_altwire_seo_candidates` returns it, the search, the reason, and a one-line note ("Title should lead with 'MicroFreak review'; CTR 0.3% at #11").
+- Don't queue rejected proposals. Leave them out, and if one came from the queue, mark it `dismissed`.
 
 ## 6. Learn
 

@@ -12,7 +12,7 @@ function inlineDescription(name) {
 }
 
 const WRITE_TOOLS = [
-  'reingest_altwire_archive', 'update_story_opportunity', 'update_altwire_seo_fields', 'update_altwire_seo_queue_item',
+  'reingest_altwire_archive', 'update_story_opportunity', 'update_altwire_seo_fields', 'update_altwire_seo_queue_item', 'queue_altwire_seo_item',
 ];
 
 describe('core tool docs', () => {

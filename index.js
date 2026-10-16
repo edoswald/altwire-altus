@@ -285,6 +285,7 @@ const TOOL_CONTEXTS = {
   find_altwire_seo_candidates: [],
   get_altwire_seo_queue:      [],
   update_altwire_seo_queue_item: [],
+  queue_altwire_seo_item:     [],
   get_altwire_seo_results:    [],
   get_altwire_sitemap_health:  [],
   get_altwire_news_search_performance: [],
@@ -1056,6 +1057,32 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     },
     async ({ status, limit }) => {
       const result = await getSeoQueue({ status: status === 'all' ? undefined : status, limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'queue_altwire_seo_item',
+    {
+      description: 'Add a search and article to the SEO queue in WordPress (Cirrusly SEO → SEO Workflow → Queued for Work).',
+      inputSchema: {
+        page_url: z.string().url().describe('The article URL, exactly as Search Console reports it (the url from find_altwire_seo_candidates)'),
+        query: z.string().min(1).describe('The Google search this is about'),
+        reason: z.enum(['rarely_clicked', 'slipping', 'past_page_one', 'close_to_top', 'new_search_term', 'climbing'])
+          .describe('rarely_clicked = seen in Google but few clicks; slipping = position falling; past_page_one; close_to_top; new_search_term; climbing'),
+        notes: z.string().min(5).describe('What to do and why, in one line (shown in WordPress)'),
+      },
+    },
+    async ({ page_url, query, reason, notes }) => {
+      const reasonCode = {
+        rarely_clicked: 'ctr_gap',
+        slipping: 'declining_target',
+        past_page_one: 'position_gap',
+        close_to_top: 'near_striking_distance',
+        new_search_term: 'new_query',
+        climbing: 'rising_target',
+      }[reason];
+      const result = await updateSeoQueueItem({ status: 'accepted', reasonCode, pageUrl: page_url, query, notes });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
