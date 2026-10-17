@@ -545,3 +545,31 @@ export async function getDailySearchTotals(startDate, endDate) {
     return { error: 'gsc_api_error', message: err.message };
   }
 }
+
+/**
+ * Clicks and impressions per day per page, for web, news, or discover
+ * search. Pages through the API (25,000 rows per request), so a month of
+ * AltWire pages is one or two requests.
+ */
+export async function getDailyPageSearch(startDate, endDate, { searchType = 'web', maxRows = 500000 } = {}) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const searchconsole = google.searchconsole({ version: 'v1', auth: cfg.auth });
+  const rows = [];
+  const pageSize = 25000;
+  try {
+    for (let startRow = 0; startRow < maxRows; startRow += pageSize) {
+      const response = await searchconsole.searchanalytics.query({
+        siteUrl: cfg.siteUrl,
+        requestBody: { startDate, endDate, type: searchType, dimensions: ['date', 'page'], rowLimit: pageSize, startRow, dataState: 'final' },
+      });
+      const batch = response.data.rows ?? [];
+      for (const r of batch) rows.push({ date: r.keys[0], page: r.keys[1], clicks: r.clicks ?? 0, impressions: r.impressions ?? 0 });
+      if (batch.length < pageSize) break;
+    }
+    return { rows };
+  } catch (err) {
+    logger.error('GSC daily page query failed', { searchType, error: err.message });
+    return { error: 'gsc_api_error', message: err.message };
+  }
+}

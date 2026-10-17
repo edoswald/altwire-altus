@@ -23,6 +23,7 @@ import { getAnalyticsHistory, summarizeHistory } from './altus-history.js';
 import { isoDateOffset } from '../lib/gsc-date-window.js';
 import { getSeoQueue } from '../lib/wp-client.js';
 import { summarizeSeoQueue } from './altus-seo-work.js';
+import { getTrafficPatterns, summarizePatterns } from './altus-traffic-patterns.js';
 
 const ANALYTICS_KEYS = {
   traffic_summary:    'hal:altwire:analytics:traffic_summary',
@@ -113,11 +114,12 @@ export async function getAltwireMorningDigest() {
 async function buildCoreSections(warnings) {
   const start = isoDateOffset(7);
   const end = isoDateOffset(1);
-  const [queue, search, monthly, seoQueue] = await Promise.allSettled([
+  const [queue, search, monthly, seoQueue, patterns] = await Promise.allSettled([
     listStoryQueue({ status: 'open', limit: 5 }),
     getSiteSearchKeywords('range', `${start},${end}`),
     getAnalyticsHistory(),
     getSeoQueue({ status: 'accepted', limit: 50 }),
+    getTrafficPatterns(),
   ]);
 
   let story_opportunities = null;
@@ -156,7 +158,15 @@ async function buildCoreSections(warnings) {
   } else {
     warnings.push({ section: 'seo_queue', message: `SEO queue unavailable: ${seoQueue.reason?.message ?? seoQueue.reason}` });
   }
-  return { story_opportunities, site_search_keywords, history, seo_queue };
+  // Is yesterday a spike or a normal day, and how do spikes usually fade?
+  let traffic_context = null;
+  const report = patterns.status === 'fulfilled' ? patterns.value : { error: patterns.reason?.message };
+  if (report?.error) {
+    warnings.push({ section: 'traffic_context', message: `Traffic patterns unavailable: ${report.error}` });
+  } else {
+    traffic_context = summarizePatterns(report);
+  }
+  return { story_opportunities, site_search_keywords, history, seo_queue, traffic_context };
 }
 
 /**
@@ -424,7 +434,7 @@ async function buildMorningDigest() {
     analytics,
     ...(core ? {} : { news_alerts }),
     story_opportunities: core ? coreBlocks.story_opportunities : story_opportunities,
-    ...(core ? { seo_queue: coreBlocks.seo_queue } : {}),
+    ...(core ? { seo_queue: coreBlocks.seo_queue, traffic_context: coreBlocks.traffic_context } : {}),
     traffic,
     ...(core ? { history: coreBlocks.history } : { historical }),
     providers,

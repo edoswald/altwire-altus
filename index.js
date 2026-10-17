@@ -56,6 +56,7 @@ import { getStoryOpportunities } from './handlers/altus-topic-discovery.js';
 import { listStoryQueue, runStoryScan, updateStoryOpportunity } from './handlers/altus-story-scan.js';
 import { getArticlePerformance as getArticleCheckpoints, runArticleSnapshots } from './handlers/altus-article-snapshots.js';
 import { refreshAnalyticsHistory } from './handlers/altus-history.js';
+import { getTrafficPatterns, refreshTrafficPatterns } from './handlers/altus-traffic-patterns.js';
 import { getNewsOpportunities, runNewsMonitorCron } from './handlers/altus-news-monitor.js';
 import { getArticlePerformance, getNewsPerformancePatterns, registerArticleForTracking, runPerformanceSnapshotCron } from './handlers/altus-performance-tracker.js';
 import { searchAltwirePublic, getSearchFeedback } from './handlers/altwire-search.js';
@@ -287,6 +288,7 @@ const TOOL_CONTEXTS = {
   update_altwire_seo_queue_item: [],
   queue_altwire_seo_item:     [],
   get_altwire_seo_results:    [],
+  get_altwire_traffic_patterns: [],
   get_altwire_sitemap_health:  [],
   get_altwire_news_search_performance: [],
   get_altwire_opportunity_zone_queries: [],
@@ -582,6 +584,13 @@ const TOOL_CONTEXT_NAMES = ['altwire', 'weather', 'nimbus'];
       if (result?.error) logger.error('analytics_history cron failed', { error: result.error });
     } catch (err) {
       logger.error('analytics_history cron failed', { error: err.message });
+    }
+    // Daily traffic tables and the spike / article-age report, also before the digest.
+    try {
+      const patterns = await refreshTrafficPatterns();
+      if (patterns?.error) logger.error('traffic_patterns rebuild failed', { error: patterns.error });
+    } catch (err) {
+      logger.error('traffic_patterns rebuild failed', { error: err.message });
     }
   }, { timezone: 'America/New_York' });
 
@@ -1114,6 +1123,21 @@ async function createMcpServer({ agentContext = null, allowedTools = null, clien
     async ({ limit }) => {
       if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
       const result = await getSeoChangeResults({ limit });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+  );
+
+  scopedRegister(
+    'get_altwire_traffic_patterns',
+    {
+      description: 'AltWire traffic patterns over the last 12 months: a normal day, spikes and what drove them, how fast spikes and articles fade, and how much traffic the back catalog earns.',
+      inputSchema: {
+        refresh: z.boolean().default(false).describe('Rebuild now instead of using the nightly build (slow; only if the stored one looks stale)'),
+      },
+    },
+    async ({ refresh }) => {
+      if (!hasDbConfig()) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Database not configured' }) }] };
+      const result = await getTrafficPatterns({ refresh });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

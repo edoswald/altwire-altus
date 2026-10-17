@@ -9,17 +9,28 @@
  * Google News totals for that window. If any source errors, nothing is
  * written and the next daily run retries.
  *
- * Reads compare an article with AltWire's typical article at the same
- * checkpoint (median and percentile across all snapshots).
+ * The first run also backfills every post from the last BACKFILL_DAYS days,
+ * so comparisons start with a year of articles.
+ *
+ * Reads compare an article with AltWire articles of the same kind (reviews
+ * with reviews) at the same checkpoint, published in the last 12 months:
+ * AltWire was barely optimized before that, so older articles aren't a fair
+ * benchmark.
  */
 
 import pool from '../lib/altus-db.js';
 import { logger } from '../logger.js';
 import { getPageSearchDetail } from './altwire-gsc-client.js';
 import { getPageUrlStats } from './altwire-matomo-client.js';
+import { ensureKvTable } from './altus-history.js';
+import { KIND_LABELS, articleKind } from './altus-traffic-patterns.js';
 
 export const CHECKPOINTS = [3, 7, 30];
 export const TRACK_DAYS = 40;
+export const BACKFILL_DAYS = 365;
+export const BENCHMARK_DAYS = 365;
+const MIN_KIND_ARTICLES = 10;
+const BACKFILL_KEY = 'snapshots:backfill';
 export const GSC_LAG_DAYS = 3;
 const TIME_ZONE = 'America/New_York';
 
@@ -81,7 +92,11 @@ export function dueCheckpoints(publishedAt, taken, today, { lag = GSC_LAG_DAYS }
 export async function runArticleSnapshots({ deps = {}, now = new Date() } = {}) {
   const { matomo = getPageUrlStats, gsc = getPageSearchDetail } = deps;
   await ensureSnapshotTable();
+  await ensureKvTable();
   const today = localDate(now);
+  const { rows: flag } = await pool.query('SELECT 1 FROM altus_kv WHERE key = $1', [BACKFILL_KEY]);
+  const backfill = !flag.length;
+  const trackDays = backfill ? BACKFILL_DAYS : TRACK_DAYS;
 
   const { rows: posts } = await pool.query(
     `SELECT DISTINCT ON (url) wp_id, title, url, published_at
@@ -89,7 +104,7 @@ export async function runArticleSnapshots({ deps = {}, now = new Date() } = {}) 
       WHERE content_type = 'post' AND url IS NOT NULL
         AND published_at >= NOW() - ($1 || ' days')::interval
       ORDER BY url, published_at DESC`,
-    [String(TRACK_DAYS)],
+    [String(trackDays)],
   );
   const { rows: existing } = await pool.query(
     'SELECT url_key, checkpoint_days FROM altus_article_snapshots WHERE url_key = ANY($1)',
@@ -127,7 +142,14 @@ export async function runArticleSnapshots({ deps = {}, now = new Date() } = {}) 
       taken += 1;
     }
   }
-  const summary = { posts: posts.length, taken, skipped };
+  // A backfill with errors runs again tomorrow; checkpoints already taken are skipped.
+  if (backfill && !skipped) {
+    await pool.query(
+      `INSERT INTO altus_kv (key, value, computed_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO NOTHING`,
+      [BACKFILL_KEY, JSON.stringify({ days: BACKFILL_DAYS, posts: posts.length, taken })],
+    );
+  }
+  const summary = { posts: posts.length, taken, skipped, ...(backfill ? { backfill: true } : {}) };
   logger.info('Article snapshots run complete', summary);
   return summary;
 }
@@ -145,8 +167,46 @@ export function median(values) {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-function toCheckpoint(r, benchmarks) {
-  const b = benchmarks.get(r.checkpoint_days);
+function compare(pool_, r) {
+  return {
+    articles_compared: pool_.pageviews.length,
+    median_pageviews: median(pool_.pageviews),
+    pageviews_percentile: percentileOf(pool_.pageviews, r.pageviews),
+    median_search_clicks: median(pool_.clicks),
+    search_clicks_percentile: percentileOf(pool_.clicks, r.search_clicks),
+  };
+}
+
+/**
+ * Compare with articles of the same kind when there are enough of them,
+ * otherwise with every article; both at the same checkpoint. Exported for tests.
+ */
+export function vsTypical(r, kind, benchmarks) {
+  const all = benchmarks.get(`${r.checkpoint_days}:all`);
+  if (!all) return null;
+  const same = benchmarks.get(`${r.checkpoint_days}:${kind}`);
+  if (same && same.pageviews.length >= MIN_KIND_ARTICLES) {
+    return { compared_with: KIND_LABELS[kind], ...compare(same, r), all_articles_pageviews_percentile: percentileOf(all.pageviews, r.pageviews) };
+  }
+  return { compared_with: 'all articles', ...compare(all, r) };
+}
+
+/** Benchmark pools keyed `${checkpoint}:all` and `${checkpoint}:${kind}`. Exported for tests. */
+export function buildBenchmarks(rows) {
+  const benchmarks = new Map();
+  const add = (key, r) => {
+    if (!benchmarks.has(key)) benchmarks.set(key, { pageviews: [], clicks: [] });
+    benchmarks.get(key).pageviews.push(r.pageviews);
+    benchmarks.get(key).clicks.push(r.search_clicks);
+  };
+  for (const r of rows) {
+    add(`${r.checkpoint_days}:all`, r);
+    add(`${r.checkpoint_days}:${articleKind(r)}`, r);
+  }
+  return benchmarks;
+}
+
+function toCheckpoint(r, kind, benchmarks) {
   return {
     days: r.checkpoint_days,
     window: { start: r.window_start, end: r.window_end },
@@ -155,13 +215,7 @@ function toCheckpoint(r, benchmarks) {
     search: { clicks: r.search_clicks, impressions: r.search_impressions, position: r.search_position == null ? null : Number(r.search_position) },
     google_news: { clicks: r.news_clicks, impressions: r.news_impressions },
     top_queries: r.top_queries,
-    vs_typical: b ? {
-      articles_compared: b.pageviews.length,
-      median_pageviews: median(b.pageviews),
-      pageviews_percentile: percentileOf(b.pageviews, r.pageviews),
-      median_search_clicks: median(b.clicks),
-      search_clicks_percentile: percentileOf(b.clicks, r.search_clicks),
-    } : null,
+    vs_typical: vsTypical(r, kind, benchmarks),
   };
 }
 
@@ -172,13 +226,17 @@ function toCheckpoint(r, benchmarks) {
  */
 export async function getArticlePerformance({ url, days = 30 } = {}) {
   await ensureSnapshotTable();
-  const { rows: all } = await pool.query('SELECT checkpoint_days, pageviews, search_clicks FROM altus_article_snapshots');
-  const benchmarks = new Map();
-  for (const r of all) {
-    if (!benchmarks.has(r.checkpoint_days)) benchmarks.set(r.checkpoint_days, { pageviews: [], clicks: [] });
-    benchmarks.get(r.checkpoint_days).pageviews.push(r.pageviews);
-    benchmarks.get(r.checkpoint_days).clicks.push(r.search_clicks);
-  }
+  const { rows: all } = await pool.query(
+    `SELECT s.checkpoint_days, s.pageviews, s.search_clicks, COALESCE(c.title, s.title) AS title, c.categories, c.tags
+       FROM altus_article_snapshots s
+       LEFT JOIN LATERAL (
+         SELECT title, categories, tags FROM altus_content
+          WHERE content_type = 'post' AND lower(rtrim(url, '/')) = s.url_key LIMIT 1
+       ) c ON true
+      WHERE s.published_at >= NOW() - ($1 || ' days')::interval`,
+    [String(BENCHMARK_DAYS)],
+  );
+  const benchmarks = buildBenchmarks(all);
 
   const params = [];
   let where;
@@ -190,7 +248,7 @@ export async function getArticlePerformance({ url, days = 30 } = {}) {
     where = `c.published_at >= NOW() - ($1 || ' days')::interval`;
   }
   const { rows: posts } = await pool.query(
-    `SELECT DISTINCT ON (c.url) c.title, c.url, c.published_at
+    `SELECT DISTINCT ON (c.url) c.title, c.url, c.published_at, c.categories, c.tags
        FROM altus_content c
       WHERE c.content_type = 'post' AND ${where}
       ORDER BY c.url, c.published_at DESC`,
@@ -211,19 +269,20 @@ export async function getArticlePerformance({ url, days = 30 } = {}) {
   const articles = posts
     .sort((a, b) => new Date(b.published_at) - new Date(a.published_at))
     .map((p) => {
-      const checkpoints = (byUrl.get(normalizeUrl(p.url)) ?? []).map((r) => toCheckpoint(r, benchmarks));
+      const kind = articleKind(p);
+      const checkpoints = (byUrl.get(normalizeUrl(p.url)) ?? []).map((r) => toCheckpoint(r, kind, benchmarks));
       const takenDays = new Set(checkpoints.map((c) => c.days));
       const next = CHECKPOINTS.map((n) => ({ days: n, start: localDate(p.published_at) }))
         .filter((c) => !takenDays.has(c.days))
         .map((c) => ({ days: c.days, available_on: addDays(addDays(c.start, c.days - 1), GSC_LAG_DAYS) }))
         .filter((c) => c.available_on > today)[0] ?? null;
-      return { title: p.title, url: p.url, published_at: p.published_at, checkpoints, next_checkpoint: next };
+      return { title: p.title, url: p.url, published_at: p.published_at, kind: KIND_LABELS[kind], checkpoints, next_checkpoint: next };
     });
 
   return {
     articles,
     count: articles.length,
-    note: 'Checkpoints cover the first 3, 7, and 30 days from publication. pageviews and visits are Matomo; search and google_news are Search Console. vs_typical compares with every tracked AltWire article at the same checkpoint (tracking started October 2026, so early comparisons use few articles). For other periods or older articles, use get_altwire_page_performance.',
+    note: 'Checkpoints cover the first 3, 7, and 30 days from publication. pageviews and visits are Matomo; search and google_news are Search Console. vs_typical compares with AltWire articles of the same kind (compared_with) at the same checkpoint, published in the last 12 months, or with all articles when fewer than 10 of that kind; percentile 80 means it beat 80% of them. Older articles are left out of the comparison because the site was barely optimized before then. kind is a rough guess from categories and title. Articles from the last 12 months have checkpoints; for older articles or other periods, use get_altwire_page_performance.',
     ...(url && !articles.length ? { error: `No AltWire post found at ${url}` } : {}),
   };
 }

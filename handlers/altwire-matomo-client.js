@@ -275,3 +275,61 @@ export async function getMonthlyTotals(months = 19) {
   }
   return out;
 }
+
+const REFERRER_COLUMNS = [
+  ['search', /search/i],
+  ['social', /social/i],
+  ['direct', /direct/i],
+  ['websites', /website/i],
+];
+
+/**
+ * Site totals per day from startDate to endDate:
+ * { 'YYYY-MM-DD': { visits, pageviews, referrers: { search, social, direct, websites, other } } }.
+ */
+export async function getDailySiteTotals(startDate, endDate) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const date = `${startDate},${endDate}`;
+  const [visits, actions, referrers] = await Promise.all([
+    callApi('VisitsSummary.get', 'day', date),
+    callApi('Actions.get', 'day', date),
+    callApi('Referrers.getReferrerType', 'day', date),
+  ]);
+  for (const r of [visits, actions, referrers]) if (r?.error) return r;
+  const out = {};
+  for (const [day, v] of Object.entries(visits ?? {})) {
+    const a = actions?.[day];
+    const refs = { search: 0, social: 0, direct: 0, websites: 0, other: 0 };
+    for (const row of Array.isArray(referrers?.[day]) ? referrers[day] : []) {
+      const col = REFERRER_COLUMNS.find(([, re]) => re.test(row.label ?? ''))?.[0] ?? 'other';
+      refs[col] += row.nb_visits ?? 0;
+    }
+    out[day] = {
+      visits: (Array.isArray(v) ? 0 : v?.nb_visits) ?? 0,
+      pageviews: (a && !Array.isArray(a) ? a.nb_pageviews : 0) ?? 0,
+      referrers: refs,
+    };
+  }
+  return out;
+}
+
+/**
+ * Pageviews per day for the most-viewed pages (Matomo's daily page report,
+ * top `limit` per day): [{ date, url, pageviews, visits }].
+ */
+export async function getDailyPageViews(startDate, endDate, { limit = 500 } = {}) {
+  const cfg = getConfig();
+  if (!cfg.configured) return { error: cfg.error };
+  const result = await callApi('Actions.getPageUrls', 'day', `${startDate},${endDate}`, { flat: '1', filter_limit: String(limit) });
+  if (result?.error) return result;
+  const rows = [];
+  for (const [day, pages] of Object.entries(result ?? {})) {
+    for (const p of Array.isArray(pages) ? pages : []) {
+      const url = p.url ?? (p.label ? `https://altwire.net/${String(p.label).replace(/^\/+/, '')}` : null);
+      if (!url) continue;
+      rows.push({ date: day, url, pageviews: p.nb_hits ?? 0, visits: p.nb_visits ?? 0 });
+    }
+  }
+  return { rows };
+}

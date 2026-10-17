@@ -9,7 +9,7 @@ The digest has two readers. The **email** is for the editor reading over coffee:
 
 ## Gather (in this order)
 
-1. `get_altwire_morning_digest`: the numbers snapshot. Yesterday vs. the same weekday last week (Matomo), page movers, Search Console totals and query/page movers, new opportunity-zone queries, Google News, articles from the last 14 days, story opportunities, and `seo_queue` (SEO items waiting in WordPress under SEO Workflow → Queued for Work). **This is the source of truth for every figure in the digest.**
+1. `get_altwire_morning_digest`: the numbers snapshot. Yesterday vs. the same weekday last week (Matomo), page movers, Search Console totals and query/page movers, new opportunity-zone queries, Google News, articles from the last 14 days, story opportunities, `traffic_context` (whether yesterday was a normal day or a spike for that weekday, what's driving a current spike, and how long spikes usually take to fade), and `seo_queue` (SEO items waiting in WordPress under SEO Workflow → Queued for Work). **This is the source of truth for every figure in the digest.**
 2. The team memory, if mounted: `decisions.md` (standing preferences), `holiday-2026.md` (from October to December: guides in progress, last week's priority), and `digest-log.md` (what recent digests recommended; the bridge keeps it). Don't repeat an action item from the last few days unless it's still open and still matters; if one looks done, you can say so in a line.
 3. Only when something needs explaining: `search_altwire_archive` or `get_content_by_url` to see what a page that moved is about, or `get_altwire_page_performance` for one page's search detail. Don't run broad extra analysis every day.
 
@@ -27,7 +27,7 @@ The digest has two readers. The **email** is for the editor reading over coffee:
 Subject: the single most important thing today, specific (for example: "Search clicks up 18% as the Deftones review climbs").
 
 1. **The short version**: 3 bullets. What happened, the one thing that matters most, and the top action.
-2. **Traffic (Matomo)**: a small table (metric, yesterday, same day last week, change) for visits, pageviews, and unique visitors, then 2–4 sentences on what drove the change.
+2. **Traffic (Matomo)**: a small table (metric, yesterday, same day last week, change) for visits, pageviews, and unique visitors, then 2–4 sentences on what drove the change. Use `traffic_context` to say whether it was a normal day or a spike ("a spike, about 2.5x a normal Tuesday, almost all from the reunion story"). AltWire's traffic is streaky: spikes come mostly from new articles on current events and fade within days. Present a spike as a spike, give `typical_spike.days_peak_to_normal` as the usual fade, and don't call the day after a spike a "drop" when it's back to normal.
 3. **What moved**: the biggest page gainers and losers with titles and one line each on why, if known.
 4. **Search and discovery (Search Console)**: queries and pages gaining or losing clicks or position, new opportunity-zone queries (positions 5–30) worth targeting, and Google News appearances.
 5. **Recent articles**: how the last two weeks of articles are doing. Call out a breakout or a dud.

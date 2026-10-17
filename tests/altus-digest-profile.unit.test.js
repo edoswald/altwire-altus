@@ -18,6 +18,10 @@ vi.mock('../lib/wp-client.js', () => ({
     { page_url: 'https://altwire.net/microfreak/', query: 'microfreak review', reason_code: 'ctr_gap', source: null, first_seen: '2999-01-01 08:00:00', notes: 'Lead with the model name' },
   ] })),
 }));
+vi.mock('../handlers/altus-traffic-patterns.js', () => ({
+  getTrafficPatterns: vi.fn(async () => ({ latest_day: { date: '2026-10-14', spike: true } })),
+  summarizePatterns: vi.fn((r) => ({ latest_day: r.latest_day, typical_spike: { days_peak_to_normal: 3 } })),
+}));
 vi.mock('../handlers/altus-digest-analytics.js', () => ({ buildAnalyticsSnapshot: vi.fn(async () => ({ matomo: {} })) }));
 
 // Every agent_memory read returns a stored Hal-era snapshot.
@@ -50,6 +54,7 @@ describe('morning digest by profile', () => {
     expect(digest.story_opportunities).toEqual({ open_count: 4, last_scan_at: '2026-10-15T09:00:00Z', top: [{ id: 1, query: 'gamma mini synth' }] });
     expect(digest.analytics).toEqual({ matomo: {} });
     expect(digest.history).toEqual({ last_complete_month: { month: '2026-09' } });
+    expect(digest.traffic_context).toEqual({ latest_day: { date: '2026-10-14', spike: true }, typical_spike: { days_peak_to_normal: 3 } });
     expect(digest.seo_queue).toMatchObject({ waiting: 1, new_since_yesterday: 1, items: [{ query: 'microfreak review', reason: 'seen but rarely clicked', queued_by: 'person' }] });
   });
 
@@ -59,5 +64,6 @@ describe('morning digest by profile', () => {
     const digest = await getAltwireMorningDigest();
     for (const key of STALE) expect(digest[key], key).toMatchObject({ period: '7d' });
     expect(digest).not.toHaveProperty('seo_queue');
+    expect(digest).not.toHaveProperty('traffic_context');
   });
 });
